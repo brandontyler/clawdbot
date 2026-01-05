@@ -1,5 +1,5 @@
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
-index 784444ae0a5b11106b71dda332a408a676d46153..c8c1925d97f65bb2185ee5a86853da3b762f69fa 100644
+index 784444ae0a5b11106b71dda332a408a676d46153..6c2199e2b143b8a625d2edd43bf06b410ffca2af 100644
 --- a/dist/core/model-registry.js
 +++ b/dist/core/model-registry.js
 @@ -22,6 +22,7 @@ const ModelDefinitionSchema = Type.Object({
@@ -18,11 +18,10 @@ index 784444ae0a5b11106b71dda332a408a676d46153..c8c1925d97f65bb2185ee5a86853da3b
      ])),
      headers: Type.Optional(Type.Record(Type.String(), Type.String())),
      authHeader: Type.Optional(Type.Boolean()),
-@@ -192,18 +194,20 @@ export class ModelRegistry {
+@@ -192,18 +194,19 @@ export class ModelRegistry {
          for (const [providerName, providerConfig] of Object.entries(config.providers)) {
              const hasProviderApi = !!providerConfig.api;
              const models = providerConfig.models ?? [];
-+            // Bedrock uses AWS credentials, not baseUrl/apiKey
 +            const isBedrock = providerConfig.api === "bedrock";
              if (models.length === 0) {
                  // Override-only config: just needs baseUrl (to override built-in)
@@ -34,7 +33,7 @@ index 784444ae0a5b11106b71dda332a408a676d46153..c8c1925d97f65bb2185ee5a86853da3b
              else {
 -                // Full replacement: needs baseUrl and apiKey
 -                if (!providerConfig.baseUrl) {
-+                // Full replacement: needs baseUrl and apiKey (except for Bedrock which uses AWS creds)
++                // Full replacement: needs baseUrl and apiKey (except bedrock which uses AWS creds)
 +                if (!providerConfig.baseUrl && !isBedrock) {
                      throw new Error(`Provider ${providerName}: "baseUrl" is required when defining custom models.`);
                  }

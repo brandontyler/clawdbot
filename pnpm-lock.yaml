@@ -11,6 +11,9 @@ patchedDependencies:
   '@mariozechner/pi-ai':
     hash: 1b56fe59acff091cdd03094e25f29154628f92530479e5bc6b616d4d050a4cff
     path: patches/@mariozechner__pi-ai.patch
+  '@mariozechner/pi-coding-agent':
+    hash: 1afd631318afe4576a4e9ff2b27c994cd0031c068f250bf4498801a95b7c5963
+    path: patches/@mariozechner__pi-coding-agent.patch
 
 importers:
 
@@ -36,7 +39,7 @@ importers:
         version: 0.32.3(patch_hash=1b56fe59acff091cdd03094e25f29154628f92530479e5bc6b616d4d050a4cff)(ws@8.18.3)(zod@4.3.4)
       '@mariozechner/pi-coding-agent':
         specifier: ^0.32.3
-        version: 0.32.3(ws@8.18.3)(zod@4.3.4)
+        version: 0.32.3(patch_hash=1afd631318afe4576a4e9ff2b27c994cd0031c068f250bf4498801a95b7c5963)(ws@8.18.3)(zod@4.3.4)
       '@mariozechner/pi-tui':
         specifier: ^0.32.3
         version: 0.32.3
@@ -4288,7 +4291,7 @@ snapshots:
       - ws
       - zod
 
-  '@mariozechner/pi-coding-agent@0.32.3(ws@8.18.3)(zod@4.3.4)':
+  '@mariozechner/pi-coding-agent@0.32.3(patch_hash=1afd631318afe4576a4e9ff2b27c994cd0031c068f250bf4498801a95b7c5963)(ws@8.18.3)(zod@4.3.4)':
     dependencies:
       '@mariozechner/pi-agent-core': 0.32.3(ws@8.18.3)(zod@4.3.4)
       '@mariozechner/pi-ai': 0.32.3(patch_hash=1b56fe59acff091cdd03094e25f29154628f92530479e5bc6b616d4d050a4cff)(ws@8.18.3)(zod@4.3.4)
