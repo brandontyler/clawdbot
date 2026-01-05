@@ -1,0 +1,45 @@
+diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
+index 784444ae0a5b11106b71dda332a408a676d46153..c8c1925d97f65bb2185ee5a86853da3b762f69fa 100644
+--- a/dist/core/model-registry.js
++++ b/dist/core/model-registry.js
+@@ -22,6 +22,7 @@ const ModelDefinitionSchema = Type.Object({
+         Type.Literal("openai-responses"),
+         Type.Literal("anthropic-messages"),
+         Type.Literal("google-generative-ai"),
++        Type.Literal("bedrock"),
+     ])),
+     reasoning: Type.Boolean(),
+     input: Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")])),
+@@ -44,6 +45,7 @@ const ProviderConfigSchema = Type.Object({
+         Type.Literal("openai-responses"),
+         Type.Literal("anthropic-messages"),
+         Type.Literal("google-generative-ai"),
++        Type.Literal("bedrock"),
+     ])),
+     headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+     authHeader: Type.Optional(Type.Boolean()),
+@@ -192,18 +194,20 @@ export class ModelRegistry {
+         for (const [providerName, providerConfig] of Object.entries(config.providers)) {
+             const hasProviderApi = !!providerConfig.api;
+             const models = providerConfig.models ?? [];
++            // Bedrock uses AWS credentials, not baseUrl/apiKey
++            const isBedrock = providerConfig.api === "bedrock";
+             if (models.length === 0) {
+                 // Override-only config: just needs baseUrl (to override built-in)
+-                if (!providerConfig.baseUrl) {
++                if (!providerConfig.baseUrl && !isBedrock) {
+                     throw new Error(`Provider ${providerName}: must specify either "baseUrl" (for override) or "models" (for replacement).`);
+                 }
+             }
+             else {
+-                // Full replacement: needs baseUrl and apiKey
+-                if (!providerConfig.baseUrl) {
++                // Full replacement: needs baseUrl and apiKey (except for Bedrock which uses AWS creds)
++                if (!providerConfig.baseUrl && !isBedrock) {
+                     throw new Error(`Provider ${providerName}: "baseUrl" is required when defining custom models.`);
+                 }
+-                if (!providerConfig.apiKey) {
++                if (!providerConfig.apiKey && !isBedrock) {
+                     throw new Error(`Provider ${providerName}: "apiKey" is required when defining custom models.`);
+                 }
+             }

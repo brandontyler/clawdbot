@@ -7,6 +7,7 @@ const ModelApiSchema = z.union([
   z.literal("openai-responses"),
   z.literal("anthropic-messages"),
   z.literal("google-generative-ai"),
+  z.literal("bedrock"),
 ]);
 
 const ModelCompatSchema = z
@@ -39,8 +40,8 @@ const ModelDefinitionSchema = z.object({
 });
 
 const ModelProviderSchema = z.object({
-  baseUrl: z.string().min(1),
-  apiKey: z.string().min(1),
+  baseUrl: z.string().min(1).optional(),
+  apiKey: z.string().min(1).optional(),
   api: ModelApiSchema.optional(),
   headers: z.record(z.string(), z.string()).optional(),
   authHeader: z.boolean().optional(),

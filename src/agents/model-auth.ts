@@ -114,6 +114,10 @@ export async function getApiKeyForModel(
   model: Model<Api>,
   authStorage: ReturnType<typeof discoverAuthStorage>,
 ): Promise<string> {
+  // Bedrock uses AWS credentials from environment, not API keys
+  if (model.api === "bedrock") {
+    return "bedrock-aws-credentials";
+  }
   const storedKey = await authStorage.getApiKey(model.provider);
   if (storedKey) return storedKey;
   ensureOAuthStorage();

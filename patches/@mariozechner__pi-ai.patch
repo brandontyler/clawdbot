@@ -1,5 +1,240 @@
+diff --git a/dist/providers/bedrock.d.ts b/dist/providers/bedrock.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2a80bbcf4c27f516a4e96213d93b8bc446a55b6
+--- /dev/null
++++ b/dist/providers/bedrock.d.ts
+@@ -0,0 +1,8 @@
++import type { AssistantMessageEventStream } from "../utils/event-stream.js";
++import type { Context, Model, StreamOptions } from "../types.js";
++
++export interface BedrockOptions extends StreamOptions {
++    region?: string;
++}
++
++export declare const streamBedrock: (model: Model<"bedrock">, context: Context, options?: BedrockOptions) => AssistantMessageEventStream;
+diff --git a/dist/providers/bedrock.js b/dist/providers/bedrock.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..cc34c6a4e508fe7c6e2d965fd658525206c131d0
+--- /dev/null
++++ b/dist/providers/bedrock.js
+@@ -0,0 +1,215 @@
++/**
++ * Amazon Bedrock provider for pi-ai SDK
++ * Supports Nova and Claude models via Bedrock's converse streaming API
++ */
++import { BedrockRuntimeClient, ConverseStreamCommand, } from "@aws-sdk/client-bedrock-runtime";
++import { calculateCost } from "../models.js";
++import { AssistantMessageEventStream } from "../utils/event-stream.js";
++import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
++function mapModelId(modelId) {
++    const mapping = {
++        "nova-pro-v1": "amazon.nova-pro-v1:0",
++        "nova-lite-v1": "amazon.nova-lite-v1:0",
++        "nova-micro-v1": "amazon.nova-micro-v1:0",
++        "claude-3-5-sonnet": "anthropic.claude-3-5-sonnet-20241022-v2:0",
++        "claude-3-5-haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
++        "claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0",
++        "claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
++        "claude-3-haiku": "anthropic.claude-3-haiku-20240307-v1:0",
++    };
++    return mapping[modelId] || modelId;
++}
++function convertContentBlocks(content) {
++    const blocks = [];
++    for (const block of content) {
++        if (block.type === "text") {
++            blocks.push({ text: sanitizeSurrogates(block.text) });
++        }
++        else if (block.type === "image") {
++            blocks.push({
++                image: {
++                    format: block.mimeType.split("/")[1],
++                    source: { bytes: Buffer.from(block.data, "base64") },
++                },
++            });
++        }
++        else if (block.type === "toolResult") {
++            blocks.push({
++                toolResult: {
++                    toolUseId: block.toolCallId,
++                    content: [{ text: typeof block.content === "string" ? block.content : JSON.stringify(block.content) }],
++                    status: block.isError ? "error" : "success",
++                },
++            });
++        }
++        else if (block.type === "toolCall") {
++            blocks.push({
++                toolUse: {
++                    toolUseId: block.id,
++                    name: block.name,
++                    input: block.arguments,
++                },
++            });
++        }
++    }
++    return blocks;
++}
++function convertMessages(context) {
++    const messages = [];
++    for (const msg of context.messages) {
++        const content = convertContentBlocks(msg.content);
++        if (content.length > 0) {
++            messages.push({ role: msg.role, content });
++        }
++    }
++    return messages;
++}
++function convertTools(tools) {
++    if (!tools || tools.length === 0)
++        return undefined;
++    return {
++        tools: tools.map((tool) => ({
++            toolSpec: {
++                name: tool.name,
++                description: tool.description,
++                inputSchema: { json: tool.parameters },
++            },
++        })),
++    };
++}
++export const streamBedrock = (model, context, options) => {
++    const stream = new AssistantMessageEventStream();
++    (async () => {
++        const output = {
++            role: "assistant",
++            content: [],
++            api: "bedrock",
++            provider: model.provider,
++            model: model.id,
++            usage: {
++                input: 0,
++                output: 0,
++                cacheRead: 0,
++                cacheWrite: 0,
++                totalTokens: 0,
++                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
++            },
++            stopReason: "stop",
++            timestamp: Date.now(),
++        };
++        try {
++            const client = new BedrockRuntimeClient({
++                region: options?.region || process.env.AWS_REGION || "us-east-1",
++            });
++            const modelId = mapModelId(model.id);
++            const messages = convertMessages(context);
++            const toolConfig = convertTools(context.tools);
++            const command = new ConverseStreamCommand({
++                modelId,
++                messages,
++                system: context.system ? [{ text: context.system }] : undefined,
++                inferenceConfig: {
++                    maxTokens: options?.maxTokens ?? 4096,
++                    temperature: options?.temperature ?? 0.7,
++                },
++                ...(toolConfig && { toolConfig }),
++            });
++            const response = await client.send(command, { abortSignal: options?.signal });
++            stream.push({ type: "start", partial: output });
++            let currentTextBlock = null;
++            let currentToolBlock = null;
++            let toolInputJson = "";
++            if (response.stream) {
++                for await (const event of response.stream) {
++                    if (event.messageStart) {
++                        // Initial message start - nothing to do, we already pushed start
++                    }
++                    else if (event.contentBlockStart) {
++                        const start = event.contentBlockStart.start;
++                        if (start?.text !== undefined) {
++                            currentTextBlock = { type: "text", text: "" };
++                            output.content.push(currentTextBlock);
++                            stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                        }
++                        else if (start?.toolUse) {
++                            currentToolBlock = {
++                                type: "toolCall",
++                                id: start.toolUse.toolUseId || "",
++                                name: start.toolUse.name || "",
++                                arguments: {},
++                            };
++                            toolInputJson = "";
++                            output.content.push(currentToolBlock);
++                            stream.push({ type: "tool_start", contentIndex: output.content.length - 1, partial: output });
++                        }
++                    }
++                    else if (event.contentBlockDelta) {
++                        const delta = event.contentBlockDelta.delta;
++                        if (delta?.text) {
++                            // Create text block if not exists (Nova doesn't send contentBlockStart for text)
++                            if (!currentTextBlock) {
++                                currentTextBlock = { type: "text", text: "" };
++                                output.content.push(currentTextBlock);
++                                stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                            }
++                            currentTextBlock.text += delta.text;
++                            stream.push({
++                                type: "text_delta",
++                                contentIndex: output.content.length - 1,
++                                delta: delta.text,
++                                partial: output,
++                            });
++                        }
++                        else if (delta?.toolUse && currentToolBlock) {
++                            const input = delta.toolUse.input;
++                            if (input) {
++                                toolInputJson += input;
++                            }
++                            stream.push({ type: "tool_delta", contentIndex: output.content.length - 1, partial: output });
++                        }
++                    }
++                    else if (event.contentBlockStop) {
++                        if (currentTextBlock) {
++                            stream.push({ type: "text_done", contentIndex: output.content.length - 1, partial: output });
++                            currentTextBlock = null;
++                        }
++                        else if (currentToolBlock) {
++                            if (toolInputJson) {
++                                try {
++                                    currentToolBlock.arguments = JSON.parse(toolInputJson);
++                                }
++                                catch { }
++                            }
++                            stream.push({ type: "tool_done", contentIndex: output.content.length - 1, partial: output });
++                            currentToolBlock = null;
++                            toolInputJson = "";
++                        }
++                    }
++                    else if (event.metadata) {
++                        const usage = event.metadata.usage;
++                        if (usage) {
++                            output.usage.input = usage.inputTokens || 0;
++                            output.usage.output = usage.outputTokens || 0;
++                            output.usage.totalTokens = output.usage.input + output.usage.output;
++                            calculateCost(model, output.usage);
++                        }
++                    }
++                    else if (event.messageStop) {
++                        // Finalize any open text block
++                        if (currentTextBlock) {
++                            stream.push({ type: "text_done", contentIndex: output.content.length - 1, partial: output });
++                            currentTextBlock = null;
++                        }
++                        const reason = event.messageStop.stopReason;
++                        output.stopReason = reason === "tool_use" ? "toolUse" : reason || "stop";
++                    }
++                }
++            }
++            stream.push({ type: "done", message: output });
++        }
++        catch (err) {
++            stream.push({ type: "error", error: err instanceof Error ? err : new Error(String(err)) });
++        }
++    })();
++    return stream;
++};
 diff --git a/dist/providers/google-shared.js b/dist/providers/google-shared.js
-index 7bc0a9f5d6241f191cd607ecb37b3acac8d58267..76166a34784cbc0718d4b9bd1fa6336a6dd394ec 100644
+index 7bc0a9f5d6241f191cd607ecb37b3acac8d58267..8311deae797e2219f64bc100647b261f6e402fd8 100644
 --- a/dist/providers/google-shared.js
 +++ b/dist/providers/google-shared.js
 @@ -51,9 +51,19 @@ export function convertMessages(model, context) {
@@ -132,3 +367,66 @@ index 20fb0a22aaa28f7ff7c2f44a8b628fa1d9d7d936..31bae0aface1319487ce62d35f1f3b6e
      }));
  }
  function mapStopReason(status) {
+diff --git a/dist/stream.js b/dist/stream.js
+index 261b3963419633a5c0df48d7fe5c9e5119b2e27b..db7fea64d35c71a06b9c26a64ad0b36e112c2617 100644
+--- a/dist/stream.js
++++ b/dist/stream.js
+@@ -1,5 +1,6 @@
+ import { supportsXhigh } from "./models.js";
+ import { streamAnthropic } from "./providers/anthropic.js";
++import { streamBedrock } from "./providers/bedrock.js";
+ import { streamGoogle } from "./providers/google.js";
+ import { streamGoogleGeminiCli, } from "./providers/google-gemini-cli.js";
+ import { streamGoogleVertex } from "./providers/google-vertex.js";
+@@ -35,6 +36,10 @@ export function stream(model, context, options) {
+     if (model.api === "google-vertex") {
+         return streamGoogleVertex(model, context, options);
+     }
++    // Bedrock uses AWS credentials from environment/config, not API keys
++    if (model.api === "bedrock") {
++        return streamBedrock(model, context, options);
++    }
+     const apiKey = options?.apiKey || getEnvApiKey(model.provider);
+     if (!apiKey) {
+         throw new Error(`No API key for provider: ${model.provider}`);
+@@ -221,6 +226,13 @@ function mapOptionsForApi(model, options, apiKey) {
+                 },
+             };
+         }
++        case "bedrock": {
++            // Bedrock uses AWS credentials, simple options
++            return {
++                ...base,
++                region: process.env.AWS_REGION || "us-east-1",
++            };
++        }
+         default: {
+             // Exhaustiveness check
+             const _exhaustive = model.api;
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index 820c2371b12bfe71ed8bec8e370c593d8c7caa49..2039736fb5e12aa582b6e753756b201948afc2c9 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -1,4 +1,5 @@
+ import type { AnthropicOptions } from "./providers/anthropic.js";
++import type { BedrockOptions } from "./providers/bedrock.js";
+ import type { GoogleOptions } from "./providers/google.js";
+ import type { GoogleGeminiCliOptions } from "./providers/google-gemini-cli.js";
+ import type { GoogleVertexOptions } from "./providers/google-vertex.js";
+@@ -6,7 +7,7 @@ import type { OpenAICompletionsOptions } from "./providers/openai-completions.js
+ import type { OpenAIResponsesOptions } from "./providers/openai-responses.js";
+ import type { AssistantMessageEventStream } from "./utils/event-stream.js";
+ export type { AssistantMessageEventStream } from "./utils/event-stream.js";
+-export type Api = "openai-completions" | "openai-responses" | "anthropic-messages" | "google-generative-ai" | "google-gemini-cli" | "google-vertex";
++export type Api = "openai-completions" | "openai-responses" | "anthropic-messages" | "google-generative-ai" | "google-gemini-cli" | "google-vertex" | "bedrock";
+ export interface ApiOptionsMap {
+     "anthropic-messages": AnthropicOptions;
+     "openai-completions": OpenAICompletionsOptions;
+@@ -14,6 +15,7 @@ export interface ApiOptionsMap {
+     "google-generative-ai": GoogleOptions;
+     "google-gemini-cli": GoogleGeminiCliOptions;
+     "google-vertex": GoogleVertexOptions;
++    "bedrock": BedrockOptions;
+ }
+ export type OptionsForApi<TApi extends Api> = ApiOptionsMap[TApi];
+ export type KnownProvider = "anthropic" | "google" | "google-gemini-cli" | "google-antigravity" | "google-vertex" | "openai" | "github-copilot" | "xai" | "groq" | "cerebras" | "openrouter" | "zai" | "mistral";

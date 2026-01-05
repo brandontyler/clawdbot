@@ -595,7 +595,8 @@ export type ModelApi =
   | "openai-completions"
   | "openai-responses"
   | "anthropic-messages"
-  | "google-generative-ai";
+  | "google-generative-ai"
+  | "bedrock";
 
 export type ModelCompatConfig = {
   supportsStore?: boolean;
@@ -623,8 +624,8 @@ export type ModelDefinitionConfig = {
 };
 
 export type ModelProviderConfig = {
-  baseUrl: string;
-  apiKey: string;
+  baseUrl?: string;
+  apiKey?: string;
   api?: ModelApi;
   headers?: Record<string, string>;
   authHeader?: boolean;
