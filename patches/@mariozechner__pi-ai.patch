@@ -14,7 +14,7 @@ index 0000000000000000000000000000000000000000..a2a80bbcf4c27f516a4e96213d93b8bc
 +export declare const streamBedrock: (model: Model<"bedrock">, context: Context, options?: BedrockOptions) => AssistantMessageEventStream;
 diff --git a/dist/providers/bedrock.js b/dist/providers/bedrock.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..58330916f3edcb2b8d871d3717f2a4765f665f7a
+index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02bba07749
 --- /dev/null
 +++ b/dist/providers/bedrock.js
 @@ -0,0 +1,220 @@
@@ -136,7 +136,7 @@ index 0000000000000000000000000000000000000000..58330916f3edcb2b8d871d3717f2a476
 +            const command = new ConverseStreamCommand({
 +                modelId,
 +                messages,
-+                system: context.system ? [{ text: context.system }] : undefined,
++                system: context.systemPrompt ? [{ text: context.systemPrompt }] : undefined,
 +                inferenceConfig: {
 +                    maxTokens: options?.maxTokens ?? 4096,
 +                    temperature: options?.temperature ?? 0.7,
