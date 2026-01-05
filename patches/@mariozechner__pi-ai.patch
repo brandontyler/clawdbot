@@ -14,10 +14,10 @@ index 0000000000000000000000000000000000000000..a2a80bbcf4c27f516a4e96213d93b8bc
 +export declare const streamBedrock: (model: Model<"bedrock">, context: Context, options?: BedrockOptions) => AssistantMessageEventStream;
 diff --git a/dist/providers/bedrock.js b/dist/providers/bedrock.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02bba07749
+index 0000000000000000000000000000000000000000..6f2811623f2b73f120038cb3e5cc52f6ee6dd5a6
 --- /dev/null
 +++ b/dist/providers/bedrock.js
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,278 @@
 +/**
 + * Amazon Bedrock provider for pi-ai SDK
 + * Supports Claude models via Bedrock's converse streaming API with API key auth
@@ -52,15 +52,6 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +                },
 +            });
 +        }
-+        else if (block.type === "toolResult") {
-+            blocks.push({
-+                toolResult: {
-+                    toolUseId: block.toolCallId,
-+                    content: [{ text: typeof block.content === "string" ? block.content : JSON.stringify(block.content) }],
-+                    status: block.isError ? "error" : "success",
-+                },
-+            });
-+        }
 +        else if (block.type === "toolCall") {
 +            blocks.push({
 +                toolUse: {
@@ -70,6 +61,7 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +                },
 +            });
 +        }
++        // Skip thinking blocks - Bedrock doesn't support them in input
 +    }
 +    return blocks;
 +}
@@ -77,9 +69,28 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +function convertMessages(context) {
 +    const messages = [];
 +    for (const msg of context.messages) {
-+        const content = convertContentBlocks(msg.content);
-+        if (content.length > 0) {
-+            messages.push({ role: msg.role, content });
++        if (msg.role === "toolResult") {
++            // Tool results go in a "user" role message for Bedrock
++            const toolResultContent = msg.content.map(c => {
++                if (c.type === "text") return { text: sanitizeSurrogates(c.text) };
++                if (c.type === "image") return { image: { format: c.mimeType.split("/")[1], source: { bytes: Buffer.from(c.data, "base64") } } };
++                return null;
++            }).filter(Boolean);
++            messages.push({
++                role: "user",
++                content: [{
++                    toolResult: {
++                        toolUseId: msg.toolCallId,
++                        content: toolResultContent.length > 0 ? toolResultContent : [{ text: "OK" }],
++                        status: msg.isError ? "error" : "success",
++                    },
++                }],
++            });
++        } else {
++            const content = convertContentBlocks(msg.content);
++            if (content.length > 0) {
++                messages.push({ role: msg.role, content });
++            }
 +        }
 +    }
 +    return messages;
@@ -96,6 +107,14 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +            },
 +        })),
 +    };
++}
++
++function mapStopReason(reason) {
++    if (reason === "tool_use") return "toolUse";
++    if (reason === "end_turn") return "stop";
++    if (reason === "max_tokens") return "length";
++    if (reason === "stop_sequence") return "stop";
++    return reason || "stop";
 +}
 +
 +export const streamBedrock = (model, context, options) => {
@@ -122,7 +141,6 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +            const region = options?.region || process.env.AWS_REGION || "us-east-1";
 +            const apiKey = process.env.AWS_BEARER_TOKEN_BEDROCK;
 +            
-+            // Create client with token auth if API key is available
 +            const clientConfig = { region };
 +            if (apiKey) {
 +                clientConfig.token = { token: apiKey };
@@ -154,7 +172,11 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +            if (response.stream) {
 +                for await (const event of response.stream) {
 +                    if (event.messageStart) {
-+                        // Initial message start
++                        // Initial usage from message start
++                        if (event.messageStart.usage) {
++                            output.usage.input = event.messageStart.usage.inputTokens || 0;
++                            output.usage.output = event.messageStart.usage.outputTokens || 0;
++                        }
 +                    }
 +                    else if (event.contentBlockStart) {
 +                        const start = event.contentBlockStart.start;
@@ -164,17 +186,25 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +                                id: start.toolUse.toolUseId || "",
 +                                name: start.toolUse.name || "",
 +                                arguments: {},
++                                partialJson: "",
++                                index: event.contentBlockStart.contentBlockIndex,
 +                            };
 +                            toolInputJson = "";
 +                            output.content.push(currentToolBlock);
-+                            stream.push({ type: "tool_start", contentIndex: output.content.length - 1, partial: output });
++                            stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
++                        } else {
++                            // Text block start
++                            currentTextBlock = { type: "text", text: "", index: event.contentBlockStart.contentBlockIndex };
++                            output.content.push(currentTextBlock);
++                            stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 +                        }
 +                    }
 +                    else if (event.contentBlockDelta) {
 +                        const delta = event.contentBlockDelta.delta;
 +                        if (delta?.text) {
 +                            if (!currentTextBlock) {
-+                                currentTextBlock = { type: "text", text: "" };
++                                // Create text block if we get text delta without explicit start
++                                currentTextBlock = { type: "text", text: "", index: event.contentBlockDelta.contentBlockIndex };
 +                                output.content.push(currentTextBlock);
 +                                stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 +                            }
@@ -189,20 +219,39 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +                        else if (delta?.toolUse && currentToolBlock) {
 +                            if (delta.toolUse.input) {
 +                                toolInputJson += delta.toolUse.input;
++                                currentToolBlock.partialJson = toolInputJson;
 +                            }
-+                            stream.push({ type: "tool_delta", contentIndex: output.content.length - 1, partial: output });
++                            stream.push({ 
++                                type: "toolcall_delta", 
++                                contentIndex: output.content.length - 1,
++                                delta: delta.toolUse.input || "",
++                                partial: output 
++                            });
 +                        }
 +                    }
 +                    else if (event.contentBlockStop) {
 +                        if (currentTextBlock) {
-+                            stream.push({ type: "text_done", contentIndex: output.content.length - 1, partial: output });
++                            delete currentTextBlock.index;
++                            stream.push({ 
++                                type: "text_end", 
++                                contentIndex: output.content.length - 1, 
++                                content: currentTextBlock.text,
++                                partial: output 
++                            });
 +                            currentTextBlock = null;
 +                        }
 +                        else if (currentToolBlock) {
 +                            if (toolInputJson) {
 +                                try { currentToolBlock.arguments = JSON.parse(toolInputJson); } catch {}
 +                            }
-+                            stream.push({ type: "tool_done", contentIndex: output.content.length - 1, partial: output });
++                            delete currentToolBlock.partialJson;
++                            delete currentToolBlock.index;
++                            stream.push({ 
++                                type: "toolcall_end", 
++                                contentIndex: output.content.length - 1,
++                                toolCall: currentToolBlock,
++                                partial: output 
++                            });
 +                            currentToolBlock = null;
 +                            toolInputJson = "";
 +                        }
@@ -222,18 +271,27 @@ index 0000000000000000000000000000000000000000..f3fbb103c0ae2d96777d3026e7624d02
 +                    }
 +                    else if (event.messageStop) {
 +                        if (currentTextBlock) {
-+                            stream.push({ type: "text_done", contentIndex: output.content.length - 1, partial: output });
++                            delete currentTextBlock.index;
++                            stream.push({ type: "text_end", contentIndex: output.content.length - 1, content: currentTextBlock.text, partial: output });
 +                            currentTextBlock = null;
 +                        }
-+                        const reason = event.messageStop.stopReason;
-+                        output.stopReason = reason === "tool_use" ? "toolUse" : reason || "stop";
++                        output.stopReason = mapStopReason(event.messageStop.stopReason);
 +                    }
 +                }
 +            }
-+            stream.push({ type: "done", message: output });
++            
++            if (options?.signal?.aborted) {
++                throw new Error("Request was aborted");
++            }
++            
++            stream.push({ type: "done", reason: output.stopReason, message: output });
++            stream.end();
 +        }
 +        catch (err) {
-+            stream.push({ type: "error", error: err instanceof Error ? err : new Error(String(err)) });
++            output.stopReason = options?.signal?.aborted ? "aborted" : "error";
++            output.errorMessage = err instanceof Error ? err.message : String(err);
++            stream.push({ type: "error", reason: output.stopReason, error: output });
++            stream.end();
 +        }
 +    })();
 +    return stream;
