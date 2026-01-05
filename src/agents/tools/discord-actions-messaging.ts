@@ -139,7 +139,14 @@ export async function handleDiscordMessagingAction(
       if (!isActionEnabled("messages")) {
         throw new Error("Discord message sends are disabled.");
       }
-      const to = readStringParam(params, "to", { required: true });
+      let to = readStringParam(params, "to");
+      if (!to) {
+        const channelId = readStringParam(params, "channelId");
+        const userId = readStringParam(params, "userId");
+        if (channelId) to = `channel:${channelId}`;
+        else if (userId) to = `user:${userId}`;
+      }
+      if (!to) throw new Error("to required (or channelId/userId)");
       const content = readStringParam(params, "content", {
         required: true,
       });
