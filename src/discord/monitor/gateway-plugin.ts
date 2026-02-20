@@ -79,6 +79,7 @@ class ResilientGatewayPlugin extends GatewayPlugin {
         const parsed = JSON.parse(raw);
         if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
           this._reconnectAttempts = 0;
+          this.emitter.emit("debug", `Resumed successfully (${parsed.t})`);
         }
       } catch {
         // Ignore — parent handles validation.
@@ -86,10 +87,36 @@ class ResilientGatewayPlugin extends GatewayPlugin {
     });
   }
 
+  private _backoffTimer: ReturnType<typeof setTimeout> | undefined;
+
   /**
-   * Override connect to catch the zombie heartbeat throw from @buape/carbon.
+   * Override connect to:
+   * - catch the zombie heartbeat throw from @buape/carbon
+   * - add exponential backoff with jitter when attempts pile up, so a brief
+   *   network outage doesn't burn through all 50 attempts in under 3 minutes
    */
   override connect(resume?: boolean): void {
+    const attempts = this._reconnectAttempts;
+    if (attempts > 3) {
+      // Exponential backoff: 4s, 8s, 16s … capped at 60s, plus up to 3s jitter
+      const delay = Math.min(2000 * 2 ** (attempts - 3), 60_000) + Math.random() * 3000;
+      this.emitter.emit(
+        "debug",
+        `backing off reconnect attempt ${attempts}: waiting ${Math.round(delay)}ms`,
+      );
+      if (this._backoffTimer) {
+        clearTimeout(this._backoffTimer);
+      }
+      this._backoffTimer = setTimeout(() => {
+        this._backoffTimer = undefined;
+        this._connectInner(resume);
+      }, delay);
+      return;
+    }
+    this._connectInner(resume);
+  }
+
+  private _connectInner(resume?: boolean): void {
     try {
       super.connect(resume);
     } catch (err) {
@@ -100,6 +127,14 @@ class ResilientGatewayPlugin extends GatewayPlugin {
       }
       throw err;
     }
+  }
+
+  override disconnect(): void {
+    if (this._backoffTimer) {
+      clearTimeout(this._backoffTimer);
+      this._backoffTimer = undefined;
+    }
+    super.disconnect();
   }
 }
 
