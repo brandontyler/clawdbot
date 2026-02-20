@@ -42,25 +42,15 @@ Prerequisites:
   3. Start proxy        openclaw kiro-proxy
   4. Start gateway      openclaw gateway
 
-Config (~/.openclaw/config.yaml):
-  models:
-    providers:
-      kiro:
-        baseUrl: http://127.0.0.1:18790
-        apiKey: kiro-local
-        api: openai-completions
-        models:
-          - id: kiro-default
-            name: "Kiro (AWS Bedrock)"
-            api: openai-completions
-            contextWindow: 200000
-            maxTokens: 8192
-            input: [text]
-            reasoning: false
-            cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
-  agents:
-    default:
-      model: kiro:kiro-default
+Config (~/.openclaw/openclaw.json, JSON5):
+  { models: { providers: { kiro: {
+      baseUrl: "http://127.0.0.1:18790",
+      apiKey: "kiro-local",
+      api: "openai-completions",
+      models: [{ id: "kiro-default", name: "Kiro (AWS Bedrock)", ... }]
+  }}},
+  agents: { defaults: { model: { primary: "kiro/kiro-default" } } },
+  gateway: { mode: "local" } }
 `,
     )
     .action(async (opts) => {

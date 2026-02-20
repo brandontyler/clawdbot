@@ -23,9 +23,24 @@ import type { OpenAIMessage, KiroSessionHandle } from "./types.js";
 
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes
 
+/** Extract text from OpenAI content (string or array of content parts). */
+function extractText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((p: { type: string; text?: string }) => p.type === "text" && p.text)
+      .map((p: { text: string }) => p.text)
+      .join(" ");
+  }
+  return JSON.stringify(content ?? "");
+}
+
 type ManagedSession = {
   session: KiroSession;
   handle: KiroSessionHandle;
+  promptLock: Promise<void>;
 };
 
 export class SessionManager {
@@ -34,10 +49,7 @@ export class SessionManager {
   private readonly idleMs: number;
   private gcTimer: NodeJS.Timeout | null = null;
 
-  constructor(
-    sessionOpts: KiroSessionOptions,
-    opts: { idleSecs?: number } = {},
-  ) {
+  constructor(sessionOpts: KiroSessionOptions, opts: { idleSecs?: number } = {}) {
     this.sessionOpts = sessionOpts;
     this.idleMs = (opts.idleSecs ?? DEFAULT_IDLE_SECS) * 1000;
   }
@@ -50,11 +62,15 @@ export class SessionManager {
     if (explicitKey?.trim()) {
       return explicitKey.trim();
     }
-    // Anchor: first system message (if any) + first user message content.
     const anchor = messages
       .filter((m) => m.role === "system" || m.role === "user")
       .slice(0, 2)
-      .map((m) => `${m.role}:${m.content.slice(0, 512)}`)
+      .map((m) => {
+        let text = extractText(m.content).slice(0, 512);
+        text = text.replace(/"message_id"\s*:\s*"[^"]*",?\s*/g, "");
+        text = text.replace(/\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z]+\]\s*/g, "");
+        return `${m.role}:${text.trim()}`;
+      })
       .join("|");
     return createHash("sha256").update(anchor).digest("hex").slice(0, 32);
   }
@@ -66,17 +82,18 @@ export class SessionManager {
   async getOrCreate(
     sessionKey: string,
     messages: OpenAIMessage[],
-  ): Promise<{ session: KiroSession; promptText: string }> {
+  ): Promise<{ session: KiroSession; promptText: string; managed: ManagedSession }> {
     const existing = this.sessions.get(sessionKey);
 
     if (existing && existing.session.alive) {
-      // Route only the NEW messages since the last turn.
+      // Wait for any in-flight prompt to finish before sending the next one.
+      await existing.promptLock;
       const newMessages = messages.slice(existing.handle.sentMessageCount);
       const promptText = this.buildPromptFromMessages(newMessages);
       existing.handle.sentMessageCount = messages.length;
       existing.handle.lastTouchedAt = Date.now();
       existing.session.lastTouchedAt = Date.now();
-      return { session: existing.session, promptText };
+      return { session: existing.session, promptText, managed: existing };
     }
 
     // Dead or non-existent session — create a fresh one.
@@ -96,10 +113,11 @@ export class SessionManager {
       sentMessageCount: messages.length,
       lastTouchedAt: Date.now(),
     };
-    this.sessions.set(sessionKey, { session, handle });
+    const managed: ManagedSession = { session, handle, promptLock: Promise.resolve() };
+    this.sessions.set(sessionKey, managed);
     this.scheduleGc();
 
-    return { session, promptText };
+    return { session, promptText, managed };
   }
 
   /** Kill all sessions cleanly. */
@@ -124,12 +142,12 @@ export class SessionManager {
   private buildPromptFromMessages(messages: OpenAIMessage[]): string {
     const parts: string[] = [];
     for (const msg of messages) {
+      const text = extractText(msg.content);
       if (msg.role === "system") {
-        parts.push(`[System context]\n${msg.content}`);
+        parts.push(`[System context]\n${text}`);
       } else if (msg.role === "user") {
-        parts.push(msg.content);
+        parts.push(text);
       }
-      // Skip assistant messages — Kiro already knows what it said.
     }
     return parts.join("\n\n").trim();
   }

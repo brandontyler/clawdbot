@@ -9,26 +9,18 @@
  *   openclaw kiro-proxy [options]
  *   pnpm kiro-proxy
  *
- * OpenClaw config:
- *   models:
- *     providers:
- *       kiro:
- *         baseUrl: http://127.0.0.1:18790
- *         apiKey: kiro-local
- *         api: openai-completions
- *         models:
- *           - id: kiro-default
- *             name: Kiro (AWS Bedrock)
- *             api: openai-completions
- *             contextWindow: 200000
- *             maxTokens: 8192
- *             input: [text]
- *             reasoning: false
- *             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+ * OpenClaw config (~/.openclaw/openclaw.json, JSON5):
+ *   models: { providers: { kiro: {
+ *     baseUrl: "http://127.0.0.1:18790",
+ *     apiKey: "kiro-local",
+ *     api: "openai-completions",
+ *     models: [{ id: "kiro-default", name: "Kiro (AWS Bedrock)", ... }]
+ *   }}}
+ *   agents: { defaults: { model: { primary: "kiro/kiro-default" } } }
  */
 
-import { SessionManager } from "./session-manager.js";
 import { createKiroProxyServer } from "./server.js";
+import { SessionManager } from "./session-manager.js";
 import type { KiroProxyOptions } from "./types.js";
 
 export { KiroSession } from "./kiro-session.js";
@@ -48,16 +40,11 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
   const idleSecs = opts.sessionIdleSecs ?? 1800;
   const verbose = opts.verbose ?? false;
 
-  const log = verbose
-    ? (msg: string) => process.stderr.write(`[kiro-proxy] ${msg}\n`)
-    : () => {};
+  const log = verbose ? (msg: string) => process.stderr.write(`[kiro-proxy] ${msg}\n`) : () => {};
 
   log(`starting (kiro=${kiroBin}, port=${port}, idle=${idleSecs}s)`);
 
-  const manager = new SessionManager(
-    { kiroBin, kiroArgs, cwd, verbose },
-    { idleSecs },
-  );
+  const manager = new SessionManager({ kiroBin, kiroArgs, cwd, verbose }, { idleSecs });
 
   const server = createKiroProxyServer(manager, opts);
 
@@ -68,28 +55,28 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
 
   const addr = `http://${host}:${port}`;
   process.stderr.write(`[kiro-proxy] listening on ${addr}\n`);
-  process.stderr.write(`[kiro-proxy] add to ~/.openclaw/config.yaml:\n`);
+  process.stderr.write(`[kiro-proxy] add to ~/.openclaw/openclaw.json:\n`);
   process.stderr.write(
     [
-      `  models:`,
-      `    providers:`,
-      `      kiro:`,
-      `        baseUrl: ${addr}`,
-      `        apiKey: kiro-local`,
-      `        api: openai-completions`,
-      `        models:`,
-      `          - id: kiro-default`,
-      `            name: "Kiro (AWS Bedrock)"`,
-      `            api: openai-completions`,
-      `            contextWindow: 200000`,
-      `            maxTokens: 8192`,
-      `            input: [text]`,
-      `            reasoning: false`,
-      `            cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}`,
-      `  # then set your default agent model:`,
-      `  # agents:`,
-      `  #   default:`,
-      `  #     model: kiro:kiro-default`,
+      `  // models.providers.kiro`,
+      `  {`,
+      `    models: { providers: { kiro: {`,
+      `      baseUrl: "${addr}",`,
+      `      apiKey: "kiro-local",`,
+      `      api: "openai-completions",`,
+      `      models: [{`,
+      `        id: "kiro-default",`,
+      `        name: "Kiro (AWS Bedrock)",`,
+      `        reasoning: false,`,
+      `        input: ["text"],`,
+      `        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },`,
+      `        contextWindow: 200000,`,
+      `        maxTokens: 8192,`,
+      `      }],`,
+      `    }}},`,
+      `    agents: { defaults: { model: { primary: "kiro/kiro-default" } } },`,
+      `    gateway: { mode: "local" },`,
+      `  }`,
       ``,
     ].join("\n"),
   );
