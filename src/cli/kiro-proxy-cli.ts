@@ -8,7 +8,7 @@
  * Anthropic or OpenAI API keys.
  *
  * Quick start:
- *   1. Install and authenticate Kiro:  kiro auth login
+ *   1. Install:  curl -fsSL https://cli.kiro.dev/install | bash
  *   2. Start proxy:                    openclaw kiro-proxy
  *   3. Start gateway:                  openclaw gateway
  */
@@ -37,8 +37,8 @@ Examples:
   $ openclaw kiro-proxy --kiro-bin /usr/local/bin/kiro --kiro-args --workspace /my/project
 
 Prerequisites:
-  1. Install Kiro CLI   (see https://kiro.dev)
-  2. Authenticate       kiro auth login
+  1. Install Kiro CLI   curl -fsSL https://cli.kiro.dev/install | bash
+  2. Authenticate       kiro-cli login  (browser OAuth, free AWS Builder ID)
   3. Start proxy        openclaw kiro-proxy
   4. Start gateway      openclaw gateway
 
