@@ -98,7 +98,7 @@ export class SessionManager {
 
     // Dead or non-existent session — create a fresh one.
     if (existing) {
-      existing.session.kill();
+      existing.session.kill("replaced-dead-session");
       this.sessions.delete(sessionKey);
     }
 
@@ -127,7 +127,7 @@ export class SessionManager {
       this.gcTimer = null;
     }
     for (const { session } of this.sessions.values()) {
-      session.kill();
+      session.kill("shutdown");
     }
     this.sessions.clear();
   }
@@ -164,8 +164,14 @@ export class SessionManager {
   private gc(): void {
     const now = Date.now();
     for (const [key, { session, handle }] of this.sessions) {
-      if (!session.alive || now - handle.lastTouchedAt > this.idleMs) {
-        session.kill();
+      const idleFor = now - handle.lastTouchedAt;
+      if (!session.alive) {
+        session.kill(`gc-already-dead (idle=${Math.round(idleFor / 1000)}s)`);
+        this.sessions.delete(key);
+      } else if (idleFor > this.idleMs) {
+        session.kill(
+          `gc-idle-timeout (idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s)`,
+        );
         this.sessions.delete(key);
       }
     }
