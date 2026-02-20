@@ -57,7 +57,11 @@ export type KiroProxyOptions = {
   port?: number;
   /** Hostname to bind to. Default: 127.0.0.1 */
   host?: string;
-  /** Path to the kiro executable. Default: "kiro" */
+  /**
+   * Path to the kiro executable. Default: "kiro-cli"
+   * Kiro CLI is typically installed at ~/.local/bin/kiro-cli on Linux/macOS.
+   * Use the full path if `kiro-cli` is not on $PATH.
+   */
   kiroBin?: string;
   /**
    * Additional args passed to kiro after the "acp" sub-command.
