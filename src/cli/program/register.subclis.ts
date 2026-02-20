@@ -47,6 +47,15 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "kiro-proxy",
+    description: "Local OpenAI-compatible proxy backed by kiro CLI (ACP)",
+    hasSubcommands: false,
+    register: async (program) => {
+      const mod = await import("../kiro-proxy-cli.js");
+      mod.registerKiroProxyCli(program);
+    },
+  },
+  {
     name: "gateway",
     description: "Run, inspect, and query the WebSocket Gateway",
     hasSubcommands: true,
