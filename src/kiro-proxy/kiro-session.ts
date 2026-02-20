@@ -459,7 +459,6 @@ export class KiroSession {
     // the wrapper dies the children get reparented to init and we lose the
     // parent→child link in /proc.
     const childPids = pid != null ? getVerifiedChildPids(pid, this.log) : [];
-
     this.proc.kill("SIGTERM");
     setTimeout(() => {
       if (!this.proc.killed) {
