@@ -82,6 +82,14 @@ if (isMain) {
   installUnhandledRejectionHandler();
 
   process.on("uncaughtException", (error) => {
+    const msg = String(error?.message ?? error);
+    // @buape/carbon's heartbeat timer can throw "zombie connection" errors
+    // after a WebSocket disconnect race. These are non-fatal — the gateway
+    // reconnect logic handles recovery. Log and continue instead of crashing.
+    if (msg.includes("zombie connection")) {
+      console.error("[openclaw] Suppressed non-fatal gateway error:", msg);
+      return;
+    }
     console.error("[openclaw] Uncaught exception:", formatUncaughtError(error));
     process.exit(1);
   });

@@ -186,8 +186,8 @@ export class KiroSession {
   }
 
   /** Kill the underlying kiro process. */
-  kill(): void {
-    this.log(`killing process (pid ${this.proc.pid ?? "?"})`);
+  kill(reason?: string): void {
+    this.log(`killing process (pid ${this.proc.pid ?? "?"}) reason=${reason ?? "unknown"}`);
     this.proc.kill("SIGTERM");
     setTimeout(() => {
       if (!this.proc.killed) {

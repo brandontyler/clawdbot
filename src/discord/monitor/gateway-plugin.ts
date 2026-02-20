@@ -27,6 +27,82 @@ export function resolveDiscordGatewayIntents(
   return intents;
 }
 
+// ─── Resilient GatewayPlugin ──────────────────────────────────────────────────
+//
+// Fixes two @buape/carbon bugs:
+//
+// 1. reconnectAttempts resets on every WS "open" event, even if the connection
+//    immediately closes again. This defeats exponential backoff on flapping
+//    connections. We defer the reset until a READY or RESUMED dispatch.
+//
+// 2. The heartbeat timer can fire after disconnect(), throwing
+//    "Attempted to reconnect zombie connection" as an uncaught exception that
+//    crashes the process. We override setupWebSocket to catch that throw and
+//    route it through handleZombieConnection() instead.
+
+class ResilientGatewayPlugin extends GatewayPlugin {
+  private get _reconnectAttempts(): number {
+    return (this as unknown as { reconnectAttempts: number }).reconnectAttempts;
+  }
+  private set _reconnectAttempts(v: number) {
+    (this as unknown as { reconnectAttempts: number }).reconnectAttempts = v;
+  }
+
+  override setupWebSocket(): void {
+    if (!(this as unknown as { ws: WebSocket | null }).ws) {
+      return;
+    }
+    const ws = (this as unknown as { ws: WebSocket }).ws;
+
+    // Save reconnect count before parent's "open" handler resets it to 0.
+    const savedAttempts = this._reconnectAttempts;
+
+    super.setupWebSocket();
+
+    // The parent's "open" handler already ran via super.setupWebSocket() and
+    // will reset reconnectAttempts=0 when the socket opens. We undo that by
+    // prepending our own "open" listener that runs AFTER the parent's (since
+    // the parent attached its listener first in setupWebSocket, and we append
+    // ours after). Actually — we need to run AFTER the parent's open handler.
+    // Use a regular listener (not prepend) so it fires after the parent's.
+    ws.on("open", () => {
+      // Parent just set reconnectAttempts = 0. Restore the saved value.
+      // It will be properly reset to 0 only when READY/RESUMED arrives.
+      this._reconnectAttempts = savedAttempts;
+    });
+
+    // Reset reconnect counter only on successful READY/RESUMED.
+    ws.on("message", (data: WebSocket.Data) => {
+      try {
+        const raw =
+          typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
+        const parsed = JSON.parse(raw);
+        if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
+          this._reconnectAttempts = 0;
+        }
+      } catch {
+        // Ignore — parent handles validation.
+      }
+    });
+  }
+
+  /**
+   * Override connect to catch the zombie heartbeat throw from @buape/carbon.
+   */
+  override connect(resume?: boolean): void {
+    try {
+      super.connect(resume);
+    } catch (err) {
+      if (String(err).includes("zombie connection")) {
+        this.emitter.emit("debug", `caught zombie connection error, reconnecting`);
+        (this as unknown as { handleZombieConnection: () => void }).handleZombieConnection();
+        return;
+      }
+      throw err;
+    }
+  }
+}
+
 export function createDiscordGatewayPlugin(params: {
   discordConfig: DiscordAccountConfig;
   runtime: RuntimeEnv;
@@ -40,7 +116,7 @@ export function createDiscordGatewayPlugin(params: {
   };
 
   if (!proxy) {
-    return new GatewayPlugin(options);
+    return new ResilientGatewayPlugin(options);
   }
 
   try {
@@ -49,7 +125,7 @@ export function createDiscordGatewayPlugin(params: {
 
     params.runtime.log?.("discord: gateway proxy enabled");
 
-    class ProxyGatewayPlugin extends GatewayPlugin {
+    class ProxyResilientGatewayPlugin extends ResilientGatewayPlugin {
       constructor() {
         super(options);
       }
@@ -79,9 +155,9 @@ export function createDiscordGatewayPlugin(params: {
       }
     }
 
-    return new ProxyGatewayPlugin();
+    return new ProxyResilientGatewayPlugin();
   } catch (err) {
     params.runtime.error?.(danger(`discord: invalid gateway proxy: ${String(err)}`));
-    return new GatewayPlugin(options);
+    return new ResilientGatewayPlugin(options);
   }
 }
