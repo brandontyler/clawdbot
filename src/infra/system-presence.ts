@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import os from "node:os";
+import { pickPrimaryLanIPv4 } from "../gateway/net.js";
+import { resolveRuntimeServiceVersion } from "../version.js";
 
 export type SystemPresence = {
   host?: string;
@@ -11,6 +13,9 @@ export type SystemPresence = {
   lastInputSeconds?: number;
   mode?: string;
   reason?: string;
+  deviceId?: string;
+  roles?: string[];
+  scopes?: string[];
   instanceId?: string;
   text: string;
   ts: number;
@@ -29,37 +34,24 @@ const TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_ENTRIES = 200;
 
 function normalizePresenceKey(key: string | undefined): string | undefined {
-  if (!key) return undefined;
+  if (!key) {
+    return undefined;
+  }
   const trimmed = key.trim();
-  if (!trimmed) return undefined;
+  if (!trimmed) {
+    return undefined;
+  }
   return trimmed.toLowerCase();
 }
 
 function resolvePrimaryIPv4(): string | undefined {
-  const nets = os.networkInterfaces();
-  const prefer = ["en0", "eth0"];
-  const pick = (names: string[]) => {
-    for (const name of names) {
-      const list = nets[name];
-      const entry = list?.find((n) => n.family === "IPv4" && !n.internal);
-      if (entry?.address) return entry.address;
-    }
-    for (const list of Object.values(nets)) {
-      const entry = list?.find((n) => n.family === "IPv4" && !n.internal);
-      if (entry?.address) return entry.address;
-    }
-    return undefined;
-  };
-  return pick(prefer) ?? os.hostname();
+  return pickPrimaryLanIPv4() ?? os.hostname();
 }
 
 function initSelfPresence() {
   const host = os.hostname();
   const ip = resolvePrimaryIPv4() ?? undefined;
-  const version =
-    process.env.CLAWDBOT_VERSION ??
-    process.env.npm_package_version ??
-    "unknown";
+  const version = resolveRuntimeServiceVersion(process.env, "unknown");
   const modelIdentifier = (() => {
     const p = os.platform();
     if (p === "darwin") {
@@ -81,15 +73,25 @@ function initSelfPresence() {
   const platform = (() => {
     const p = os.platform();
     const rel = os.release();
-    if (p === "darwin") return `macos ${macOSVersion()}`;
-    if (p === "win32") return `windows ${rel}`;
+    if (p === "darwin") {
+      return `macos ${macOSVersion()}`;
+    }
+    if (p === "win32") {
+      return `windows ${rel}`;
+    }
     return `${p} ${rel}`;
   })();
   const deviceFamily = (() => {
     const p = os.platform();
-    if (p === "darwin") return "Mac";
-    if (p === "win32") return "Windows";
-    if (p === "linux") return "Linux";
+    if (p === "darwin") {
+      return "Mac";
+    }
+    if (p === "win32") {
+      return "Windows";
+    }
+    if (p === "linux") {
+      return "Linux";
+    }
     return p;
   })();
   const text = `Gateway: ${host}${ip ? ` (${ip})` : ""} · app ${version} · mode gateway · reason self`;
@@ -146,9 +148,7 @@ function parsePresence(text: string): SystemPresence {
     host: host.trim(),
     ip: ip.trim(),
     version: version.trim(),
-    lastInputSeconds: Number.isFinite(lastInputSeconds)
-      ? lastInputSeconds
-      : undefined,
+    lastInputSeconds: Number.isFinite(lastInputSeconds) ? lastInputSeconds : undefined,
     mode: mode.trim(),
     reason,
     text: trimmed,
@@ -158,6 +158,7 @@ function parsePresence(text: string): SystemPresence {
 
 type SystemPresencePayload = {
   text: string;
+  deviceId?: string;
   instanceId?: string;
   host?: string;
   ip?: string;
@@ -168,15 +169,32 @@ type SystemPresencePayload = {
   lastInputSeconds?: number;
   mode?: string;
   reason?: string;
+  roles?: string[];
+  scopes?: string[];
   tags?: string[];
 };
 
-export function updateSystemPresence(
-  payload: SystemPresencePayload,
-): SystemPresenceUpdate {
+function mergeStringList(...values: Array<string[] | undefined>): string[] | undefined {
+  const out = new Set<string>();
+  for (const list of values) {
+    if (!Array.isArray(list)) {
+      continue;
+    }
+    for (const item of list) {
+      const trimmed = String(item).trim();
+      if (trimmed) {
+        out.add(trimmed);
+      }
+    }
+  }
+  return out.size > 0 ? [...out] : undefined;
+}
+
+export function updateSystemPresence(payload: SystemPresencePayload): SystemPresenceUpdate {
   ensureSelfPresence();
   const parsed = parsePresence(payload.text);
   const key =
+    normalizePresenceKey(payload.deviceId) ||
     normalizePresenceKey(payload.instanceId) ||
     normalizePresenceKey(parsed.instanceId) ||
     normalizePresenceKey(parsed.host) ||
@@ -196,10 +214,11 @@ export function updateSystemPresence(
     modelIdentifier: payload.modelIdentifier ?? existing.modelIdentifier,
     mode: payload.mode ?? parsed.mode ?? existing.mode,
     lastInputSeconds:
-      payload.lastInputSeconds ??
-      parsed.lastInputSeconds ??
-      existing.lastInputSeconds,
+      payload.lastInputSeconds ?? parsed.lastInputSeconds ?? existing.lastInputSeconds,
     reason: payload.reason ?? parsed.reason ?? existing.reason,
+    deviceId: payload.deviceId ?? existing.deviceId,
+    roles: mergeStringList(existing.roles, payload.roles),
+    scopes: mergeStringList(existing.scopes, payload.scopes),
     instanceId: payload.instanceId ?? parsed.instanceId ?? existing.instanceId,
     text: payload.text || parsed.text || existing.text,
     ts: Date.now(),
@@ -228,12 +247,15 @@ export function updateSystemPresence(
 
 export function upsertPresence(key: string, presence: Partial<SystemPresence>) {
   ensureSelfPresence();
-  const normalizedKey =
-    normalizePresenceKey(key) ?? os.hostname().toLowerCase();
+  const normalizedKey = normalizePresenceKey(key) ?? os.hostname().toLowerCase();
   const existing = entries.get(normalizedKey) ?? ({} as SystemPresence);
+  const roles = mergeStringList(existing.roles, presence.roles);
+  const scopes = mergeStringList(existing.scopes, presence.scopes);
   const merged: SystemPresence = {
     ...existing,
     ...presence,
+    roles,
+    scopes,
     ts: Date.now(),
     text:
       presence.text ||
@@ -250,16 +272,18 @@ export function listSystemPresence(): SystemPresence[] {
   // prune expired
   const now = Date.now();
   for (const [k, v] of entries) {
-    if (now - v.ts > TTL_MS) entries.delete(k);
+    if (now - v.ts > TTL_MS) {
+      entries.delete(k);
+    }
   }
   // enforce max size (LRU by ts)
   if (entries.size > MAX_ENTRIES) {
-    const sorted = [...entries.entries()].sort((a, b) => a[1].ts - b[1].ts);
+    const sorted = [...entries.entries()].toSorted((a, b) => a[1].ts - b[1].ts);
     const toDrop = entries.size - MAX_ENTRIES;
     for (let i = 0; i < toDrop; i++) {
       entries.delete(sorted[i][0]);
     }
   }
   touchSelfPresence();
-  return [...entries.values()].sort((a, b) => b.ts - a.ts);
+  return [...entries.values()].toSorted((a, b) => b.ts - a.ts);
 }

@@ -1,7 +1,8 @@
+import OpenClawKit
 import SwiftUI
 import Testing
 import UIKit
-@testable import Clawdbot
+@testable import OpenClaw
 
 @Suite struct SwiftUIRenderSmokeTests {
     @MainActor private static func host(_ view: some View) -> UIWindow {
@@ -14,35 +15,35 @@ import UIKit
     }
 
     @Test @MainActor func statusPillConnectingBuildsAViewHierarchy() {
-        let root = StatusPill(bridge: .connecting, voiceWakeEnabled: true, brighten: true) {}
+        let root = StatusPill(gateway: .connecting, voiceWakeEnabled: true, brighten: true) {}
         _ = Self.host(root)
     }
 
     @Test @MainActor func statusPillDisconnectedBuildsAViewHierarchy() {
-        let root = StatusPill(bridge: .disconnected, voiceWakeEnabled: false) {}
+        let root = StatusPill(gateway: .disconnected, voiceWakeEnabled: false) {}
         _ = Self.host(root)
     }
 
     @Test @MainActor func settingsTabBuildsAViewHierarchy() {
         let appModel = NodeAppModel()
-        let bridgeController = BridgeConnectionController(appModel: appModel, startDiscovery: false)
+        let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
 
         let root = SettingsTab()
             .environment(appModel)
             .environment(appModel.voiceWake)
-            .environment(bridgeController)
+            .environment(gatewayController)
 
         _ = Self.host(root)
     }
 
     @Test @MainActor func rootTabsBuildAViewHierarchy() {
         let appModel = NodeAppModel()
-        let bridgeController = BridgeConnectionController(appModel: appModel, startDiscovery: false)
+        let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
 
         let root = RootTabs()
             .environment(appModel)
             .environment(appModel.voiceWake)
-            .environment(bridgeController)
+            .environment(gatewayController)
 
         _ = Self.host(root)
     }
@@ -66,15 +67,15 @@ import UIKit
 
     @Test @MainActor func chatSheetBuildsAViewHierarchy() {
         let appModel = NodeAppModel()
-        let bridge = BridgeSession()
-        let root = ChatSheet(bridge: bridge, sessionKey: "test")
+        let gateway = GatewayNodeSession()
+        let root = ChatSheet(gateway: gateway, sessionKey: "test")
             .environment(appModel)
             .environment(appModel.voiceWake)
         _ = Self.host(root)
     }
 
     @Test @MainActor func voiceWakeToastBuildsAViewHierarchy() {
-        let root = VoiceWakeToast(command: "clawdbot: do something")
+        let root = VoiceWakeToast(command: "openclaw: do something")
         _ = Self.host(root)
     }
 }

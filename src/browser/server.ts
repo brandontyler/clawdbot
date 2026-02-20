@@ -1,56 +1,67 @@
 import type { Server } from "node:http";
 import express from "express";
-
 import { loadConfig } from "../config/config.js";
-import { createSubsystemLogger } from "../logging.js";
-import {
-  resolveBrowserConfig,
-  shouldStartLocalBrowserServer,
-} from "./config.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { resolveBrowserConfig } from "./config.js";
+import { ensureBrowserControlAuth, resolveBrowserControlAuth } from "./control-auth.js";
+import { isPwAiLoaded } from "./pw-ai-state.js";
 import { registerBrowserRoutes } from "./routes/index.js";
+import type { BrowserRouteRegistrar } from "./routes/types.js";
+import { type BrowserServerState, createBrowserRouteContext } from "./server-context.js";
+import { ensureExtensionRelayForProfiles, stopKnownBrowserProfiles } from "./server-lifecycle.js";
 import {
-  type BrowserServerState,
-  createBrowserRouteContext,
-} from "./server-context.js";
+  installBrowserAuthMiddleware,
+  installBrowserCommonMiddleware,
+} from "./server-middleware.js";
 
 let state: BrowserServerState | null = null;
 const log = createSubsystemLogger("browser");
 const logServer = log.child("server");
 
 export async function startBrowserControlServerFromConfig(): Promise<BrowserServerState | null> {
-  if (state) return state;
+  if (state) {
+    return state;
+  }
 
   const cfg = loadConfig();
-  const resolved = resolveBrowserConfig(cfg.browser);
-  if (!resolved.enabled) return null;
-
-  if (!shouldStartLocalBrowserServer(resolved)) {
-    logServer.info(
-      `browser control URL is non-loopback (${resolved.controlUrl}); skipping local server start`,
-    );
+  const resolved = resolveBrowserConfig(cfg.browser, cfg);
+  if (!resolved.enabled) {
     return null;
   }
 
+  let browserAuth = resolveBrowserControlAuth(cfg);
+  try {
+    const ensured = await ensureBrowserControlAuth({ cfg });
+    browserAuth = ensured.auth;
+    if (ensured.generatedToken) {
+      logServer.info("No browser auth configured; generated gateway.auth.token automatically.");
+    }
+  } catch (err) {
+    logServer.warn(`failed to auto-configure browser auth: ${String(err)}`);
+  }
+
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
+  installBrowserCommonMiddleware(app);
+  installBrowserAuthMiddleware(app, browserAuth);
 
   const ctx = createBrowserRouteContext({
     getState: () => state,
+    refreshConfigFromDisk: true,
   });
-  registerBrowserRoutes(app, ctx);
+  registerBrowserRoutes(app as unknown as BrowserRouteRegistrar, ctx);
 
   const port = resolved.controlPort;
   const server = await new Promise<Server>((resolve, reject) => {
     const s = app.listen(port, "127.0.0.1", () => resolve(s));
     s.once("error", reject);
   }).catch((err) => {
-    logServer.error(
-      `clawd browser server failed to bind 127.0.0.1:${port}: ${String(err)}`,
-    );
+    logServer.error(`openclaw browser server failed to bind 127.0.0.1:${port}: ${String(err)}`);
     return null;
   });
 
-  if (!server) return null;
+  if (!server) {
+    return null;
+  }
 
   state = {
     server,
@@ -59,43 +70,41 @@ export async function startBrowserControlServerFromConfig(): Promise<BrowserServ
     profiles: new Map(),
   };
 
-  logServer.info(`Browser control listening on http://127.0.0.1:${port}/`);
+  await ensureExtensionRelayForProfiles({
+    resolved,
+    onWarn: (message) => logServer.warn(message),
+  });
+
+  const authMode = browserAuth.token ? "token" : browserAuth.password ? "password" : "off";
+  logServer.info(`Browser control listening on http://127.0.0.1:${port}/ (auth=${authMode})`);
   return state;
 }
 
 export async function stopBrowserControlServer(): Promise<void> {
   const current = state;
-  if (!current) return;
-
-  const ctx = createBrowserRouteContext({
-    getState: () => state,
-  });
-
-  try {
-    const current = state;
-    if (current) {
-      for (const name of Object.keys(current.resolved.profiles)) {
-        try {
-          await ctx.forProfile(name).stopRunningBrowser();
-        } catch {
-          // ignore
-        }
-      }
-    }
-  } catch (err) {
-    logServer.warn(`clawd browser stop failed: ${String(err)}`);
+  if (!current) {
+    return;
   }
 
-  await new Promise<void>((resolve) => {
-    current.server.close(() => resolve());
+  await stopKnownBrowserProfiles({
+    getState: () => state,
+    onWarn: (message) => logServer.warn(message),
   });
+
+  if (current.server) {
+    await new Promise<void>((resolve) => {
+      current.server?.close(() => resolve());
+    });
+  }
   state = null;
 
-  // Optional: Playwright is not always available (e.g. embedded gateway builds).
-  try {
-    const mod = await import("./pw-ai.js");
-    await mod.closePlaywrightBrowserConnection();
-  } catch {
-    // ignore
+  // Optional: avoid importing heavy Playwright bridge when this process never used it.
+  if (isPwAiLoaded()) {
+    try {
+      const mod = await import("./pw-ai.js");
+      await mod.closePlaywrightBrowserConnection();
+    } catch {
+      // ignore
+    }
   }
 }

@@ -1,4 +1,4 @@
-import ClawdbotKit
+import OpenClawKit
 import CoreLocation
 import Foundation
 
@@ -12,6 +12,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var authContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
     private var locationContinuation: CheckedContinuation<CLLocation, Swift.Error>?
+    private var updatesContinuation: AsyncStream<CLLocation>.Continuation?
+    private var isStreaming = false
+    private var significantLocationCallback: (@Sendable (CLLocation) -> Void)?
+    private var isMonitoringSignificantChanges = false
 
     override init() {
         super.init()
@@ -30,7 +34,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         return .fullAccuracy
     }
 
-    func ensureAuthorization(mode: ClawdbotLocationMode) async -> CLAuthorizationStatus {
+    func ensureAuthorization(mode: OpenClawLocationMode) async -> CLAuthorizationStatus {
         guard CLLocationManager.locationServicesEnabled() else { return .denied }
 
         let status = self.manager.authorizationStatus
@@ -53,8 +57,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     }
 
     func currentLocation(
-        params: ClawdbotLocationGetParams,
-        desiredAccuracy: ClawdbotLocationAccuracy,
+        params: OpenClawLocationGetParams,
+        desiredAccuracy: OpenClawLocationAccuracy,
         maxAgeMs: Int?,
         timeoutMs: Int?) async throws -> CLLocation
     {
@@ -86,27 +90,14 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    private func withTimeout<T>(
+    private func withTimeout<T: Sendable>(
         timeoutMs: Int,
-        operation: @escaping () async throws -> T) async throws -> T
+        operation: @escaping @Sendable () async throws -> T) async throws -> T
     {
-        if timeoutMs == 0 {
-            return try await operation()
-        }
-
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-                throw Error.timeout
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
+        try await AsyncTimeout.withTimeoutMs(timeoutMs: timeoutMs, onTimeout: { Error.timeout }, operation: operation)
     }
 
-    private static func accuracyValue(_ accuracy: ClawdbotLocationAccuracy) -> CLLocationAccuracy {
+    private static func accuracyValue(_ accuracy: OpenClawLocationAccuracy) -> CLLocationAccuracy {
         switch accuracy {
         case .coarse:
             kCLLocationAccuracyKilometer
@@ -117,26 +108,95 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if let cont = self.authContinuation {
-            self.authContinuation = nil
-            cont.resume(returning: manager.authorizationStatus)
-        }
-    }
+    func startLocationUpdates(
+        desiredAccuracy: OpenClawLocationAccuracy,
+        significantChangesOnly: Bool) -> AsyncStream<CLLocation>
+    {
+        self.stopLocationUpdates()
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let cont = self.locationContinuation else { return }
-        self.locationContinuation = nil
-        if let latest = locations.last {
-            cont.resume(returning: latest)
+        self.manager.desiredAccuracy = Self.accuracyValue(desiredAccuracy)
+        self.manager.pausesLocationUpdatesAutomatically = true
+        self.manager.allowsBackgroundLocationUpdates = true
+
+        self.isStreaming = true
+        if significantChangesOnly {
+            self.manager.startMonitoringSignificantLocationChanges()
         } else {
-            cont.resume(throwing: Error.unavailable)
+            self.manager.startUpdatingLocation()
+        }
+
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            self.updatesContinuation = continuation
+            continuation.onTermination = { @Sendable _ in
+                Task { @MainActor in
+                    self.stopLocationUpdates()
+                }
+            }
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Swift.Error) {
-        guard let cont = self.locationContinuation else { return }
-        self.locationContinuation = nil
-        cont.resume(throwing: error)
+    func stopLocationUpdates() {
+        guard self.isStreaming else { return }
+        self.isStreaming = false
+        self.manager.stopUpdatingLocation()
+        self.manager.stopMonitoringSignificantLocationChanges()
+        self.updatesContinuation?.finish()
+        self.updatesContinuation = nil
+    }
+
+    func startMonitoringSignificantLocationChanges(onUpdate: @escaping @Sendable (CLLocation) -> Void) {
+        self.significantLocationCallback = onUpdate
+        guard !self.isMonitoringSignificantChanges else { return }
+        self.isMonitoringSignificantChanges = true
+        self.manager.startMonitoringSignificantLocationChanges()
+    }
+
+    func stopMonitoringSignificantLocationChanges() {
+        guard self.isMonitoringSignificantChanges else { return }
+        self.isMonitoringSignificantChanges = false
+        self.significantLocationCallback = nil
+        self.manager.stopMonitoringSignificantLocationChanges()
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor in
+            if let cont = self.authContinuation {
+                self.authContinuation = nil
+                cont.resume(returning: status)
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        let locs = locations
+        Task { @MainActor in
+            // Resolve the one-shot continuation first (if any).
+            if let cont = self.locationContinuation {
+                self.locationContinuation = nil
+                if let latest = locs.last {
+                    cont.resume(returning: latest)
+                } else {
+                    cont.resume(throwing: Error.unavailable)
+                }
+                // Don't return — also forward to significant-change callback below
+                // so both consumers receive updates when both are active.
+            }
+            if let callback = self.significantLocationCallback, let latest = locs.last {
+                callback(latest)
+            }
+            if let latest = locs.last, let updates = self.updatesContinuation {
+                updates.yield(latest)
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Swift.Error) {
+        let err = error
+        Task { @MainActor in
+            guard let cont = self.locationContinuation else { return }
+            self.locationContinuation = nil
+            cont.resume(throwing: err)
+        }
     }
 }

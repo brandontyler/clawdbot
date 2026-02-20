@@ -5,7 +5,9 @@ enum VoiceWakePreferences {
     static let triggerWordsKey = "voiceWake.triggerWords"
 
     // Keep defaults aligned with the mac app.
-    static let defaultTriggerWords: [String] = ["clawd", "claude"]
+    static let defaultTriggerWords: [String] = ["openclaw", "claude"]
+    static let maxWords = 32
+    static let maxWordLength = 64
 
     static func decodeGatewayTriggers(from payloadJSON: String) -> [String]? {
         guard let data = payloadJSON.data(using: .utf8) else { return nil }
@@ -30,6 +32,8 @@ enum VoiceWakePreferences {
         let cleaned = words
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+            .prefix(Self.maxWords)
+            .map { String($0.prefix(Self.maxWordLength)) }
         return cleaned.isEmpty ? Self.defaultTriggerWords : cleaned
     }
 

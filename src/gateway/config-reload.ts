@@ -1,23 +1,15 @@
 import chokidar from "chokidar";
-
-import type {
-  ClawdbotConfig,
-  ConfigFileSnapshot,
-  GatewayReloadMode,
-} from "../config/config.js";
+import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
+import type { OpenClawConfig, ConfigFileSnapshot, GatewayReloadMode } from "../config/config.js";
+import { getActivePluginRegistry } from "../plugins/runtime.js";
+import { isPlainObject } from "../utils.js";
 
 export type GatewayReloadSettings = {
   mode: GatewayReloadMode;
   debounceMs: number;
 };
 
-export type ProviderKind =
-  | "whatsapp"
-  | "telegram"
-  | "discord"
-  | "slack"
-  | "signal"
-  | "imessage";
+export type ChannelKind = ChannelId;
 
 export type GatewayReloadPlan = {
   changedPaths: string[];
@@ -29,7 +21,7 @@ export type GatewayReloadPlan = {
   restartBrowserControl: boolean;
   restartCron: boolean;
   restartHeartbeat: boolean;
-  restartProviders: Set<ProviderKind>;
+  restartChannels: Set<ChannelKind>;
   noopPaths: string[];
 };
 
@@ -45,23 +37,23 @@ type ReloadAction =
   | "restart-browser-control"
   | "restart-cron"
   | "restart-heartbeat"
-  | "restart-provider:whatsapp"
-  | "restart-provider:telegram"
-  | "restart-provider:discord"
-  | "restart-provider:slack"
-  | "restart-provider:signal"
-  | "restart-provider:imessage";
+  | `restart-channel:${ChannelId}`;
 
 const DEFAULT_RELOAD_SETTINGS: GatewayReloadSettings = {
   mode: "hybrid",
   debounceMs: 300,
 };
 
-const RELOAD_RULES: ReloadRule[] = [
+const BASE_RELOAD_RULES: ReloadRule[] = [
   { prefix: "gateway.remote", kind: "none" },
   { prefix: "gateway.reload", kind: "none" },
   { prefix: "hooks.gmail", kind: "hot", actions: ["restart-gmail-watcher"] },
   { prefix: "hooks", kind: "hot", actions: ["reload-hooks"] },
+  {
+    prefix: "agents.defaults.heartbeat",
+    kind: "hot",
+    actions: ["restart-heartbeat"],
+  },
   { prefix: "agent.heartbeat", kind: "hot", actions: ["restart-heartbeat"] },
   { prefix: "cron", kind: "hot", actions: ["restart-cron"] },
   {
@@ -69,59 +61,86 @@ const RELOAD_RULES: ReloadRule[] = [
     kind: "hot",
     actions: ["restart-browser-control"],
   },
-  { prefix: "web", kind: "hot", actions: ["restart-provider:whatsapp"] },
-  { prefix: "telegram", kind: "hot", actions: ["restart-provider:telegram"] },
-  { prefix: "discord", kind: "hot", actions: ["restart-provider:discord"] },
-  { prefix: "slack", kind: "hot", actions: ["restart-provider:slack"] },
-  { prefix: "signal", kind: "hot", actions: ["restart-provider:signal"] },
-  { prefix: "imessage", kind: "hot", actions: ["restart-provider:imessage"] },
+];
+
+const BASE_RELOAD_RULES_TAIL: ReloadRule[] = [
+  { prefix: "meta", kind: "none" },
   { prefix: "identity", kind: "none" },
   { prefix: "wizard", kind: "none" },
   { prefix: "logging", kind: "none" },
   { prefix: "models", kind: "none" },
+  { prefix: "agents", kind: "none" },
+  { prefix: "tools", kind: "none" },
+  { prefix: "bindings", kind: "none" },
+  { prefix: "audio", kind: "none" },
   { prefix: "agent", kind: "none" },
   { prefix: "routing", kind: "none" },
   { prefix: "messages", kind: "none" },
   { prefix: "session", kind: "none" },
-  { prefix: "whatsapp", kind: "none" },
   { prefix: "talk", kind: "none" },
   { prefix: "skills", kind: "none" },
+  { prefix: "plugins", kind: "restart" },
   { prefix: "ui", kind: "none" },
   { prefix: "gateway", kind: "restart" },
-  { prefix: "bridge", kind: "restart" },
   { prefix: "discovery", kind: "restart" },
   { prefix: "canvasHost", kind: "restart" },
 ];
 
+let cachedReloadRules: ReloadRule[] | null = null;
+let cachedRegistry: ReturnType<typeof getActivePluginRegistry> | null = null;
+
+function listReloadRules(): ReloadRule[] {
+  const registry = getActivePluginRegistry();
+  if (registry !== cachedRegistry) {
+    cachedReloadRules = null;
+    cachedRegistry = registry;
+  }
+  if (cachedReloadRules) {
+    return cachedReloadRules;
+  }
+  // Channel docking: plugins contribute hot reload/no-op prefixes here.
+  const channelReloadRules: ReloadRule[] = listChannelPlugins().flatMap((plugin) => [
+    ...(plugin.reload?.configPrefixes ?? []).map(
+      (prefix): ReloadRule => ({
+        prefix,
+        kind: "hot",
+        actions: [`restart-channel:${plugin.id}` as ReloadAction],
+      }),
+    ),
+    ...(plugin.reload?.noopPrefixes ?? []).map(
+      (prefix): ReloadRule => ({
+        prefix,
+        kind: "none",
+      }),
+    ),
+  ]);
+  const rules = [...BASE_RELOAD_RULES, ...channelReloadRules, ...BASE_RELOAD_RULES_TAIL];
+  cachedReloadRules = rules;
+  return rules;
+}
+
 function matchRule(path: string): ReloadRule | null {
-  for (const rule of RELOAD_RULES) {
-    if (path === rule.prefix || path.startsWith(`${rule.prefix}.`)) return rule;
+  for (const rule of listReloadRules()) {
+    if (path === rule.prefix || path.startsWith(`${rule.prefix}.`)) {
+      return rule;
+    }
   }
   return null;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      Object.prototype.toString.call(value) === "[object Object]",
-  );
-}
-
-export function diffConfigPaths(
-  prev: unknown,
-  next: unknown,
-  prefix = "",
-): string[] {
-  if (prev === next) return [];
+export function diffConfigPaths(prev: unknown, next: unknown, prefix = ""): string[] {
+  if (prev === next) {
+    return [];
+  }
   if (isPlainObject(prev) && isPlainObject(next)) {
     const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
     const paths: string[] = [];
     for (const key of keys) {
       const prevValue = prev[key];
       const nextValue = next[key];
-      if (prevValue === undefined && nextValue === undefined) continue;
+      if (prevValue === undefined && nextValue === undefined) {
+        continue;
+      }
       const childPrefix = prefix ? `${prefix}.${key}` : key;
       const childPaths = diffConfigPaths(prevValue, nextValue, childPrefix);
       if (childPaths.length > 0) {
@@ -131,25 +150,17 @@ export function diffConfigPaths(
     return paths;
   }
   if (Array.isArray(prev) && Array.isArray(next)) {
-    if (
-      prev.length === next.length &&
-      prev.every((val, idx) => val === next[idx])
-    ) {
+    if (prev.length === next.length && prev.every((val, idx) => val === next[idx])) {
       return [];
     }
   }
   return [prefix || "<root>"];
 }
 
-export function resolveGatewayReloadSettings(
-  cfg: ClawdbotConfig,
-): GatewayReloadSettings {
+export function resolveGatewayReloadSettings(cfg: OpenClawConfig): GatewayReloadSettings {
   const rawMode = cfg.gateway?.reload?.mode;
   const mode =
-    rawMode === "off" ||
-    rawMode === "restart" ||
-    rawMode === "hot" ||
-    rawMode === "hybrid"
+    rawMode === "off" || rawMode === "restart" || rawMode === "hot" || rawMode === "hybrid"
       ? rawMode
       : DEFAULT_RELOAD_SETTINGS.mode;
   const debounceRaw = cfg.gateway?.reload?.debounceMs;
@@ -160,9 +171,7 @@ export function resolveGatewayReloadSettings(
   return { mode, debounceMs };
 }
 
-export function buildGatewayReloadPlan(
-  changedPaths: string[],
-): GatewayReloadPlan {
+export function buildGatewayReloadPlan(changedPaths: string[]): GatewayReloadPlan {
   const plan: GatewayReloadPlan = {
     changedPaths,
     restartGateway: false,
@@ -173,11 +182,16 @@ export function buildGatewayReloadPlan(
     restartBrowserControl: false,
     restartCron: false,
     restartHeartbeat: false,
-    restartProviders: new Set(),
+    restartChannels: new Set(),
     noopPaths: [],
   };
 
   const applyAction = (action: ReloadAction) => {
+    if (action.startsWith("restart-channel:")) {
+      const channel = action.slice("restart-channel:".length) as ChannelId;
+      plan.restartChannels.add(channel);
+      return;
+    }
     switch (action) {
       case "reload-hooks":
         plan.reloadHooks = true;
@@ -193,24 +207,6 @@ export function buildGatewayReloadPlan(
         break;
       case "restart-heartbeat":
         plan.restartHeartbeat = true;
-        break;
-      case "restart-provider:whatsapp":
-        plan.restartProviders.add("whatsapp");
-        break;
-      case "restart-provider:telegram":
-        plan.restartProviders.add("telegram");
-        break;
-      case "restart-provider:discord":
-        plan.restartProviders.add("discord");
-        break;
-      case "restart-provider:slack":
-        plan.restartProviders.add("slack");
-        break;
-      case "restart-provider:signal":
-        plan.restartProviders.add("signal");
-        break;
-      case "restart-provider:imessage":
-        plan.restartProviders.add("imessage");
         break;
       default:
         break;
@@ -251,13 +247,10 @@ export type GatewayConfigReloader = {
 };
 
 export function startGatewayConfigReloader(opts: {
-  initialConfig: ClawdbotConfig;
+  initialConfig: OpenClawConfig;
   readSnapshot: () => Promise<ConfigFileSnapshot>;
-  onHotReload: (
-    plan: GatewayReloadPlan,
-    nextConfig: ClawdbotConfig,
-  ) => Promise<void>;
-  onRestart: (plan: GatewayReloadPlan, nextConfig: ClawdbotConfig) => void;
+  onHotReload: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
+  onRestart: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
   log: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -274,8 +267,12 @@ export function startGatewayConfigReloader(opts: {
   let restartQueued = false;
 
   const schedule = () => {
-    if (stopped) return;
-    if (debounceTimer) clearTimeout(debounceTimer);
+    if (stopped) {
+      return;
+    }
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
     const wait = settings.debounceMs;
     debounceTimer = setTimeout(() => {
       void runReload();
@@ -283,7 +280,9 @@ export function startGatewayConfigReloader(opts: {
   };
 
   const runReload = async () => {
-    if (stopped) return;
+    if (stopped) {
+      return;
+    }
     if (running) {
       pending = true;
       return;
@@ -296,9 +295,7 @@ export function startGatewayConfigReloader(opts: {
     try {
       const snapshot = await opts.readSnapshot();
       if (!snapshot.valid) {
-        const issues = snapshot.issues
-          .map((issue) => `${issue.path}: ${issue.message}`)
-          .join(", ");
+        const issues = snapshot.issues.map((issue) => `${issue.path}: ${issue.message}`).join(", ");
         opts.log.warn(`config reload skipped (invalid config): ${issues}`);
         return;
       }
@@ -306,8 +303,11 @@ export function startGatewayConfigReloader(opts: {
       const changedPaths = diffConfigPaths(currentConfig, nextConfig);
       currentConfig = nextConfig;
       settings = resolveGatewayReloadSettings(nextConfig);
-      if (changedPaths.length === 0) return;
+      if (changedPaths.length === 0) {
+        return;
+      }
 
+      opts.log.info(`config change detected; evaluating reload (${changedPaths.join(", ")})`);
       const plan = buildGatewayReloadPlan(changedPaths);
       if (settings.mode === "off") {
         opts.log.info("config reload disabled (gateway.reload.mode=off)");
@@ -351,20 +351,30 @@ export function startGatewayConfigReloader(opts: {
   const watcher = chokidar.watch(opts.watchPath, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+    usePolling: Boolean(process.env.VITEST),
   });
 
   watcher.on("add", schedule);
   watcher.on("change", schedule);
   watcher.on("unlink", schedule);
+  let watcherClosed = false;
   watcher.on("error", (err) => {
+    if (watcherClosed) {
+      return;
+    }
+    watcherClosed = true;
     opts.log.warn(`config watcher error: ${String(err)}`);
+    void watcher.close().catch(() => {});
   });
 
   return {
     stop: async () => {
       stopped = true;
-      if (debounceTimer) clearTimeout(debounceTimer);
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
       debounceTimer = null;
+      watcherClosed = true;
       await watcher.close().catch(() => {});
     },
   };

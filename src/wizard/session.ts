@@ -1,10 +1,5 @@
 import { randomUUID } from "node:crypto";
-
-import {
-  WizardCancelledError,
-  type WizardProgress,
-  type WizardPrompter,
-} from "./prompts.js";
+import { WizardCancelledError, type WizardProgress, type WizardPrompter } from "./prompts.js";
 
 export type WizardStepOption = {
   value: unknown;
@@ -14,14 +9,7 @@ export type WizardStepOption = {
 
 export type WizardStep = {
   id: string;
-  type:
-    | "note"
-    | "select"
-    | "text"
-    | "confirm"
-    | "multiselect"
-    | "progress"
-    | "action";
+  type: "note" | "select" | "text" | "confirm" | "multiselect" | "progress" | "action";
   title?: string;
   message?: string;
   options?: WizardStepOption[];
@@ -137,9 +125,7 @@ class WizardSessionPrompter implements WizardPrompter {
         ? ""
         : typeof res === "string"
           ? res
-          : typeof res === "number" ||
-              typeof res === "boolean" ||
-              typeof res === "bigint"
+          : typeof res === "number" || typeof res === "boolean" || typeof res === "bigint"
             ? String(res)
             : "";
     const error = params.validate?.(value);
@@ -149,10 +135,7 @@ class WizardSessionPrompter implements WizardPrompter {
     return value;
   }
 
-  async confirm(params: {
-    message: string;
-    initialValue?: boolean;
-  }): Promise<boolean> {
+  async confirm(params: { message: string; initialValue?: boolean }): Promise<boolean> {
     const res = await this.prompt({
       type: "confirm",
       message: params.message,
@@ -217,7 +200,9 @@ export class WizardSession {
   }
 
   cancel() {
-    if (this.status !== "running") return;
+    if (this.status !== "running") {
+      return;
+    }
     this.status = "cancelled";
     this.error = "cancelled";
     this.currentStep = null;
@@ -261,7 +246,9 @@ export class WizardSession {
   }
 
   private resolveStep(step: WizardStep | null) {
-    if (!this.stepDeferred) return;
+    if (!this.stepDeferred) {
+      return;
+    }
     const deferred = this.stepDeferred;
     this.stepDeferred = null;
     deferred.resolve(step);

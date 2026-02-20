@@ -1,26 +1,26 @@
+import type { BaseProbeResult } from "../channels/plugins/types.js";
 import { signalCheck, signalRpcRequest } from "./client.js";
 
-export type SignalProbe = {
-  ok: boolean;
+export type SignalProbe = BaseProbeResult & {
   status?: number | null;
-  error?: string | null;
   elapsedMs: number;
   version?: string | null;
 };
 
 function parseSignalVersion(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
   if (typeof value === "object" && value !== null) {
     const version = (value as { version?: unknown }).version;
-    if (typeof version === "string" && version.trim()) return version.trim();
+    if (typeof version === "string" && version.trim()) {
+      return version.trim();
+    }
   }
   return null;
 }
 
-export async function probeSignal(
-  baseUrl: string,
-  timeoutMs: number,
-): Promise<SignalProbe> {
+export async function probeSignal(baseUrl: string, timeoutMs: number): Promise<SignalProbe> {
   const started = Date.now();
   const result: SignalProbe = {
     ok: false,
@@ -39,7 +39,7 @@ export async function probeSignal(
     };
   }
   try {
-    const version = await signalRpcRequest<unknown>("version", undefined, {
+    const version = await signalRpcRequest("version", undefined, {
       baseUrl,
       timeoutMs,
     });

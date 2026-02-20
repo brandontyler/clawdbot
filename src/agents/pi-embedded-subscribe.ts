@@ -1,190 +1,353 @@
-import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
-
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
+import { createStreamingDirectiveAccumulator } from "../auto-reply/reply/streaming-directives.js";
 import { formatToolAggregate } from "../auto-reply/tool-meta.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
-import { createSubsystemLogger } from "../logging.js";
-import { splitMediaFromOutput } from "../media/parse.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import type { InlineCodeState } from "../markdown/code-spans.js";
+import { buildCodeSpanIndex, createInlineCodeState } from "../markdown/code-spans.js";
+import { EmbeddedBlockChunker } from "./pi-embedded-block-chunker.js";
 import {
-  extractAssistantText,
-  inferToolMetaFromArgs,
-} from "./pi-embedded-utils.js";
+  isMessagingToolDuplicateNormalized,
+  normalizeTextForComparison,
+} from "./pi-embedded-helpers.js";
+import { createEmbeddedPiSessionEventHandler } from "./pi-embedded-subscribe.handlers.js";
+import type {
+  EmbeddedPiSubscribeContext,
+  EmbeddedPiSubscribeState,
+} from "./pi-embedded-subscribe.handlers.types.js";
+import type { SubscribeEmbeddedPiSessionParams } from "./pi-embedded-subscribe.types.js";
+import { formatReasoningMessage, stripDowngradedToolCallText } from "./pi-embedded-utils.js";
+import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "./usage.js";
 
-const THINKING_TAG_RE = /<\s*\/?\s*think(?:ing)?\s*>/gi;
-const THINKING_OPEN_RE = /<\s*think(?:ing)?\s*>/i;
-const THINKING_CLOSE_RE = /<\s*\/\s*think(?:ing)?\s*>/i;
-const TOOL_RESULT_MAX_CHARS = 8000;
+const THINKING_TAG_SCAN_RE = /<\s*(\/?)\s*(?:think(?:ing)?|thought|antthinking)\s*>/gi;
+const FINAL_TAG_SCAN_RE = /<\s*(\/?)\s*final\s*>/gi;
 const log = createSubsystemLogger("agent/embedded");
 
-export type BlockReplyChunking = {
-  minChars: number;
-  maxChars: number;
-  breakPreference?: "paragraph" | "newline" | "sentence";
-};
+export type {
+  BlockReplyChunking,
+  SubscribeEmbeddedPiSessionParams,
+  ToolResultFormat,
+} from "./pi-embedded-subscribe.types.js";
 
-function truncateToolText(text: string): string {
-  if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
-  return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n…(truncated)…`;
-}
+export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionParams) {
+  const reasoningMode = params.reasoningMode ?? "off";
+  const toolResultFormat = params.toolResultFormat ?? "markdown";
+  const useMarkdown = toolResultFormat === "markdown";
+  const state: EmbeddedPiSubscribeState = {
+    assistantTexts: [],
+    toolMetas: [],
+    toolMetaById: new Map(),
+    toolSummaryById: new Set(),
+    lastToolError: undefined,
+    blockReplyBreak: params.blockReplyBreak ?? "text_end",
+    reasoningMode,
+    includeReasoning: reasoningMode === "on",
+    shouldEmitPartialReplies: !(reasoningMode === "on" && !params.onBlockReply),
+    streamReasoning: reasoningMode === "stream" && typeof params.onReasoningStream === "function",
+    deltaBuffer: "",
+    blockBuffer: "",
+    // Track if a streamed chunk opened a <think> block (stateful across chunks).
+    blockState: { thinking: false, final: false, inlineCode: createInlineCodeState() },
+    partialBlockState: { thinking: false, final: false, inlineCode: createInlineCodeState() },
+    lastStreamedAssistant: undefined,
+    lastStreamedAssistantCleaned: undefined,
+    emittedAssistantUpdate: false,
+    lastStreamedReasoning: undefined,
+    lastBlockReplyText: undefined,
+    reasoningStreamOpen: false,
+    assistantMessageIndex: 0,
+    lastAssistantTextMessageIndex: -1,
+    lastAssistantTextNormalized: undefined,
+    lastAssistantTextTrimmed: undefined,
+    assistantTextBaseline: 0,
+    suppressBlockChunks: false, // Avoid late chunk inserts after final text merge.
+    lastReasoningSent: undefined,
+    compactionInFlight: false,
+    pendingCompactionRetry: 0,
+    compactionRetryResolve: undefined,
+    compactionRetryReject: undefined,
+    compactionRetryPromise: null,
+    unsubscribed: false,
+    messagingToolSentTexts: [],
+    messagingToolSentTextsNormalized: [],
+    messagingToolSentTargets: [],
+    messagingToolSentMediaUrls: [],
+    pendingMessagingTexts: new Map(),
+    pendingMessagingTargets: new Map(),
+    successfulCronAdds: 0,
+    pendingMessagingMediaUrls: new Map(),
+  };
+  const usageTotals = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+  };
+  let compactionCount = 0;
 
-function sanitizeToolResult(result: unknown): unknown {
-  if (!result || typeof result !== "object") return result;
-  const record = result as Record<string, unknown>;
-  const content = Array.isArray(record.content) ? record.content : null;
-  if (!content) return record;
-  const sanitized = content.map((item) => {
-    if (!item || typeof item !== "object") return item;
-    const entry = item as Record<string, unknown>;
-    const type = typeof entry.type === "string" ? entry.type : undefined;
-    if (type === "text" && typeof entry.text === "string") {
-      return { ...entry, text: truncateToolText(entry.text) };
+  const assistantTexts = state.assistantTexts;
+  const toolMetas = state.toolMetas;
+  const toolMetaById = state.toolMetaById;
+  const toolSummaryById = state.toolSummaryById;
+  const messagingToolSentTexts = state.messagingToolSentTexts;
+  const messagingToolSentTextsNormalized = state.messagingToolSentTextsNormalized;
+  const messagingToolSentTargets = state.messagingToolSentTargets;
+  const messagingToolSentMediaUrls = state.messagingToolSentMediaUrls;
+  const pendingMessagingTexts = state.pendingMessagingTexts;
+  const pendingMessagingTargets = state.pendingMessagingTargets;
+  const replyDirectiveAccumulator = createStreamingDirectiveAccumulator();
+  const partialReplyDirectiveAccumulator = createStreamingDirectiveAccumulator();
+
+  const resetAssistantMessageState = (nextAssistantTextBaseline: number) => {
+    state.deltaBuffer = "";
+    state.blockBuffer = "";
+    blockChunker?.reset();
+    replyDirectiveAccumulator.reset();
+    partialReplyDirectiveAccumulator.reset();
+    state.blockState.thinking = false;
+    state.blockState.final = false;
+    state.blockState.inlineCode = createInlineCodeState();
+    state.partialBlockState.thinking = false;
+    state.partialBlockState.final = false;
+    state.partialBlockState.inlineCode = createInlineCodeState();
+    state.lastStreamedAssistant = undefined;
+    state.lastStreamedAssistantCleaned = undefined;
+    state.emittedAssistantUpdate = false;
+    state.lastBlockReplyText = undefined;
+    state.lastStreamedReasoning = undefined;
+    state.lastReasoningSent = undefined;
+    state.reasoningStreamOpen = false;
+    state.suppressBlockChunks = false;
+    state.assistantMessageIndex += 1;
+    state.lastAssistantTextMessageIndex = -1;
+    state.lastAssistantTextNormalized = undefined;
+    state.lastAssistantTextTrimmed = undefined;
+    state.assistantTextBaseline = nextAssistantTextBaseline;
+  };
+
+  const rememberAssistantText = (text: string) => {
+    state.lastAssistantTextMessageIndex = state.assistantMessageIndex;
+    state.lastAssistantTextTrimmed = text.trimEnd();
+    const normalized = normalizeTextForComparison(text);
+    state.lastAssistantTextNormalized = normalized.length > 0 ? normalized : undefined;
+  };
+
+  const shouldSkipAssistantText = (text: string) => {
+    if (state.lastAssistantTextMessageIndex !== state.assistantMessageIndex) {
+      return false;
     }
-    if (type === "image") {
-      const data = typeof entry.data === "string" ? entry.data : undefined;
-      const bytes = data ? data.length : undefined;
-      const cleaned = { ...entry };
-      delete cleaned.data;
-      return { ...cleaned, bytes, omitted: true };
+    const trimmed = text.trimEnd();
+    if (trimmed && trimmed === state.lastAssistantTextTrimmed) {
+      return true;
     }
-    return entry;
-  });
-  return { ...record, content: sanitized };
-}
-
-function stripThinkingSegments(text: string): string {
-  if (!text || !THINKING_TAG_RE.test(text)) return text;
-  THINKING_TAG_RE.lastIndex = 0;
-  let result = "";
-  let lastIndex = 0;
-  let inThinking = false;
-  for (const match of text.matchAll(THINKING_TAG_RE)) {
-    const idx = match.index ?? 0;
-    if (!inThinking) {
-      result += text.slice(lastIndex, idx);
+    const normalized = normalizeTextForComparison(text);
+    if (normalized.length > 0 && normalized === state.lastAssistantTextNormalized) {
+      return true;
     }
-    const tag = match[0].toLowerCase();
-    inThinking = !tag.includes("/");
-    lastIndex = idx + match[0].length;
-  }
-  if (!inThinking) {
-    result += text.slice(lastIndex);
-  }
-  return result;
-}
+    return false;
+  };
 
-function stripUnpairedThinkingTags(text: string): string {
-  if (!text) return text;
-  const hasOpen = THINKING_OPEN_RE.test(text);
-  const hasClose = THINKING_CLOSE_RE.test(text);
-  if (hasOpen && hasClose) return text;
-  if (!hasOpen) return text.replace(THINKING_CLOSE_RE, "");
-  if (!hasClose) return text.replace(THINKING_OPEN_RE, "");
-  return text;
-}
+  const pushAssistantText = (text: string) => {
+    if (!text) {
+      return;
+    }
+    if (shouldSkipAssistantText(text)) {
+      return;
+    }
+    assistantTexts.push(text);
+    rememberAssistantText(text);
+  };
 
-export function subscribeEmbeddedPiSession(params: {
-  session: AgentSession;
-  runId: string;
-  verboseLevel?: "off" | "on";
-  shouldEmitToolResult?: () => boolean;
-  onToolResult?: (payload: {
-    text?: string;
-    mediaUrls?: string[];
-  }) => void | Promise<void>;
-  onBlockReply?: (payload: {
-    text?: string;
-    mediaUrls?: string[];
-  }) => void | Promise<void>;
-  blockReplyBreak?: "text_end" | "message_end";
-  blockReplyChunking?: BlockReplyChunking;
-  onPartialReply?: (payload: {
-    text?: string;
-    mediaUrls?: string[];
-  }) => void | Promise<void>;
-  onAgentEvent?: (evt: {
-    stream: string;
-    data: Record<string, unknown>;
-  }) => void;
-  enforceFinalTag?: boolean;
-}) {
-  const assistantTexts: string[] = [];
-  const toolMetas: Array<{ toolName?: string; meta?: string }> = [];
-  const toolMetaById = new Map<string, string | undefined>();
-  const toolSummaryById = new Set<string>();
-  const blockReplyBreak = params.blockReplyBreak ?? "text_end";
-  let deltaBuffer = "";
-  let blockBuffer = "";
-  let lastStreamedAssistant: string | undefined;
-  let lastBlockReplyText: string | undefined;
-  let assistantTextBaseline = 0;
-  let compactionInFlight = false;
-  let pendingCompactionRetry = 0;
-  let compactionRetryResolve: (() => void) | undefined;
-  let compactionRetryPromise: Promise<void> | null = null;
+  const finalizeAssistantTexts = (args: {
+    text: string;
+    addedDuringMessage: boolean;
+    chunkerHasBuffered: boolean;
+  }) => {
+    const { text, addedDuringMessage, chunkerHasBuffered } = args;
+
+    // If we're not streaming block replies, ensure the final payload includes
+    // the final text even when interim streaming was enabled.
+    if (state.includeReasoning && text && !params.onBlockReply) {
+      if (assistantTexts.length > state.assistantTextBaseline) {
+        assistantTexts.splice(
+          state.assistantTextBaseline,
+          assistantTexts.length - state.assistantTextBaseline,
+          text,
+        );
+        rememberAssistantText(text);
+      } else {
+        pushAssistantText(text);
+      }
+      state.suppressBlockChunks = true;
+    } else if (!addedDuringMessage && !chunkerHasBuffered && text) {
+      // Non-streaming models (no text_delta): ensure assistantTexts gets the final
+      // text when the chunker has nothing buffered to drain.
+      pushAssistantText(text);
+    }
+
+    state.assistantTextBaseline = assistantTexts.length;
+  };
+
+  // ── Messaging tool duplicate detection ──────────────────────────────────────
+  // Track texts sent via messaging tools to suppress duplicate block replies.
+  // Only committed (successful) texts are checked - pending texts are tracked
+  // to support commit logic but not used for suppression (avoiding lost messages on tool failure).
+  // These tools can send messages via sendMessage/threadReply actions (or sessions_send with message).
+  const MAX_MESSAGING_SENT_TEXTS = 200;
+  const MAX_MESSAGING_SENT_TARGETS = 200;
+  const MAX_MESSAGING_SENT_MEDIA_URLS = 200;
+  const trimMessagingToolSent = () => {
+    if (messagingToolSentTexts.length > MAX_MESSAGING_SENT_TEXTS) {
+      const overflow = messagingToolSentTexts.length - MAX_MESSAGING_SENT_TEXTS;
+      messagingToolSentTexts.splice(0, overflow);
+      messagingToolSentTextsNormalized.splice(0, overflow);
+    }
+    if (messagingToolSentTargets.length > MAX_MESSAGING_SENT_TARGETS) {
+      const overflow = messagingToolSentTargets.length - MAX_MESSAGING_SENT_TARGETS;
+      messagingToolSentTargets.splice(0, overflow);
+    }
+    if (messagingToolSentMediaUrls.length > MAX_MESSAGING_SENT_MEDIA_URLS) {
+      const overflow = messagingToolSentMediaUrls.length - MAX_MESSAGING_SENT_MEDIA_URLS;
+      messagingToolSentMediaUrls.splice(0, overflow);
+    }
+  };
 
   const ensureCompactionPromise = () => {
-    if (!compactionRetryPromise) {
-      compactionRetryPromise = new Promise((resolve) => {
-        compactionRetryResolve = resolve;
+    if (!state.compactionRetryPromise) {
+      // Create a single promise that resolves when ALL pending compactions complete
+      // (tracked by pendingCompactionRetry counter, decremented in resolveCompactionRetry)
+      state.compactionRetryPromise = new Promise((resolve, reject) => {
+        state.compactionRetryResolve = resolve;
+        state.compactionRetryReject = reject;
+      });
+      // Prevent unhandled rejection if rejected after all consumers have resolved
+      state.compactionRetryPromise.catch((err) => {
+        log.debug(`compaction promise rejected (no waiter): ${String(err)}`);
       });
     }
   };
 
   const noteCompactionRetry = () => {
-    pendingCompactionRetry += 1;
+    state.pendingCompactionRetry += 1;
     ensureCompactionPromise();
   };
 
   const resolveCompactionRetry = () => {
-    if (pendingCompactionRetry <= 0) return;
-    pendingCompactionRetry -= 1;
-    if (pendingCompactionRetry === 0 && !compactionInFlight) {
-      compactionRetryResolve?.();
-      compactionRetryResolve = undefined;
-      compactionRetryPromise = null;
+    if (state.pendingCompactionRetry <= 0) {
+      return;
+    }
+    state.pendingCompactionRetry -= 1;
+    if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
+      state.compactionRetryResolve?.();
+      state.compactionRetryResolve = undefined;
+      state.compactionRetryReject = undefined;
+      state.compactionRetryPromise = null;
     }
   };
 
   const maybeResolveCompactionWait = () => {
-    if (pendingCompactionRetry === 0 && !compactionInFlight) {
-      compactionRetryResolve?.();
-      compactionRetryResolve = undefined;
-      compactionRetryPromise = null;
+    if (state.pendingCompactionRetry === 0 && !state.compactionInFlight) {
+      state.compactionRetryResolve?.();
+      state.compactionRetryResolve = undefined;
+      state.compactionRetryReject = undefined;
+      state.compactionRetryPromise = null;
     }
   };
-  const FINAL_START_RE = /<\s*final\s*>/i;
-  const FINAL_END_RE = /<\s*\/\s*final\s*>/i;
-  // Local providers sometimes emit malformed tags; normalize before filtering.
-  const sanitizeFinalText = (text: string): string => {
-    if (!text) return text;
-    const hasStart = FINAL_START_RE.test(text);
-    const hasEnd = FINAL_END_RE.test(text);
-    if (hasStart && !hasEnd) return text.replace(FINAL_START_RE, "");
-    if (!hasStart && hasEnd) return text.replace(FINAL_END_RE, "");
-    return text;
+  const recordAssistantUsage = (usageLike: unknown) => {
+    const usage = normalizeUsage((usageLike ?? undefined) as UsageLike | undefined);
+    if (!hasNonzeroUsage(usage)) {
+      return;
+    }
+    usageTotals.input += usage.input ?? 0;
+    usageTotals.output += usage.output ?? 0;
+    usageTotals.cacheRead += usage.cacheRead ?? 0;
+    usageTotals.cacheWrite += usage.cacheWrite ?? 0;
+    const usageTotal =
+      usage.total ??
+      (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+    usageTotals.total += usageTotal;
   };
-  const extractFinalText = (text: string): string | undefined => {
-    const cleaned = sanitizeFinalText(text);
-    const startMatch = FINAL_START_RE.exec(cleaned);
-    if (!startMatch) return undefined;
-    const startIndex = startMatch.index + startMatch[0].length;
-    const afterStart = cleaned.slice(startIndex);
-    const endMatch = FINAL_END_RE.exec(afterStart);
-    const endIndex = endMatch ? endMatch.index : afterStart.length;
-    return afterStart.slice(0, endIndex);
+  const getUsageTotals = () => {
+    const hasUsage =
+      usageTotals.input > 0 ||
+      usageTotals.output > 0 ||
+      usageTotals.cacheRead > 0 ||
+      usageTotals.cacheWrite > 0 ||
+      usageTotals.total > 0;
+    if (!hasUsage) {
+      return undefined;
+    }
+    const derivedTotal =
+      usageTotals.input + usageTotals.output + usageTotals.cacheRead + usageTotals.cacheWrite;
+    return {
+      input: usageTotals.input || undefined,
+      output: usageTotals.output || undefined,
+      cacheRead: usageTotals.cacheRead || undefined,
+      cacheWrite: usageTotals.cacheWrite || undefined,
+      total: usageTotals.total || derivedTotal || undefined,
+    };
+  };
+  const incrementCompactionCount = () => {
+    compactionCount += 1;
   };
 
   const blockChunking = params.blockReplyChunking;
+  const blockChunker = blockChunking ? new EmbeddedBlockChunker(blockChunking) : null;
+  // KNOWN: Provider streams are not strictly once-only or perfectly ordered.
+  // `text_end` can repeat full content; late `text_end` can arrive after `message_end`.
+  // Tests: `src/agents/pi-embedded-subscribe.test.ts` (e.g. late text_end cases).
   const shouldEmitToolResult = () =>
     typeof params.shouldEmitToolResult === "function"
       ? params.shouldEmitToolResult()
-      : params.verboseLevel === "on";
+      : params.verboseLevel === "on" || params.verboseLevel === "full";
+  const shouldEmitToolOutput = () =>
+    typeof params.shouldEmitToolOutput === "function"
+      ? params.shouldEmitToolOutput()
+      : params.verboseLevel === "full";
+  const formatToolOutputBlock = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return "(no output)";
+    }
+    if (!useMarkdown) {
+      return trimmed;
+    }
+    return `\`\`\`txt\n${trimmed}\n\`\`\``;
+  };
   const emitToolSummary = (toolName?: string, meta?: string) => {
-    if (!params.onToolResult) return;
-    const agg = formatToolAggregate(toolName, meta ? [meta] : undefined);
-    const { text: cleanedText, mediaUrls } = splitMediaFromOutput(agg);
-    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) return;
+    if (!params.onToolResult) {
+      return;
+    }
+    const agg = formatToolAggregate(toolName, meta ? [meta] : undefined, {
+      markdown: useMarkdown,
+    });
+    const { text: cleanedText, mediaUrls } = parseReplyDirectives(agg);
+    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) {
+      return;
+    }
+    try {
+      void params.onToolResult({
+        text: cleanedText,
+        mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
+      });
+    } catch {
+      // ignore tool result delivery failures
+    }
+  };
+  const emitToolOutput = (toolName?: string, meta?: string, output?: string) => {
+    if (!params.onToolResult || !output) {
+      return;
+    }
+    const agg = formatToolAggregate(toolName, meta ? [meta] : undefined, {
+      markdown: useMarkdown,
+    });
+    const message = `${agg}\n${formatToolOutputBlock(output)}`;
+    const { text: cleanedText, mediaUrls } = parseReplyDirectives(message);
+    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) {
+      return;
+    }
     try {
       void params.onToolResult({
         text: cleanedText,
@@ -195,112 +358,224 @@ export function subscribeEmbeddedPiSession(params: {
     }
   };
 
-  const findSentenceBreak = (window: string, minChars: number): number => {
-    if (!window) return -1;
-    const matches = window.matchAll(/[.!?](?=\s|$)/g);
-    let idx = -1;
-    for (const match of matches) {
-      const at = match.index ?? -1;
-      if (at < minChars) continue;
-      idx = at + 1;
+  const stripBlockTags = (
+    text: string,
+    state: { thinking: boolean; final: boolean; inlineCode?: InlineCodeState },
+  ): string => {
+    if (!text) {
+      return text;
     }
-    return idx;
+
+    const inlineStateStart = state.inlineCode ?? createInlineCodeState();
+    const codeSpans = buildCodeSpanIndex(text, inlineStateStart);
+
+    // 1. Handle <think> blocks (stateful, strip content inside)
+    let processed = "";
+    THINKING_TAG_SCAN_RE.lastIndex = 0;
+    let lastIndex = 0;
+    let inThinking = state.thinking;
+    for (const match of text.matchAll(THINKING_TAG_SCAN_RE)) {
+      const idx = match.index ?? 0;
+      if (codeSpans.isInside(idx)) {
+        continue;
+      }
+      if (!inThinking) {
+        processed += text.slice(lastIndex, idx);
+      }
+      const isClose = match[1] === "/";
+      inThinking = !isClose;
+      lastIndex = idx + match[0].length;
+    }
+    if (!inThinking) {
+      processed += text.slice(lastIndex);
+    }
+    state.thinking = inThinking;
+
+    // 2. Handle <final> blocks (stateful, strip content OUTSIDE)
+    // If enforcement is disabled, we still strip the tags themselves to prevent
+    // hallucinations (e.g. Minimax copying the style) from leaking, but we
+    // do not enforce buffering/extraction logic.
+    const finalCodeSpans = buildCodeSpanIndex(processed, inlineStateStart);
+    if (!params.enforceFinalTag) {
+      state.inlineCode = finalCodeSpans.inlineState;
+      FINAL_TAG_SCAN_RE.lastIndex = 0;
+      return stripTagsOutsideCodeSpans(processed, FINAL_TAG_SCAN_RE, finalCodeSpans.isInside);
+    }
+
+    // If enforcement is enabled, only return text that appeared inside a <final> block.
+    let result = "";
+    FINAL_TAG_SCAN_RE.lastIndex = 0;
+    let lastFinalIndex = 0;
+    let inFinal = state.final;
+    let everInFinal = state.final;
+
+    for (const match of processed.matchAll(FINAL_TAG_SCAN_RE)) {
+      const idx = match.index ?? 0;
+      if (finalCodeSpans.isInside(idx)) {
+        continue;
+      }
+      const isClose = match[1] === "/";
+
+      if (!inFinal && !isClose) {
+        // Found <final> start tag.
+        inFinal = true;
+        everInFinal = true;
+        lastFinalIndex = idx + match[0].length;
+      } else if (inFinal && isClose) {
+        // Found </final> end tag.
+        result += processed.slice(lastFinalIndex, idx);
+        inFinal = false;
+        lastFinalIndex = idx + match[0].length;
+      }
+    }
+
+    if (inFinal) {
+      result += processed.slice(lastFinalIndex);
+    }
+    state.final = inFinal;
+
+    // Strict Mode: If enforcing final tags, we MUST NOT return content unless
+    // we have seen a <final> tag. Otherwise, we leak "thinking out loud" text
+    // (e.g. "**Locating Manulife**...") that the model emitted without <think> tags.
+    if (!everInFinal) {
+      return "";
+    }
+
+    // Hardened Cleanup: Remove any remaining <final> tags that might have been
+    // missed (e.g. nested tags or hallucinations) to prevent leakage.
+    const resultCodeSpans = buildCodeSpanIndex(result, inlineStateStart);
+    state.inlineCode = resultCodeSpans.inlineState;
+    return stripTagsOutsideCodeSpans(result, FINAL_TAG_SCAN_RE, resultCodeSpans.isInside);
   };
 
-  const findWhitespaceBreak = (window: string, minChars: number): number => {
-    for (let i = window.length - 1; i >= minChars; i--) {
-      if (/\s/.test(window[i])) return i;
+  const stripTagsOutsideCodeSpans = (
+    text: string,
+    pattern: RegExp,
+    isInside: (index: number) => boolean,
+  ) => {
+    let output = "";
+    let lastIndex = 0;
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const idx = match.index ?? 0;
+      if (isInside(idx)) {
+        continue;
+      }
+      output += text.slice(lastIndex, idx);
+      lastIndex = idx + match[0].length;
     }
-    return -1;
-  };
-
-  const pickBreakIndex = (buffer: string): number => {
-    if (!blockChunking) return -1;
-    const minChars = Math.max(1, Math.floor(blockChunking.minChars));
-    const maxChars = Math.max(minChars, Math.floor(blockChunking.maxChars));
-    if (buffer.length < minChars) return -1;
-    const window = buffer.slice(0, Math.min(maxChars, buffer.length));
-
-    const preference = blockChunking.breakPreference ?? "paragraph";
-    const paragraphIdx = window.lastIndexOf("\n\n");
-    if (preference === "paragraph" && paragraphIdx >= minChars) {
-      return paragraphIdx;
-    }
-
-    const newlineIdx = window.lastIndexOf("\n");
-    if (
-      (preference === "paragraph" || preference === "newline") &&
-      newlineIdx >= minChars
-    ) {
-      return newlineIdx;
-    }
-
-    if (preference !== "newline") {
-      const sentenceIdx = findSentenceBreak(window, minChars);
-      if (sentenceIdx >= minChars) return sentenceIdx;
-    }
-
-    const whitespaceIdx = findWhitespaceBreak(window, minChars);
-    if (whitespaceIdx >= minChars) return whitespaceIdx;
-
-    if (buffer.length >= maxChars) return maxChars;
-    return -1;
+    output += text.slice(lastIndex);
+    return output;
   };
 
   const emitBlockChunk = (text: string) => {
-    // Strip any <thinking> tags that may have leaked into the output (e.g., from Gemini mimicking history)
-    const strippedText = stripThinkingSegments(stripUnpairedThinkingTags(text));
-    const chunk = strippedText.trimEnd();
-    if (!chunk) return;
-    if (chunk === lastBlockReplyText) return;
-    lastBlockReplyText = chunk;
+    if (state.suppressBlockChunks) {
+      return;
+    }
+    // Strip <think> and <final> blocks across chunk boundaries to avoid leaking reasoning.
+    // Also strip downgraded tool call text ([Tool Call: ...], [Historical context: ...], etc.).
+    const chunk = stripDowngradedToolCallText(stripBlockTags(text, state.blockState)).trimEnd();
+    if (!chunk) {
+      return;
+    }
+    if (chunk === state.lastBlockReplyText) {
+      return;
+    }
+
+    // Only check committed (successful) messaging tool texts - checking pending texts
+    // is risky because if the tool fails after suppression, the user gets no response
+    const normalizedChunk = normalizeTextForComparison(chunk);
+    if (isMessagingToolDuplicateNormalized(normalizedChunk, messagingToolSentTextsNormalized)) {
+      log.debug(`Skipping block reply - already sent via messaging tool: ${chunk.slice(0, 50)}...`);
+      return;
+    }
+
+    if (shouldSkipAssistantText(chunk)) {
+      return;
+    }
+
+    state.lastBlockReplyText = chunk;
     assistantTexts.push(chunk);
-    if (!params.onBlockReply) return;
-    const { text: cleanedText, mediaUrls } = splitMediaFromOutput(chunk);
-    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0)) return;
+    rememberAssistantText(chunk);
+    if (!params.onBlockReply) {
+      return;
+    }
+    const splitResult = replyDirectiveAccumulator.consume(chunk);
+    if (!splitResult) {
+      return;
+    }
+    const {
+      text: cleanedText,
+      mediaUrls,
+      audioAsVoice,
+      replyToId,
+      replyToTag,
+      replyToCurrent,
+    } = splitResult;
+    // Skip empty payloads, but always emit if audioAsVoice is set (to propagate the flag)
+    if (!cleanedText && (!mediaUrls || mediaUrls.length === 0) && !audioAsVoice) {
+      return;
+    }
     void params.onBlockReply({
       text: cleanedText,
       mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
+      audioAsVoice,
+      replyToId,
+      replyToTag,
+      replyToCurrent,
     });
   };
 
-  const drainBlockBuffer = (force: boolean) => {
-    if (!blockChunking) return;
-    const minChars = Math.max(1, Math.floor(blockChunking.minChars));
-    const maxChars = Math.max(minChars, Math.floor(blockChunking.maxChars));
-    // Force flush small remainders as a single chunk to avoid re-splitting.
-    if (force && blockBuffer.length > 0 && blockBuffer.length <= maxChars) {
-      emitBlockChunk(blockBuffer);
-      blockBuffer = "";
+  const consumeReplyDirectives = (text: string, options?: { final?: boolean }) =>
+    replyDirectiveAccumulator.consume(text, options);
+  const consumePartialReplyDirectives = (text: string, options?: { final?: boolean }) =>
+    partialReplyDirectiveAccumulator.consume(text, options);
+
+  const flushBlockReplyBuffer = () => {
+    if (!params.onBlockReply) {
       return;
     }
-    if (blockBuffer.length < minChars && !force) return;
-    while (
-      blockBuffer.length >= minChars ||
-      (force && blockBuffer.length > 0)
-    ) {
-      const breakIdx = pickBreakIndex(blockBuffer);
-      if (breakIdx <= 0) {
-        if (force) {
-          emitBlockChunk(blockBuffer);
-          blockBuffer = "";
-        }
-        return;
-      }
-      const rawChunk = blockBuffer.slice(0, breakIdx);
-      if (rawChunk.trim().length === 0) {
-        blockBuffer = blockBuffer.slice(breakIdx).trimStart();
-        continue;
-      }
-      emitBlockChunk(rawChunk);
-      const nextStart =
-        breakIdx < blockBuffer.length && /\s/.test(blockBuffer[breakIdx])
-          ? breakIdx + 1
-          : breakIdx;
-      blockBuffer = blockBuffer.slice(nextStart).trimStart();
-      if (blockBuffer.length < minChars && !force) return;
-      if (blockBuffer.length < maxChars && !force) return;
+    if (blockChunker?.hasBuffered()) {
+      blockChunker.drain({ force: true, emit: emitBlockChunk });
+      blockChunker.reset();
+      return;
     }
+    if (state.blockBuffer.length > 0) {
+      emitBlockChunk(state.blockBuffer);
+      state.blockBuffer = "";
+    }
+  };
+
+  const emitReasoningStream = (text: string) => {
+    if (!state.streamReasoning || !params.onReasoningStream) {
+      return;
+    }
+    const formatted = formatReasoningMessage(text);
+    if (!formatted) {
+      return;
+    }
+    if (formatted === state.lastStreamedReasoning) {
+      return;
+    }
+    // Compute delta: new text since the last emitted reasoning.
+    // Guard against non-prefix changes (e.g. trim/format altering earlier content).
+    const prior = state.lastStreamedReasoning ?? "";
+    const delta = formatted.startsWith(prior) ? formatted.slice(prior.length) : formatted;
+    state.lastStreamedReasoning = formatted;
+
+    // Broadcast thinking event to WebSocket clients in real-time
+    emitAgentEvent({
+      runId: params.runId,
+      stream: "thinking",
+      data: {
+        text: formatted,
+        delta,
+      },
+    });
+
+    void params.onReasoningStream({
+      text: formatted,
+    });
   };
 
   const resetForCompactionRetry = () => {
@@ -308,359 +583,130 @@ export function subscribeEmbeddedPiSession(params: {
     toolMetas.length = 0;
     toolMetaById.clear();
     toolSummaryById.clear();
-    deltaBuffer = "";
-    blockBuffer = "";
-    lastStreamedAssistant = undefined;
-    lastBlockReplyText = undefined;
-    assistantTextBaseline = 0;
+    state.lastToolError = undefined;
+    messagingToolSentTexts.length = 0;
+    messagingToolSentTextsNormalized.length = 0;
+    messagingToolSentTargets.length = 0;
+    messagingToolSentMediaUrls.length = 0;
+    pendingMessagingTexts.clear();
+    pendingMessagingTargets.clear();
+    state.successfulCronAdds = 0;
+    state.pendingMessagingMediaUrls.clear();
+    resetAssistantMessageState(0);
   };
 
-  const unsubscribe = params.session.subscribe(
-    (evt: AgentEvent | { type: string; [k: string]: unknown }) => {
-      if (evt.type === "message_start") {
-        const msg = (evt as AgentEvent & { message: AgentMessage }).message;
-        if (msg?.role === "assistant") {
-          // Start-of-message is a safer reset point than message_end: some providers
-          // may deliver late text_end updates after message_end, which would
-          // otherwise re-trigger block replies.
-          deltaBuffer = "";
-          blockBuffer = "";
-          lastStreamedAssistant = undefined;
-          lastBlockReplyText = undefined;
-          assistantTextBaseline = assistantTexts.length;
-        }
+  const noteLastAssistant = (msg: AgentMessage) => {
+    if (msg?.role === "assistant") {
+      state.lastAssistant = msg;
+    }
+  };
+
+  const ctx: EmbeddedPiSubscribeContext = {
+    params,
+    state,
+    log,
+    blockChunking,
+    blockChunker,
+    hookRunner: params.hookRunner,
+    noteLastAssistant,
+    shouldEmitToolResult,
+    shouldEmitToolOutput,
+    emitToolSummary,
+    emitToolOutput,
+    stripBlockTags,
+    emitBlockChunk,
+    flushBlockReplyBuffer,
+    emitReasoningStream,
+    consumeReplyDirectives,
+    consumePartialReplyDirectives,
+    resetAssistantMessageState,
+    resetForCompactionRetry,
+    finalizeAssistantTexts,
+    trimMessagingToolSent,
+    ensureCompactionPromise,
+    noteCompactionRetry,
+    resolveCompactionRetry,
+    maybeResolveCompactionWait,
+    recordAssistantUsage,
+    incrementCompactionCount,
+    getUsageTotals,
+    getCompactionCount: () => compactionCount,
+  };
+
+  const sessionUnsubscribe = params.session.subscribe(createEmbeddedPiSessionEventHandler(ctx));
+
+  const unsubscribe = () => {
+    if (state.unsubscribed) {
+      return;
+    }
+    // Mark as unsubscribed FIRST to prevent waitForCompactionRetry from creating
+    // new un-resolvable promises during teardown.
+    state.unsubscribed = true;
+    // Reject pending compaction wait to unblock awaiting code.
+    // Don't resolve, as that would incorrectly signal "compaction complete" when it's still in-flight.
+    if (state.compactionRetryPromise) {
+      log.debug(`unsubscribe: rejecting compaction wait runId=${params.runId}`);
+      const reject = state.compactionRetryReject;
+      state.compactionRetryResolve = undefined;
+      state.compactionRetryReject = undefined;
+      state.compactionRetryPromise = null;
+      // Reject with AbortError so it's caught by isAbortError() check in cleanup paths
+      const abortErr = new Error("Unsubscribed during compaction");
+      abortErr.name = "AbortError";
+      reject?.(abortErr);
+    }
+    // Cancel any in-flight compaction to prevent resource leaks when unsubscribing.
+    // Only abort if compaction is actually running to avoid unnecessary work.
+    if (params.session.isCompacting) {
+      log.debug(`unsubscribe: aborting in-flight compaction runId=${params.runId}`);
+      try {
+        params.session.abortCompaction();
+      } catch (err) {
+        log.warn(`unsubscribe: compaction abort failed runId=${params.runId} err=${String(err)}`);
       }
-
-      if (evt.type === "tool_execution_start") {
-        const toolName = String(
-          (evt as AgentEvent & { toolName: string }).toolName,
-        );
-        const toolCallId = String(
-          (evt as AgentEvent & { toolCallId: string }).toolCallId,
-        );
-        const args = (evt as AgentEvent & { args: unknown }).args;
-        const meta = inferToolMetaFromArgs(toolName, args);
-        toolMetaById.set(toolCallId, meta);
-        log.debug(
-          `embedded run tool start: runId=${params.runId} tool=${toolName} toolCallId=${toolCallId}`,
-        );
-
-        emitAgentEvent({
-          runId: params.runId,
-          stream: "tool",
-          data: {
-            phase: "start",
-            name: toolName,
-            toolCallId,
-            args: args as Record<string, unknown>,
-          },
-        });
-        params.onAgentEvent?.({
-          stream: "tool",
-          data: { phase: "start", name: toolName, toolCallId },
-        });
-
-        if (
-          params.onToolResult &&
-          shouldEmitToolResult() &&
-          !toolSummaryById.has(toolCallId)
-        ) {
-          toolSummaryById.add(toolCallId);
-          emitToolSummary(toolName, meta);
-        }
-      }
-
-      if (evt.type === "tool_execution_update") {
-        const toolName = String(
-          (evt as AgentEvent & { toolName: string }).toolName,
-        );
-        const toolCallId = String(
-          (evt as AgentEvent & { toolCallId: string }).toolCallId,
-        );
-        const partial = (evt as AgentEvent & { partialResult?: unknown })
-          .partialResult;
-        const sanitized = sanitizeToolResult(partial);
-        emitAgentEvent({
-          runId: params.runId,
-          stream: "tool",
-          data: {
-            phase: "update",
-            name: toolName,
-            toolCallId,
-            partialResult: sanitized,
-          },
-        });
-        params.onAgentEvent?.({
-          stream: "tool",
-          data: {
-            phase: "update",
-            name: toolName,
-            toolCallId,
-          },
-        });
-      }
-
-      if (evt.type === "tool_execution_end") {
-        const toolName = String(
-          (evt as AgentEvent & { toolName: string }).toolName,
-        );
-        const toolCallId = String(
-          (evt as AgentEvent & { toolCallId: string }).toolCallId,
-        );
-        const isError = Boolean(
-          (evt as AgentEvent & { isError: boolean }).isError,
-        );
-        const result = (evt as AgentEvent & { result?: unknown }).result;
-        const sanitizedResult = sanitizeToolResult(result);
-        const meta = toolMetaById.get(toolCallId);
-        toolMetas.push({ toolName, meta });
-        toolMetaById.delete(toolCallId);
-        toolSummaryById.delete(toolCallId);
-
-        emitAgentEvent({
-          runId: params.runId,
-          stream: "tool",
-          data: {
-            phase: "result",
-            name: toolName,
-            toolCallId,
-            meta,
-            isError,
-            result: sanitizedResult,
-          },
-        });
-        params.onAgentEvent?.({
-          stream: "tool",
-          data: {
-            phase: "result",
-            name: toolName,
-            toolCallId,
-            meta,
-            isError,
-          },
-        });
-      }
-
-      if (evt.type === "message_update") {
-        const msg = (evt as AgentEvent & { message: AgentMessage }).message;
-        if (msg?.role === "assistant") {
-          const assistantEvent = (
-            evt as AgentEvent & { assistantMessageEvent?: unknown }
-          ).assistantMessageEvent;
-          const assistantRecord =
-            assistantEvent && typeof assistantEvent === "object"
-              ? (assistantEvent as Record<string, unknown>)
-              : undefined;
-          const evtType =
-            typeof assistantRecord?.type === "string"
-              ? assistantRecord.type
-              : "";
-          if (
-            evtType === "text_delta" ||
-            evtType === "text_start" ||
-            evtType === "text_end"
-          ) {
-            const delta =
-              typeof assistantRecord?.delta === "string"
-                ? assistantRecord.delta
-                : "";
-            const content =
-              typeof assistantRecord?.content === "string"
-                ? assistantRecord.content
-                : "";
-            let chunk = "";
-            if (evtType === "text_delta") {
-              chunk = delta;
-            } else if (evtType === "text_start" || evtType === "text_end") {
-              if (delta) {
-                chunk = delta;
-              } else if (content) {
-                // Providers may resend full content on text_end; append only the suffix.
-                if (content.startsWith(deltaBuffer)) {
-                  chunk = content.slice(deltaBuffer.length);
-                } else if (deltaBuffer.startsWith(content)) {
-                  chunk = "";
-                } else if (!deltaBuffer.includes(content)) {
-                  chunk = content;
-                }
-              }
-            }
-            if (chunk) {
-              deltaBuffer += chunk;
-              blockBuffer += chunk;
-            }
-
-            const cleaned = params.enforceFinalTag
-              ? stripThinkingSegments(stripUnpairedThinkingTags(deltaBuffer))
-              : stripThinkingSegments(deltaBuffer);
-            const next = params.enforceFinalTag
-              ? (extractFinalText(cleaned)?.trim() ?? cleaned.trim())
-              : cleaned.trim();
-            if (next && next !== lastStreamedAssistant) {
-              lastStreamedAssistant = next;
-              const { text: cleanedText, mediaUrls } =
-                splitMediaFromOutput(next);
-              emitAgentEvent({
-                runId: params.runId,
-                stream: "assistant",
-                data: {
-                  text: cleanedText,
-                  mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-                },
-              });
-              params.onAgentEvent?.({
-                stream: "assistant",
-                data: {
-                  text: cleanedText,
-                  mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-                },
-              });
-              if (params.onPartialReply) {
-                void params.onPartialReply({
-                  text: cleanedText,
-                  mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-                });
-              }
-            }
-
-            if (params.onBlockReply && blockChunking) {
-              drainBlockBuffer(false);
-            }
-
-            if (evtType === "text_end" && blockReplyBreak === "text_end") {
-              if (blockChunking && blockBuffer.length > 0) {
-                drainBlockBuffer(true);
-              } else if (next && next !== lastBlockReplyText) {
-                lastBlockReplyText = next || undefined;
-                if (next) assistantTexts.push(next);
-                if (next && params.onBlockReply) {
-                  const { text: cleanedText, mediaUrls } =
-                    splitMediaFromOutput(next);
-                  if (cleanedText || (mediaUrls && mediaUrls.length > 0)) {
-                    void params.onBlockReply({
-                      text: cleanedText,
-                      mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-                    });
-                  }
-                }
-              }
-              deltaBuffer = "";
-              blockBuffer = "";
-              lastStreamedAssistant = undefined;
-            }
-          }
-        }
-      }
-
-      if (evt.type === "message_end") {
-        const msg = (evt as AgentEvent & { message: AgentMessage }).message;
-        if (msg?.role === "assistant") {
-          const cleaned = params.enforceFinalTag
-            ? stripThinkingSegments(
-                stripUnpairedThinkingTags(
-                  extractAssistantText(msg as AssistantMessage),
-                ),
-              )
-            : stripThinkingSegments(
-                extractAssistantText(msg as AssistantMessage),
-              );
-          const text =
-            params.enforceFinalTag && cleaned
-              ? (extractFinalText(cleaned)?.trim() ?? cleaned)
-              : cleaned;
-
-          const addedDuringMessage =
-            assistantTexts.length > assistantTextBaseline;
-          if (!addedDuringMessage && text) {
-            const last = assistantTexts.at(-1);
-            if (!last || last !== text) assistantTexts.push(text);
-          }
-          assistantTextBaseline = assistantTexts.length;
-
-          if (
-            (blockReplyBreak === "message_end" || blockBuffer.length > 0) &&
-            text &&
-            params.onBlockReply
-          ) {
-            if (blockChunking && blockBuffer.length > 0) {
-              drainBlockBuffer(true);
-            } else if (text !== lastBlockReplyText) {
-              lastBlockReplyText = text;
-              const { text: cleanedText, mediaUrls } =
-                splitMediaFromOutput(text);
-              if (cleanedText || (mediaUrls && mediaUrls.length > 0)) {
-                void params.onBlockReply({
-                  text: cleanedText,
-                  mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-                });
-              }
-            }
-          }
-          deltaBuffer = "";
-          blockBuffer = "";
-          lastStreamedAssistant = undefined;
-        }
-      }
-
-      if (evt.type === "tool_execution_end") {
-        const toolName = String(
-          (evt as AgentEvent & { toolName: string }).toolName,
-        );
-        const toolCallId = String(
-          (evt as AgentEvent & { toolCallId: string }).toolCallId,
-        );
-        log.debug(
-          `embedded run tool end: runId=${params.runId} tool=${toolName} toolCallId=${toolCallId}`,
-        );
-      }
-
-      if (evt.type === "agent_start") {
-        log.debug(`embedded run agent start: runId=${params.runId}`);
-      }
-
-      if (evt.type === "auto_compaction_start") {
-        compactionInFlight = true;
-        ensureCompactionPromise();
-        log.debug(`embedded run compaction start: runId=${params.runId}`);
-      }
-
-      if (evt.type === "auto_compaction_end") {
-        compactionInFlight = false;
-        const willRetry = Boolean((evt as { willRetry?: unknown }).willRetry);
-        if (willRetry) {
-          noteCompactionRetry();
-          resetForCompactionRetry();
-          log.debug(`embedded run compaction retry: runId=${params.runId}`);
-        } else {
-          maybeResolveCompactionWait();
-        }
-      }
-
-      if (evt.type === "agent_end") {
-        log.debug(`embedded run agent end: runId=${params.runId}`);
-        if (pendingCompactionRetry > 0) {
-          resolveCompactionRetry();
-        } else {
-          maybeResolveCompactionWait();
-        }
-      }
-    },
-  );
+    }
+    sessionUnsubscribe();
+  };
 
   return {
     assistantTexts,
     toolMetas,
     unsubscribe,
+    isCompacting: () => state.compactionInFlight || state.pendingCompactionRetry > 0,
+    isCompactionInFlight: () => state.compactionInFlight,
+    getMessagingToolSentTexts: () => messagingToolSentTexts.slice(),
+    getMessagingToolSentMediaUrls: () => messagingToolSentMediaUrls.slice(),
+    getMessagingToolSentTargets: () => messagingToolSentTargets.slice(),
+    getSuccessfulCronAdds: () => state.successfulCronAdds,
+    // Returns true if any messaging tool successfully sent a message.
+    // Used to suppress agent's confirmation text (e.g., "Respondi no Telegram!")
+    // which is generated AFTER the tool sends the actual answer.
+    didSendViaMessagingTool: () => messagingToolSentTexts.length > 0,
+    getLastToolError: () => (state.lastToolError ? { ...state.lastToolError } : undefined),
+    getUsageTotals,
+    getCompactionCount: () => compactionCount,
     waitForCompactionRetry: () => {
-      if (compactionInFlight || pendingCompactionRetry > 0) {
-        ensureCompactionPromise();
-        return compactionRetryPromise ?? Promise.resolve();
+      // Reject after unsubscribe so callers treat it as cancellation, not success
+      if (state.unsubscribed) {
+        const err = new Error("Unsubscribed during compaction wait");
+        err.name = "AbortError";
+        return Promise.reject(err);
       }
-      return new Promise<void>((resolve) => {
+      if (state.compactionInFlight || state.pendingCompactionRetry > 0) {
+        ensureCompactionPromise();
+        return state.compactionRetryPromise ?? Promise.resolve();
+      }
+      return new Promise<void>((resolve, reject) => {
         queueMicrotask(() => {
-          if (compactionInFlight || pendingCompactionRetry > 0) {
+          if (state.unsubscribed) {
+            const err = new Error("Unsubscribed during compaction wait");
+            err.name = "AbortError";
+            reject(err);
+            return;
+          }
+          if (state.compactionInFlight || state.pendingCompactionRetry > 0) {
             ensureCompactionPromise();
-            void (compactionRetryPromise ?? Promise.resolve()).then(resolve);
+            void (state.compactionRetryPromise ?? Promise.resolve()).then(resolve, reject);
           } else {
             resolve();
           }

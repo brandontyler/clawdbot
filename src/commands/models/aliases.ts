@@ -1,4 +1,5 @@
-import { CONFIG_PATH_CLAWDBOT, loadConfig } from "../../config/config.js";
+import { loadConfig } from "../../config/config.js";
+import { logConfigUpdated } from "../../config/logging.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import {
   ensureFlagCompatibility,
@@ -13,7 +14,17 @@ export async function modelsAliasesListCommand(
 ) {
   ensureFlagCompatibility(opts);
   const cfg = loadConfig();
-  const aliases = cfg.agent?.modelAliases ?? {};
+  const models = cfg.agents?.defaults?.models ?? {};
+  const aliases = Object.entries(models).reduce<Record<string, string>>(
+    (acc, [modelKey, entry]) => {
+      const alias = entry?.alias?.trim();
+      if (alias) {
+        acc[alias] = modelKey;
+      }
+      return acc;
+    },
+    {},
+  );
 
   if (opts.json) {
     runtime.log(JSON.stringify({ aliases }, null, 2));
@@ -42,47 +53,65 @@ export async function modelsAliasesAddCommand(
   runtime: RuntimeEnv,
 ) {
   const alias = normalizeAlias(aliasRaw);
-  const updated = await updateConfig((cfg) => {
-    const resolved = resolveModelTarget({ raw: modelRaw, cfg });
-    const nextAliases = { ...cfg.agent?.modelAliases };
-    nextAliases[alias] = `${resolved.provider}/${resolved.model}`;
+  const resolved = resolveModelTarget({ raw: modelRaw, cfg: loadConfig() });
+  const _updated = await updateConfig((cfg) => {
+    const modelKey = `${resolved.provider}/${resolved.model}`;
+    const nextModels = { ...cfg.agents?.defaults?.models };
+    for (const [key, entry] of Object.entries(nextModels)) {
+      const existing = entry?.alias?.trim();
+      if (existing && existing === alias && key !== modelKey) {
+        throw new Error(`Alias ${alias} already points to ${key}.`);
+      }
+    }
+    const existing = nextModels[modelKey] ?? {};
+    nextModels[modelKey] = { ...existing, alias };
     return {
       ...cfg,
-      agent: {
-        ...cfg.agent,
-        modelAliases: nextAliases,
+      agents: {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          models: nextModels,
+        },
       },
     };
   });
 
-  runtime.log(`Updated ${CONFIG_PATH_CLAWDBOT}`);
-  runtime.log(`Alias ${alias} -> ${updated.agent?.modelAliases?.[alias]}`);
+  logConfigUpdated(runtime);
+  runtime.log(`Alias ${alias} -> ${resolved.provider}/${resolved.model}`);
 }
 
-export async function modelsAliasesRemoveCommand(
-  aliasRaw: string,
-  runtime: RuntimeEnv,
-) {
+export async function modelsAliasesRemoveCommand(aliasRaw: string, runtime: RuntimeEnv) {
   const alias = normalizeAlias(aliasRaw);
   const updated = await updateConfig((cfg) => {
-    const nextAliases = { ...cfg.agent?.modelAliases };
-    if (!nextAliases[alias]) {
+    const nextModels = { ...cfg.agents?.defaults?.models };
+    let found = false;
+    for (const [key, entry] of Object.entries(nextModels)) {
+      if (entry?.alias?.trim() === alias) {
+        nextModels[key] = { ...entry, alias: undefined };
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
       throw new Error(`Alias not found: ${alias}`);
     }
-    delete nextAliases[alias];
     return {
       ...cfg,
-      agent: {
-        ...cfg.agent,
-        modelAliases: nextAliases,
+      agents: {
+        ...cfg.agents,
+        defaults: {
+          ...cfg.agents?.defaults,
+          models: nextModels,
+        },
       },
     };
   });
 
-  runtime.log(`Updated ${CONFIG_PATH_CLAWDBOT}`);
+  logConfigUpdated(runtime);
   if (
-    !updated.agent?.modelAliases ||
-    Object.keys(updated.agent.modelAliases).length === 0
+    !updated.agents?.defaults?.models ||
+    Object.values(updated.agents.defaults.models).every((entry) => !entry?.alias?.trim())
   ) {
     runtime.log("No aliases configured.");
   }

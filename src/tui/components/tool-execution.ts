@@ -1,9 +1,7 @@
 import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import {
-  formatToolDetail,
-  resolveToolDisplay,
-} from "../../agents/tool-display.js";
+import { formatToolDetail, resolveToolDisplay } from "../../agents/tool-display.js";
 import { markdownTheme, theme } from "../theme/theme.js";
+import { sanitizeRenderableText } from "../tui-formatters.js";
 
 type ToolResultContent = {
   type?: string;
@@ -23,21 +21,27 @@ const PREVIEW_LINES = 12;
 function formatArgs(toolName: string, args: unknown): string {
   const display = resolveToolDisplay({ name: toolName, args });
   const detail = formatToolDetail(display);
-  if (detail) return detail;
-  if (!args || typeof args !== "object") return "";
+  if (detail) {
+    return sanitizeRenderableText(detail);
+  }
+  if (!args || typeof args !== "object") {
+    return "";
+  }
   try {
-    return JSON.stringify(args);
+    return sanitizeRenderableText(JSON.stringify(args));
   } catch {
     return "";
   }
 }
 
 function extractText(result?: ToolResult): string {
-  if (!result?.content) return "";
+  if (!result?.content) {
+    return "";
+  }
   const lines: string[] = [];
   for (const entry of result.content) {
     if (entry.type === "text" && entry.text) {
-      lines.push(entry.text);
+      lines.push(sanitizeRenderableText(entry.text));
     } else if (entry.type === "image") {
       const mime = entry.mimeType ?? "image";
       const size = entry.bytes ? ` ${Math.round(entry.bytes / 1024)}kb` : "";
@@ -124,9 +128,7 @@ export class ToolExecutionComponent extends Container {
     if (!this.expanded && text) {
       const lines = text.split("\n");
       const preview =
-        lines.length > PREVIEW_LINES
-          ? `${lines.slice(0, PREVIEW_LINES).join("\n")}\n…`
-          : text;
+        lines.length > PREVIEW_LINES ? `${lines.slice(0, PREVIEW_LINES).join("\n")}\n…` : text;
       this.output.setText(preview);
     } else {
       this.output.setText(text);

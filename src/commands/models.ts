@@ -1,8 +1,20 @@
+export { githubCopilotLoginCommand } from "../providers/github-copilot-auth.js";
 export {
   modelsAliasesAddCommand,
   modelsAliasesListCommand,
   modelsAliasesRemoveCommand,
 } from "./models/aliases.js";
+export {
+  modelsAuthAddCommand,
+  modelsAuthLoginCommand,
+  modelsAuthPasteTokenCommand,
+  modelsAuthSetupTokenCommand,
+} from "./models/auth.js";
+export {
+  modelsAuthOrderClearCommand,
+  modelsAuthOrderGetCommand,
+  modelsAuthOrderSetCommand,
+} from "./models/auth-order.js";
 export {
   modelsFallbacksAddCommand,
   modelsFallbacksClearCommand,

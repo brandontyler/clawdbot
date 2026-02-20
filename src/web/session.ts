@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
-import fs from "node:fs/promises";
-import path from "node:path";
 import {
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -10,99 +8,62 @@ import {
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
-
-import { resolveDefaultSessionStorePath } from "../config/sessions.js";
-import { danger, info, success } from "../globals.js";
+import { formatCliCommand } from "../cli/command-format.js";
+import { danger, success } from "../globals.js";
 import { getChildLogger, toPinoLikeLogger } from "../logging.js";
-import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
-import type { Provider } from "../utils.js";
-import {
-  CONFIG_DIR,
-  ensureDir,
-  jidToE164,
-  resolveConfigDir,
-} from "../utils.js";
+import { ensureDir, resolveUserPath } from "../utils.js";
 import { VERSION } from "../version.js";
+import {
+  maybeRestoreCredsFromBackup,
+  readCredsJsonRaw,
+  resolveDefaultWebAuthDir,
+  resolveWebCredsBackupPath,
+  resolveWebCredsPath,
+} from "./auth-store.js";
 
-export function resolveWebAuthDir() {
-  return path.join(resolveConfigDir(), "credentials");
-}
-
-function resolveWebCredsPath() {
-  return path.join(resolveWebAuthDir(), "creds.json");
-}
-
-function resolveWebCredsBackupPath() {
-  return path.join(resolveWebAuthDir(), "creds.json.bak");
-}
-
-export const WA_WEB_AUTH_DIR = path.join(CONFIG_DIR, "credentials");
+export {
+  getWebAuthAgeMs,
+  logoutWeb,
+  logWebSelfId,
+  pickWebChannel,
+  readWebSelfId,
+  WA_WEB_AUTH_DIR,
+  webAuthExists,
+} from "./auth-store.js";
 
 let credsSaveQueue: Promise<void> = Promise.resolve();
 function enqueueSaveCreds(
+  authDir: string,
   saveCreds: () => Promise<void> | void,
   logger: ReturnType<typeof getChildLogger>,
 ): void {
   credsSaveQueue = credsSaveQueue
-    .then(() => safeSaveCreds(saveCreds, logger))
+    .then(() => safeSaveCreds(authDir, saveCreds, logger))
     .catch((err) => {
       logger.warn({ error: String(err) }, "WhatsApp creds save queue error");
     });
 }
 
-function readCredsJsonRaw(filePath: string): string | null {
-  try {
-    if (!fsSync.existsSync(filePath)) return null;
-    const stats = fsSync.statSync(filePath);
-    if (!stats.isFile() || stats.size <= 1) return null;
-    return fsSync.readFileSync(filePath, "utf-8");
-  } catch {
-    return null;
-  }
-}
-
-function maybeRestoreCredsFromBackup(
-  logger: ReturnType<typeof getChildLogger>,
-): void {
-  try {
-    const credsPath = resolveWebCredsPath();
-    const backupPath = resolveWebCredsBackupPath();
-    const raw = readCredsJsonRaw(credsPath);
-    if (raw) {
-      // Validate that creds.json is parseable.
-      JSON.parse(raw);
-      return;
-    }
-
-    const backupRaw = readCredsJsonRaw(backupPath);
-    if (!backupRaw) return;
-
-    // Ensure backup is parseable before restoring.
-    JSON.parse(backupRaw);
-    fsSync.copyFileSync(backupPath, credsPath);
-    logger.warn(
-      { credsPath },
-      "restored corrupted WhatsApp creds.json from backup",
-    );
-  } catch {
-    // ignore
-  }
-}
-
 async function safeSaveCreds(
+  authDir: string,
   saveCreds: () => Promise<void> | void,
   logger: ReturnType<typeof getChildLogger>,
 ): Promise<void> {
   try {
     // Best-effort backup so we can recover after abrupt restarts.
     // Important: don't clobber a good backup with a corrupted/truncated creds.json.
-    const credsPath = resolveWebCredsPath();
-    const backupPath = resolveWebCredsBackupPath();
+    const credsPath = resolveWebCredsPath(authDir);
+    const backupPath = resolveWebCredsBackupPath(authDir);
     const raw = readCredsJsonRaw(credsPath);
     if (raw) {
       try {
         JSON.parse(raw);
         fsSync.copyFileSync(credsPath, backupPath);
+        try {
+          fsSync.chmodSync(backupPath, 0o600);
+        } catch {
+          // best-effort on platforms that support it
+        }
       } catch {
         // keep existing backup
       }
@@ -112,6 +73,11 @@ async function safeSaveCreds(
   }
   try {
     await Promise.resolve(saveCreds());
+    try {
+      fsSync.chmodSync(resolveWebCredsPath(authDir), 0o600);
+    } catch {
+      // best-effort on platforms that support it
+    }
   } catch (err) {
     logger.warn({ error: String(err) }, "failed saving WhatsApp creds");
   }
@@ -124,8 +90,8 @@ async function safeSaveCreds(
 export async function createWaSocket(
   printQr: boolean,
   verbose: boolean,
-  opts: { onQr?: (qr: string) => void } = {},
-) {
+  opts: { authDir?: string; onQr?: (qr: string) => void } = {},
+): Promise<ReturnType<typeof makeWASocket>> {
   const baseLogger = getChildLogger(
     { module: "baileys" },
     {
@@ -133,10 +99,10 @@ export async function createWaSocket(
     },
   );
   const logger = toPinoLikeLogger(baseLogger, verbose ? "info" : "silent");
-  const authDir = resolveWebAuthDir();
+  const authDir = resolveUserPath(opts.authDir ?? resolveDefaultWebAuthDir());
   await ensureDir(authDir);
   const sessionLogger = getChildLogger({ module: "web-session" });
-  maybeRestoreCredsFromBackup(sessionLogger);
+  maybeRestoreCredsFromBackup(authDir);
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version } = await fetchLatestBaileysVersion();
   const sock = makeWASocket({
@@ -147,12 +113,12 @@ export async function createWaSocket(
     version,
     logger,
     printQRInTerminal: false,
-    browser: ["clawdbot", "cli", VERSION],
+    browser: ["openclaw", "cli", VERSION],
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });
 
-  sock.ev.on("creds.update", () => enqueueSaveCreds(saveCreds, sessionLogger));
+  sock.ev.on("creds.update", () => enqueueSaveCreds(authDir, saveCreds, sessionLogger));
   sock.ev.on(
     "connection.update",
     (update: Partial<import("@whiskeysockets/baileys").ConnectionState>) => {
@@ -169,7 +135,9 @@ export async function createWaSocket(
           const status = getStatusCode(lastDisconnect?.error);
           if (status === DisconnectReason.loggedOut) {
             console.error(
-              danger("WhatsApp session logged out. Run: clawdbot login"),
+              danger(
+                `WhatsApp session logged out. Run: ${formatCliCommand("openclaw channels login")}`,
+              ),
             );
           }
         }
@@ -177,19 +145,13 @@ export async function createWaSocket(
           console.log(success("WhatsApp Web connected."));
         }
       } catch (err) {
-        sessionLogger.error(
-          { error: String(err) },
-          "connection.update handler error",
-        );
+        sessionLogger.error({ error: String(err) }, "connection.update handler error");
       }
     },
   );
 
   // Handle WebSocket-level errors to prevent unhandled exceptions from crashing the process
-  if (
-    sock.ws &&
-    typeof (sock.ws as unknown as { on?: unknown }).on === "function"
-  ) {
+  if (sock.ws && typeof (sock.ws as unknown as { on?: unknown }).on === "function") {
     sock.ws.on("error", (err: Error) => {
       sessionLogger.error({ error: String(err) }, "WebSocket error");
     });
@@ -198,9 +160,7 @@ export async function createWaSocket(
   return sock;
 }
 
-export async function waitForWaConnection(
-  sock: ReturnType<typeof makeWASocket>,
-) {
+export async function waitForWaConnection(sock: ReturnType<typeof makeWASocket>) {
   return new Promise<void>((resolve, reject) => {
     type OffCapable = {
       off?: (event: string, listener: (...args: unknown[]) => void) => void;
@@ -208,9 +168,7 @@ export async function waitForWaConnection(
     const evWithOff = sock.ev as unknown as OffCapable;
 
     const handler = (...args: unknown[]) => {
-      const update = (args[0] ?? {}) as Partial<
-        import("@whiskeysockets/baileys").ConnectionState
-      >;
+      const update = (args[0] ?? {}) as Partial<import("@whiskeysockets/baileys").ConnectionState>;
       if (update.connection === "open") {
         evWithOff.off?.("connection.update", handler);
         resolve();
@@ -234,28 +192,32 @@ export function getStatusCode(err: unknown) {
 
 function safeStringify(value: unknown, limit = 800): string {
   try {
-    const seen = new WeakSet<object>();
+    const seen = new WeakSet();
     const raw = JSON.stringify(
       value,
       (_key, v) => {
-        if (typeof v === "bigint") return v.toString();
+        if (typeof v === "bigint") {
+          return v.toString();
+        }
         if (typeof v === "function") {
           const maybeName = (v as { name?: unknown }).name;
           const name =
-            typeof maybeName === "string" && maybeName.length > 0
-              ? maybeName
-              : "anonymous";
+            typeof maybeName === "string" && maybeName.length > 0 ? maybeName : "anonymous";
           return `[Function ${name}]`;
         }
         if (typeof v === "object" && v) {
-          if (seen.has(v)) return "[Circular]";
+          if (seen.has(v)) {
+            return "[Circular]";
+          }
           seen.add(v);
         }
         return v;
       },
       2,
     );
-    if (!raw) return String(value);
+    if (!raw) {
+      return String(value);
+    }
     return raw.length > limit ? `${raw.slice(0, limit)}…` : raw;
   } catch {
     return String(value);
@@ -267,11 +229,15 @@ function extractBoomDetails(err: unknown): {
   error?: string;
   message?: string;
 } | null {
-  if (!err || typeof err !== "object") return null;
+  if (!err || typeof err !== "object") {
+    return null;
+  }
   const output = (err as { output?: unknown })?.output as
     | { statusCode?: unknown; payload?: unknown }
     | undefined;
-  if (!output || typeof output !== "object") return null;
+  if (!output || typeof output !== "object") {
+    return null;
+  }
   const payload = (output as { payload?: unknown }).payload as
     | { error?: unknown; message?: unknown; statusCode?: unknown }
     | undefined;
@@ -279,146 +245,68 @@ function extractBoomDetails(err: unknown): {
     typeof (output as { statusCode?: unknown }).statusCode === "number"
       ? ((output as { statusCode?: unknown }).statusCode as number)
       : typeof payload?.statusCode === "number"
-        ? (payload.statusCode as number)
+        ? payload.statusCode
         : undefined;
   const error = typeof payload?.error === "string" ? payload.error : undefined;
-  const message =
-    typeof payload?.message === "string" ? payload.message : undefined;
-  if (!statusCode && !error && !message) return null;
+  const message = typeof payload?.message === "string" ? payload.message : undefined;
+  if (!statusCode && !error && !message) {
+    return null;
+  }
   return { statusCode, error, message };
 }
 
 export function formatError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === "string") return err;
-  if (!err || typeof err !== "object") return String(err);
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === "string") {
+    return err;
+  }
+  if (!err || typeof err !== "object") {
+    return String(err);
+  }
 
   // Baileys frequently wraps errors under `error` with a Boom-like shape.
   const boom =
     extractBoomDetails(err) ??
     extractBoomDetails((err as { error?: unknown })?.error) ??
-    extractBoomDetails(
-      (err as { lastDisconnect?: { error?: unknown } })?.lastDisconnect?.error,
-    );
+    extractBoomDetails((err as { lastDisconnect?: { error?: unknown } })?.lastDisconnect?.error);
 
   const status = boom?.statusCode ?? getStatusCode(err);
   const code = (err as { code?: unknown })?.code;
-  const codeText =
-    typeof code === "string" || typeof code === "number"
-      ? String(code)
-      : undefined;
+  const codeText = typeof code === "string" || typeof code === "number" ? String(code) : undefined;
 
   const messageCandidates = [
     boom?.message,
     typeof (err as { message?: unknown })?.message === "string"
       ? ((err as { message?: unknown }).message as string)
       : undefined,
-    typeof (err as { error?: { message?: unknown } })?.error?.message ===
-    "string"
+    typeof (err as { error?: { message?: unknown } })?.error?.message === "string"
       ? ((err as { error?: { message?: unknown } }).error?.message as string)
       : undefined,
   ].filter((v): v is string => Boolean(v && v.trim().length > 0));
   const message = messageCandidates[0];
 
   const pieces: string[] = [];
-  if (typeof status === "number") pieces.push(`status=${status}`);
-  if (boom?.error) pieces.push(boom.error);
-  if (message) pieces.push(message);
-  if (codeText) pieces.push(`code=${codeText}`);
+  if (typeof status === "number") {
+    pieces.push(`status=${status}`);
+  }
+  if (boom?.error) {
+    pieces.push(boom.error);
+  }
+  if (message) {
+    pieces.push(message);
+  }
+  if (codeText) {
+    pieces.push(`code=${codeText}`);
+  }
 
-  if (pieces.length > 0) return pieces.join(" ");
+  if (pieces.length > 0) {
+    return pieces.join(" ");
+  }
   return safeStringify(err);
-}
-
-export async function webAuthExists() {
-  const sessionLogger = getChildLogger({ module: "web-session" });
-  maybeRestoreCredsFromBackup(sessionLogger);
-  const authDir = resolveWebAuthDir();
-  const credsPath = resolveWebCredsPath();
-  try {
-    await fs.access(authDir);
-  } catch {
-    return false;
-  }
-  try {
-    const stats = await fs.stat(credsPath);
-    if (!stats.isFile() || stats.size <= 1) return false;
-    const raw = await fs.readFile(credsPath, "utf-8");
-    JSON.parse(raw);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function logoutWeb(runtime: RuntimeEnv = defaultRuntime) {
-  const exists = await webAuthExists();
-  if (!exists) {
-    runtime.log(info("No WhatsApp Web session found; nothing to delete."));
-    return false;
-  }
-  await fs.rm(resolveWebAuthDir(), { recursive: true, force: true });
-  // Also drop session store to clear lingering per-sender state after logout.
-  await fs.rm(resolveDefaultSessionStorePath(), { force: true });
-  runtime.log(success("Cleared WhatsApp Web credentials."));
-  return true;
-}
-
-export function readWebSelfId() {
-  // Read the cached WhatsApp Web identity (jid + E.164) from disk if present.
-  try {
-    const credsPath = resolveWebCredsPath();
-    if (!fsSync.existsSync(credsPath)) {
-      return { e164: null, jid: null } as const;
-    }
-    const raw = fsSync.readFileSync(credsPath, "utf-8");
-    const parsed = JSON.parse(raw) as { me?: { id?: string } } | undefined;
-    const jid = parsed?.me?.id ?? null;
-    const e164 = jid ? jidToE164(jid) : null;
-    return { e164, jid } as const;
-  } catch {
-    return { e164: null, jid: null } as const;
-  }
-}
-
-/**
- * Return the age (in milliseconds) of the cached WhatsApp web auth state, or null when missing.
- * Helpful for heartbeats/observability to spot stale credentials.
- */
-export function getWebAuthAgeMs(): number | null {
-  try {
-    const stats = fsSync.statSync(resolveWebCredsPath());
-    return Date.now() - stats.mtimeMs;
-  } catch {
-    return null;
-  }
 }
 
 export function newConnectionId() {
   return randomUUID();
-}
-
-export function logWebSelfId(
-  runtime: RuntimeEnv = defaultRuntime,
-  includeProviderPrefix = false,
-) {
-  // Human-friendly log of the currently linked personal web session.
-  const { e164, jid } = readWebSelfId();
-  const details =
-    e164 || jid
-      ? `${e164 ?? "unknown"}${jid ? ` (jid ${jid})` : ""}`
-      : "unknown";
-  const prefix = includeProviderPrefix ? "Web Provider: " : "";
-  runtime.log(info(`${prefix}${details}`));
-}
-
-export async function pickProvider(pref: Provider | "auto"): Promise<Provider> {
-  const choice: Provider = pref === "auto" ? "web" : pref;
-  const hasWeb = await webAuthExists();
-  if (!hasWeb) {
-    throw new Error(
-      "No WhatsApp Web session found. Run `clawdbot login --verbose` to link.",
-    );
-  }
-  return choice;
 }

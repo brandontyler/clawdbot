@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
-
 import {
-  type ClawdbotConfig,
+  type OpenClawConfig,
   DEFAULT_GATEWAY_PORT,
   type HooksGmailTailscaleMode,
   resolveGatewayPort,
@@ -33,6 +32,7 @@ export type GmailHookOverrides = {
   servePath?: string;
   tailscaleMode?: HooksGmailTailscaleMode;
   tailscalePath?: string;
+  tailscaleTarget?: string;
 };
 
 export type GmailHookRuntimeConfig = {
@@ -54,6 +54,7 @@ export type GmailHookRuntimeConfig = {
   tailscale: {
     mode: HooksGmailTailscaleMode;
     path: string;
+    target?: string;
   };
 };
 
@@ -61,20 +62,17 @@ export function generateHookToken(bytes = 24): string {
   return randomBytes(bytes).toString("hex");
 }
 
-export function mergeHookPresets(
-  existing: string[] | undefined,
-  preset: string,
-): string[] {
-  const next = new Set(
-    (existing ?? []).map((item) => item.trim()).filter(Boolean),
-  );
+export function mergeHookPresets(existing: string[] | undefined, preset: string): string[] {
+  const next = new Set((existing ?? []).map((item) => item.trim()).filter(Boolean));
   next.add(preset);
   return Array.from(next);
 }
 
 export function normalizeHooksPath(raw?: string): string {
   const base = raw?.trim() || DEFAULT_HOOKS_PATH;
-  if (base === "/") return DEFAULT_HOOKS_PATH;
+  if (base === "/") {
+    return DEFAULT_HOOKS_PATH;
+  }
   const withSlash = base.startsWith("/") ? base : `/${base}`;
   return withSlash.replace(/\/+$/, "");
 }
@@ -83,7 +81,9 @@ export function normalizeServePath(raw?: string): string {
   const base = raw?.trim() || DEFAULT_GMAIL_SERVE_PATH;
   // Tailscale funnel/serve strips the set-path prefix before proxying.
   // To accept requests at /<path> externally, gog must listen on "/".
-  if (base === "/") return "/";
+  if (base === "/") {
+    return "/";
+  }
   const withSlash = base.startsWith("/") ? base : `/${base}`;
   return withSlash.replace(/\/+$/, "");
 }
@@ -98,7 +98,7 @@ export function buildDefaultHookUrl(
 }
 
 export function resolveGmailHookRuntimeConfig(
-  cfg: ClawdbotConfig,
+  cfg: OpenClawConfig,
   overrides: GmailHookOverrides,
 ): { ok: true; value: GmailHookRuntimeConfig } | { ok: false; error: string } {
   const hooks = cfg.hooks;
@@ -118,8 +118,7 @@ export function resolveGmailHookRuntimeConfig(
     return { ok: false, error: "gmail topic required" };
   }
 
-  const subscription =
-    overrides.subscription ?? gmail?.subscription ?? DEFAULT_GMAIL_SUBSCRIPTION;
+  const subscription = overrides.subscription ?? gmail?.subscription ?? DEFAULT_GMAIL_SUBSCRIPTION;
 
   const pushToken = overrides.pushToken ?? gmail?.pushToken ?? "";
   if (!pushToken) {
@@ -135,14 +134,11 @@ export function resolveGmailHookRuntimeConfig(
 
   const maxBytesRaw = overrides.maxBytes ?? gmail?.maxBytes;
   const maxBytes =
-    typeof maxBytesRaw === "number" &&
-    Number.isFinite(maxBytesRaw) &&
-    maxBytesRaw > 0
+    typeof maxBytesRaw === "number" && Number.isFinite(maxBytesRaw) && maxBytesRaw > 0
       ? Math.floor(maxBytesRaw)
       : DEFAULT_GMAIL_MAX_BYTES;
 
-  const renewEveryMinutesRaw =
-    overrides.renewEveryMinutes ?? gmail?.renewEveryMinutes;
+  const renewEveryMinutesRaw = overrides.renewEveryMinutes ?? gmail?.renewEveryMinutes;
   const renewEveryMinutes =
     typeof renewEveryMinutesRaw === "number" &&
     Number.isFinite(renewEveryMinutesRaw) &&
@@ -150,33 +146,35 @@ export function resolveGmailHookRuntimeConfig(
       ? Math.floor(renewEveryMinutesRaw)
       : DEFAULT_GMAIL_RENEW_MINUTES;
 
-  const serveBind =
-    overrides.serveBind ?? gmail?.serve?.bind ?? DEFAULT_GMAIL_SERVE_BIND;
+  const serveBind = overrides.serveBind ?? gmail?.serve?.bind ?? DEFAULT_GMAIL_SERVE_BIND;
   const servePortRaw = overrides.servePort ?? gmail?.serve?.port;
   const servePort =
-    typeof servePortRaw === "number" &&
-    Number.isFinite(servePortRaw) &&
-    servePortRaw > 0
+    typeof servePortRaw === "number" && Number.isFinite(servePortRaw) && servePortRaw > 0
       ? Math.floor(servePortRaw)
       : DEFAULT_GMAIL_SERVE_PORT;
   const servePathRaw = overrides.servePath ?? gmail?.serve?.path;
-  const hasExplicitServePath =
-    typeof servePathRaw === "string" && servePathRaw.trim().length > 0;
+  const normalizedServePathRaw =
+    typeof servePathRaw === "string" && servePathRaw.trim().length > 0
+      ? normalizeServePath(servePathRaw)
+      : DEFAULT_GMAIL_SERVE_PATH;
+  const tailscaleTargetRaw = overrides.tailscaleTarget ?? gmail?.tailscale?.target;
 
-  const tailscaleMode =
-    overrides.tailscaleMode ?? gmail?.tailscale?.mode ?? "off";
-  // When exposing the push endpoint via Tailscale, the public path is stripped
-  // before proxying; use "/" internally unless the user set a path explicitly.
+  const tailscaleMode = overrides.tailscaleMode ?? gmail?.tailscale?.mode ?? "off";
+  const tailscaleTarget =
+    tailscaleMode !== "off" &&
+    typeof tailscaleTargetRaw === "string" &&
+    tailscaleTargetRaw.trim().length > 0
+      ? tailscaleTargetRaw.trim()
+      : undefined;
+  // Tailscale strips the public path before proxying, so listen on "/" when on.
   const servePath = normalizeServePath(
-    tailscaleMode !== "off" && !hasExplicitServePath ? "/" : servePathRaw,
+    tailscaleMode !== "off" && !tailscaleTarget ? "/" : normalizedServePathRaw,
   );
 
   const tailscalePathRaw = overrides.tailscalePath ?? gmail?.tailscale?.path;
   const tailscalePath = normalizeServePath(
-    tailscaleMode !== "off" && !tailscalePathRaw
-      ? hasExplicitServePath
-        ? servePathRaw
-        : DEFAULT_GMAIL_SERVE_PATH
+    tailscaleMode !== "off"
+      ? (tailscalePathRaw ?? normalizedServePathRaw)
       : (tailscalePathRaw ?? servePath),
   );
 
@@ -201,6 +199,7 @@ export function resolveGmailHookRuntimeConfig(
       tailscale: {
         mode: tailscaleMode,
         path: tailscalePath,
+        target: tailscaleTarget,
       },
     },
   };
@@ -255,11 +254,11 @@ export function buildTopicPath(projectId: string, topicName: string): string {
   return `projects/${projectId}/topics/${topicName}`;
 }
 
-export function parseTopicPath(
-  topic: string,
-): { projectId: string; topicName: string } | null {
+export function parseTopicPath(topic: string): { projectId: string; topicName: string } | null {
   const match = topic.trim().match(/^projects\/([^/]+)\/topics\/([^/]+)$/i);
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
   return { projectId: match[1] ?? "", topicName: match[2] ?? "" };
 }
 

@@ -2,8 +2,10 @@ import SwiftUI
 
 struct StatusPill: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    enum BridgeState: Equatable {
+    enum GatewayState: Equatable {
         case connected
         case connecting
         case error
@@ -34,7 +36,7 @@ struct StatusPill: View {
         var tint: Color?
     }
 
-    var bridge: BridgeState
+    var gateway: GatewayState
     var voiceWakeEnabled: Bool
     var activity: Activity?
     var brighten: Bool = false
@@ -47,13 +49,13 @@ struct StatusPill: View {
             HStack(spacing: 10) {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(self.bridge.color)
+                        .fill(self.gateway.color)
                         .frame(width: 9, height: 9)
-                        .scaleEffect(self.bridge == .connecting ? (self.pulse ? 1.15 : 0.85) : 1.0)
-                        .opacity(self.bridge == .connecting ? (self.pulse ? 1.0 : 0.6) : 1.0)
+                        .scaleEffect(self.gateway == .connecting && !self.reduceMotion ? (self.pulse ? 1.15 : 0.85) : 1.0)
+                        .opacity(self.gateway == .connecting && !self.reduceMotion ? (self.pulse ? 1.0 : 0.6) : 1.0)
 
-                    Text(self.bridge.title)
-                        .font(.system(size: 13, weight: .semibold))
+                    Text(self.gateway.title)
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                 }
 
@@ -64,17 +66,17 @@ struct StatusPill: View {
                 if let activity {
                     HStack(spacing: 6) {
                         Image(systemName: activity.systemImage)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(activity.tint ?? .primary)
                         Text(activity.title)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 } else {
                     Image(systemName: self.voiceWakeEnabled ? "mic.fill" : "mic.slash")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(self.voiceWakeEnabled ? .primary : .secondary)
                         .accessibilityLabel(self.voiceWakeEnabled ? "Voice Wake enabled" : "Voice Wake disabled")
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -87,35 +89,42 @@ struct StatusPill: View {
                     .fill(.ultraThinMaterial)
                     .overlay {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(.white.opacity(self.brighten ? 0.24 : 0.18), lineWidth: 0.5)
+                            .strokeBorder(
+                                .white.opacity(self.contrast == .increased ? 0.5 : (self.brighten ? 0.24 : 0.18)),
+                                lineWidth: self.contrast == .increased ? 1.0 : 0.5
+                            )
                     }
                     .shadow(color: .black.opacity(0.25), radius: 12, y: 6)
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Status")
+        .accessibilityLabel("Connection Status")
         .accessibilityValue(self.accessibilityValue)
-        .onAppear { self.updatePulse(for: self.bridge, scenePhase: self.scenePhase) }
+        .accessibilityHint("Double tap to open settings")
+        .onAppear { self.updatePulse(for: self.gateway, scenePhase: self.scenePhase, reduceMotion: self.reduceMotion) }
         .onDisappear { self.pulse = false }
-        .onChange(of: self.bridge) { _, newValue in
-            self.updatePulse(for: newValue, scenePhase: self.scenePhase)
+        .onChange(of: self.gateway) { _, newValue in
+            self.updatePulse(for: newValue, scenePhase: self.scenePhase, reduceMotion: self.reduceMotion)
         }
         .onChange(of: self.scenePhase) { _, newValue in
-            self.updatePulse(for: self.bridge, scenePhase: newValue)
+            self.updatePulse(for: self.gateway, scenePhase: newValue, reduceMotion: self.reduceMotion)
+        }
+        .onChange(of: self.reduceMotion) { _, newValue in
+            self.updatePulse(for: self.gateway, scenePhase: self.scenePhase, reduceMotion: newValue)
         }
         .animation(.easeInOut(duration: 0.18), value: self.activity?.title)
     }
 
     private var accessibilityValue: String {
         if let activity {
-            return "\(self.bridge.title), \(activity.title)"
+            return "\(self.gateway.title), \(activity.title)"
         }
-        return "\(self.bridge.title), Voice Wake \(self.voiceWakeEnabled ? "enabled" : "disabled")"
+        return "\(self.gateway.title), Voice Wake \(self.voiceWakeEnabled ? "enabled" : "disabled")"
     }
 
-    private func updatePulse(for bridge: BridgeState, scenePhase: ScenePhase) {
-        guard bridge == .connecting, scenePhase == .active else {
-            withAnimation(.easeOut(duration: 0.2)) { self.pulse = false }
+    private func updatePulse(for gateway: GatewayState, scenePhase: ScenePhase, reduceMotion: Bool) {
+        guard gateway == .connecting, scenePhase == .active, !reduceMotion else {
+            withAnimation(reduceMotion ? .none : .easeOut(duration: 0.2)) { self.pulse = false }
             return
         }
 
