@@ -1,14 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-
 import { prependSystemEvents } from "../auto-reply/reply/session-updates.js";
-import type { ClawdbotConfig } from "../config/config.js";
-import {
-  enqueueSystemEvent,
-  peekSystemEvents,
-  resetSystemEventsForTest,
-} from "./system-events.js";
+import type { OpenClawConfig } from "../config/config.js";
+import { resolveMainSessionKey } from "../config/sessions.js";
+import { isCronSystemEvent } from "./heartbeat-runner.js";
+import { enqueueSystemEvent, peekSystemEvents, resetSystemEventsForTest } from "./system-events.js";
 
-const cfg = {} as unknown as ClawdbotConfig;
+const cfg = {} as unknown as OpenClawConfig;
+const mainKey = resolveMainSessionKey(cfg);
 
 describe("system events (session routing)", () => {
   beforeEach(() => {
@@ -21,22 +19,18 @@ describe("system events (session routing)", () => {
       contextKey: "discord:reaction:added:msg:user:✅",
     });
 
-    expect(peekSystemEvents()).toEqual([]);
-    expect(peekSystemEvents("discord:group:123")).toEqual([
-      "Discord reaction added: ✅",
-    ]);
+    expect(peekSystemEvents(mainKey)).toEqual([]);
+    expect(peekSystemEvents("discord:group:123")).toEqual(["Discord reaction added: ✅"]);
 
     const main = await prependSystemEvents({
       cfg,
-      sessionKey: "main",
+      sessionKey: mainKey,
       isMainSession: true,
       isNewSession: false,
       prefixedBodyBase: "hello",
     });
     expect(main).toBe("hello");
-    expect(peekSystemEvents("discord:group:123")).toEqual([
-      "Discord reaction added: ✅",
-    ]);
+    expect(peekSystemEvents("discord:group:123")).toEqual(["Discord reaction added: ✅"]);
 
     const discord = await prependSystemEvents({
       cfg,
@@ -45,20 +39,40 @@ describe("system events (session routing)", () => {
       isNewSession: false,
       prefixedBodyBase: "hi",
     });
-    expect(discord).toBe("System: Discord reaction added: ✅\n\nhi");
+    expect(discord).toMatch(/^System: \[[^\]]+\] Discord reaction added: ✅\n\nhi$/);
     expect(peekSystemEvents("discord:group:123")).toEqual([]);
   });
 
-  it("defaults system events to main", async () => {
-    enqueueSystemEvent("Node: Mac Studio");
+  it("requires an explicit session key", () => {
+    expect(() => enqueueSystemEvent("Node: Mac Studio", { sessionKey: " " })).toThrow("sessionKey");
+  });
+});
 
-    const main = await prependSystemEvents({
-      cfg,
-      sessionKey: "main",
-      isMainSession: true,
-      isNewSession: false,
-      prefixedBodyBase: "ping",
-    });
-    expect(main).toBe("System: Node: Mac Studio\n\nping");
+describe("isCronSystemEvent", () => {
+  it("returns false for empty entries", () => {
+    expect(isCronSystemEvent("")).toBe(false);
+    expect(isCronSystemEvent("   ")).toBe(false);
+  });
+
+  it("returns false for heartbeat ack markers", () => {
+    expect(isCronSystemEvent("HEARTBEAT_OK")).toBe(false);
+    expect(isCronSystemEvent("HEARTBEAT_OK 🦞")).toBe(false);
+    expect(isCronSystemEvent("heartbeat_ok")).toBe(false);
+    expect(isCronSystemEvent("HEARTBEAT_OK:")).toBe(false);
+    expect(isCronSystemEvent("HEARTBEAT_OK, continue")).toBe(false);
+  });
+
+  it("returns false for heartbeat poll and wake noise", () => {
+    expect(isCronSystemEvent("heartbeat poll: pending")).toBe(false);
+    expect(isCronSystemEvent("heartbeat wake complete")).toBe(false);
+  });
+
+  it("returns false for exec completion events", () => {
+    expect(isCronSystemEvent("Exec finished (gateway id=abc, code 0)")).toBe(false);
+  });
+
+  it("returns true for real cron reminder content", () => {
+    expect(isCronSystemEvent("Reminder: Check Base Scout results")).toBe(true);
+    expect(isCronSystemEvent("Send weekly status update to the team")).toBe(true);
   });
 });

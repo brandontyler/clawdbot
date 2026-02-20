@@ -1,20 +1,19 @@
-import chalk from "chalk";
-
 import { lookupContextTokens } from "../agents/context.js";
-import {
-  DEFAULT_CONTEXT_TOKENS,
-  DEFAULT_MODEL,
-  DEFAULT_PROVIDER,
-} from "../agents/defaults.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveConfiguredModelRef } from "../agents/model-selection.js";
 import { loadConfig } from "../config/config.js";
 import {
   loadSessionStore,
+  resolveFreshSessionTotalTokens,
   resolveStorePath,
   type SessionEntry,
 } from "../config/sessions.js";
+import { classifySessionKey, resolveSessionModelRef } from "../gateway/session-utils.js";
 import { info } from "../globals.js";
+import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { isRich, theme } from "../terminal/theme.js";
 
 type SessionRow = {
   key: string;
@@ -26,11 +25,18 @@ type SessionRow = {
   abortedLastRun?: boolean;
   thinkingLevel?: string;
   verboseLevel?: string;
+  reasoningLevel?: string;
+  elevatedLevel?: string;
+  responseUsage?: string;
   groupActivation?: string;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  totalTokensFresh?: boolean;
   model?: string;
+  modelProvider?: string;
+  providerOverride?: string;
+  modelOverride?: string;
   contextTokens?: number;
 };
 
@@ -40,36 +46,45 @@ const AGE_PAD = 9;
 const MODEL_PAD = 14;
 const TOKENS_PAD = 20;
 
-const isRich = () => Boolean(process.stdout.isTTY && chalk.level > 0);
-
-const formatKTokens = (value: number) =>
-  `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+const formatKTokens = (value: number) => `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
 
 const truncateKey = (key: string) => {
-  if (key.length <= KEY_PAD) return key;
+  if (key.length <= KEY_PAD) {
+    return key;
+  }
   const head = Math.max(4, KEY_PAD - 10);
   return `${key.slice(0, head)}...${key.slice(-6)}`;
 };
 
 const colorByPct = (label: string, pct: number | null, rich: boolean) => {
-  if (!rich || pct === null) return label;
-  if (pct >= 95) return chalk.red(label);
-  if (pct >= 80) return chalk.yellow(label);
-  if (pct >= 60) return chalk.green(label);
-  return chalk.gray(label);
+  if (!rich || pct === null) {
+    return label;
+  }
+  if (pct >= 95) {
+    return theme.error(label);
+  }
+  if (pct >= 80) {
+    return theme.warn(label);
+  }
+  if (pct >= 60) {
+    return theme.success(label);
+  }
+  return theme.muted(label);
 };
 
 const formatTokensCell = (
-  total: number,
+  total: number | undefined,
   contextTokens: number | null,
   rich: boolean,
 ) => {
-  if (!total) return "-".padEnd(TOKENS_PAD);
+  if (total === undefined) {
+    const ctxLabel = contextTokens ? formatKTokens(contextTokens) : "?";
+    const label = `unknown/${ctxLabel} (?%)`;
+    return rich ? theme.muted(label.padEnd(TOKENS_PAD)) : label.padEnd(TOKENS_PAD);
+  }
   const totalLabel = formatKTokens(total);
   const ctxLabel = contextTokens ? formatKTokens(contextTokens) : "?";
-  const pct = contextTokens
-    ? Math.min(999, Math.round((total / contextTokens) * 100))
-    : null;
+  const pct = contextTokens ? Math.min(999, Math.round((total / contextTokens) * 100)) : null;
   const label = `${totalLabel}/${ctxLabel} (${pct ?? "?"}%)`;
   const padded = label.padEnd(TOKENS_PAD);
   return colorByPct(padded, pct, rich);
@@ -77,61 +92,47 @@ const formatTokensCell = (
 
 const formatKindCell = (kind: SessionRow["kind"], rich: boolean) => {
   const label = kind.padEnd(KIND_PAD);
-  if (!rich) return label;
-  if (kind === "group") return chalk.magenta(label);
-  if (kind === "global") return chalk.yellow(label);
-  if (kind === "direct") return chalk.cyan(label);
-  return chalk.gray(label);
+  if (!rich) {
+    return label;
+  }
+  if (kind === "group") {
+    return theme.accentBright(label);
+  }
+  if (kind === "global") {
+    return theme.warn(label);
+  }
+  if (kind === "direct") {
+    return theme.accent(label);
+  }
+  return theme.muted(label);
 };
 
 const formatAgeCell = (updatedAt: number | null | undefined, rich: boolean) => {
-  const ageLabel = updatedAt ? formatAge(Date.now() - updatedAt) : "unknown";
+  const ageLabel = updatedAt ? formatTimeAgo(Date.now() - updatedAt) : "unknown";
   const padded = ageLabel.padEnd(AGE_PAD);
-  return rich ? chalk.gray(padded) : padded;
+  return rich ? theme.muted(padded) : padded;
 };
 
 const formatModelCell = (model: string | null | undefined, rich: boolean) => {
   const label = (model ?? "unknown").padEnd(MODEL_PAD);
-  return rich ? chalk.white(label) : label;
+  return rich ? theme.info(label) : label;
 };
 
 const formatFlagsCell = (row: SessionRow, rich: boolean) => {
   const flags = [
     row.thinkingLevel ? `think:${row.thinkingLevel}` : null,
     row.verboseLevel ? `verbose:${row.verboseLevel}` : null,
+    row.reasoningLevel ? `reasoning:${row.reasoningLevel}` : null,
+    row.elevatedLevel ? `elev:${row.elevatedLevel}` : null,
+    row.responseUsage ? `usage:${row.responseUsage}` : null,
     row.groupActivation ? `activation:${row.groupActivation}` : null,
     row.systemSent ? "system" : null,
     row.abortedLastRun ? "aborted" : null,
     row.sessionId ? `id:${row.sessionId}` : null,
   ].filter(Boolean);
   const label = flags.join(" ");
-  return label.length === 0 ? "" : rich ? chalk.gray(label) : label;
+  return label.length === 0 ? "" : rich ? theme.muted(label) : label;
 };
-
-const formatAge = (ms: number | null | undefined) => {
-  if (!ms || ms < 0) return "unknown";
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-};
-
-function classifyKey(key: string, entry?: SessionEntry): SessionRow["kind"] {
-  if (key === "global") return "global";
-  if (key === "unknown") return "unknown";
-  if (entry?.chatType === "group" || entry?.chatType === "room") return "group";
-  if (
-    key.startsWith("group:") ||
-    key.includes(":group:") ||
-    key.includes(":channel:")
-  ) {
-    return "group";
-  }
-  return "direct";
-}
 
 function toRows(store: Record<string, SessionEntry>): SessionRow[] {
   return Object.entries(store)
@@ -139,7 +140,7 @@ function toRows(store: Record<string, SessionEntry>): SessionRow[] {
       const updatedAt = entry?.updatedAt ?? null;
       return {
         key,
-        kind: classifyKey(key, entry),
+        kind: classifySessionKey(key, entry),
         updatedAt,
         ageMs: updatedAt ? Date.now() - updatedAt : null,
         sessionId: entry?.sessionId,
@@ -147,15 +148,22 @@ function toRows(store: Record<string, SessionEntry>): SessionRow[] {
         abortedLastRun: entry?.abortedLastRun,
         thinkingLevel: entry?.thinkingLevel,
         verboseLevel: entry?.verboseLevel,
+        reasoningLevel: entry?.reasoningLevel,
+        elevatedLevel: entry?.elevatedLevel,
+        responseUsage: entry?.responseUsage,
         groupActivation: entry?.groupActivation,
         inputTokens: entry?.inputTokens,
         outputTokens: entry?.outputTokens,
         totalTokens: entry?.totalTokens,
+        totalTokensFresh: entry?.totalTokensFresh,
         model: entry?.model,
+        modelProvider: entry?.modelProvider,
+        providerOverride: entry?.providerOverride,
+        modelOverride: entry?.modelOverride,
         contextTokens: entry?.contextTokens,
       } satisfies SessionRow;
     })
-    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
 export async function sessionsCommand(
@@ -169,7 +177,7 @@ export async function sessionsCommand(
     defaultModel: DEFAULT_MODEL,
   });
   const configContextTokens =
-    cfg.agent?.contextTokens ??
+    cfg.agents?.defaults?.contextTokens ??
     lookupContextTokens(resolved.model) ??
     DEFAULT_CONTEXT_TOKENS;
   const configModel = resolved.model ?? DEFAULT_MODEL;
@@ -188,8 +196,12 @@ export async function sessionsCommand(
   }
 
   const rows = toRows(store).filter((row) => {
-    if (activeMinutes === undefined) return true;
-    if (!row.updatedAt) return false;
+    if (activeMinutes === undefined) {
+      return true;
+    }
+    if (!row.updatedAt) {
+      return false;
+    }
     return Date.now() - row.updatedAt <= activeMinutes * 60_000;
   });
 
@@ -200,15 +212,23 @@ export async function sessionsCommand(
           path: storePath,
           count: rows.length,
           activeMinutes: activeMinutes ?? null,
-          sessions: rows.map((r) => ({
-            ...r,
-            contextTokens:
-              r.contextTokens ??
-              lookupContextTokens(r.model) ??
-              configContextTokens ??
-              null,
-            model: r.model ?? configModel ?? null,
-          })),
+          sessions: rows.map((r) => {
+            const resolvedModel = resolveSessionModelRef(
+              cfg,
+              r,
+              parseAgentSessionKey(r.key)?.agentId,
+            );
+            const model = resolvedModel.model ?? configModel;
+            return {
+              ...r,
+              totalTokens: resolveFreshSessionTotalTokens(r) ?? null,
+              totalTokensFresh:
+                typeof r.totalTokens === "number" ? r.totalTokensFresh !== false : false,
+              contextTokens:
+                r.contextTokens ?? lookupContextTokens(model) ?? configContextTokens ?? null,
+              model,
+            };
+          }),
         },
         null,
         2,
@@ -237,18 +257,16 @@ export async function sessionsCommand(
     "Flags",
   ].join(" ");
 
-  runtime.log(rich ? chalk.bold(header) : header);
+  runtime.log(rich ? theme.heading(header) : header);
 
   for (const row of rows) {
-    const model = row.model ?? configModel;
-    const contextTokens =
-      row.contextTokens ?? lookupContextTokens(model) ?? configContextTokens;
-    const input = row.inputTokens ?? 0;
-    const output = row.outputTokens ?? 0;
-    const total = row.totalTokens ?? input + output;
+    const resolvedModel = resolveSessionModelRef(cfg, row, parseAgentSessionKey(row.key)?.agentId);
+    const model = resolvedModel.model ?? configModel;
+    const contextTokens = row.contextTokens ?? lookupContextTokens(model) ?? configContextTokens;
+    const total = resolveFreshSessionTotalTokens(row);
 
     const keyLabel = truncateKey(row.key).padEnd(KEY_PAD);
-    const keyCell = rich ? chalk.cyan(keyLabel) : keyLabel;
+    const keyCell = rich ? theme.accent(keyLabel) : keyLabel;
 
     const line = [
       formatKindCell(row.kind, rich),

@@ -1,31 +1,12 @@
-import { CONFIG_PATH_CLAWDBOT } from "../../config/config.js";
+import { logConfigUpdated } from "../../config/logging.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import {
-  buildAllowlistSet,
-  modelKey,
-  resolveModelTarget,
-  updateConfig,
-} from "./shared.js";
+import { applyDefaultModelPrimaryUpdate, updateConfig } from "./shared.js";
 
 export async function modelsSetCommand(modelRaw: string, runtime: RuntimeEnv) {
   const updated = await updateConfig((cfg) => {
-    const resolved = resolveModelTarget({ raw: modelRaw, cfg });
-    const allowlist = buildAllowlistSet(cfg);
-    if (allowlist.size > 0) {
-      const key = modelKey(resolved.provider, resolved.model);
-      if (!allowlist.has(key)) {
-        throw new Error(`Model ${key} is not in agent.allowedModels.`);
-      }
-    }
-    return {
-      ...cfg,
-      agent: {
-        ...cfg.agent,
-        model: `${resolved.provider}/${resolved.model}`,
-      },
-    };
+    return applyDefaultModelPrimaryUpdate({ cfg, modelRaw, field: "model" });
   });
 
-  runtime.log(`Updated ${CONFIG_PATH_CLAWDBOT}`);
-  runtime.log(`Default model: ${updated.agent?.model ?? modelRaw}`);
+  logConfigUpdated(runtime);
+  runtime.log(`Default model: ${updated.agents?.defaults?.model?.primary ?? modelRaw}`);
 }

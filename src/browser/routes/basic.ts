@@ -1,13 +1,28 @@
-import type express from "express";
-
+import { resolveBrowserExecutableForPlatform } from "../chrome.executables.js";
 import { createBrowserProfilesService } from "../profiles-service.js";
-import type { BrowserRouteContext } from "../server-context.js";
+import type { BrowserRouteContext, ProfileContext } from "../server-context.js";
+import { resolveProfileContext } from "./agent.shared.js";
+import type { BrowserRequest, BrowserResponse, BrowserRouteRegistrar } from "./types.js";
 import { getProfileContext, jsonError, toStringOrEmpty } from "./utils.js";
 
-export function registerBrowserBasicRoutes(
-  app: express.Express,
-  ctx: BrowserRouteContext,
-) {
+async function withBasicProfileRoute(params: {
+  req: BrowserRequest;
+  res: BrowserResponse;
+  ctx: BrowserRouteContext;
+  run: (profileCtx: ProfileContext) => Promise<void>;
+}) {
+  const profileCtx = resolveProfileContext(params.req, params.res, params.ctx);
+  if (!profileCtx) {
+    return;
+  }
+  try {
+    await params.run(profileCtx);
+  } catch (err) {
+    jsonError(params.res, 500, String(err));
+  }
+}
+
+export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: BrowserRouteContext) {
   // List all profiles with their status
   app.get("/profiles", async (_req, res) => {
     try {
@@ -39,10 +54,22 @@ export function registerBrowserBasicRoutes(
     ]);
 
     const profileState = current.profiles.get(profileCtx.profile.name);
+    let detectedBrowser: string | null = null;
+    let detectedExecutablePath: string | null = null;
+    let detectError: string | null = null;
+
+    try {
+      const detected = resolveBrowserExecutableForPlatform(current.resolved, process.platform);
+      if (detected) {
+        detectedBrowser = detected.kind;
+        detectedExecutablePath = detected.path;
+      }
+    } catch (err) {
+      detectError = String(err);
+    }
 
     res.json({
       enabled: current.resolved.enabled,
-      controlUrl: current.resolved.controlUrl,
       profile: profileCtx.profile.name,
       running: cdpReady,
       cdpReady,
@@ -51,6 +78,9 @@ export function registerBrowserBasicRoutes(
       cdpPort: profileCtx.profile.cdpPort,
       cdpUrl: profileCtx.profile.cdpUrl,
       chosenBrowser: profileState?.running?.exe.kind ?? null,
+      detectedBrowser,
+      detectedExecutablePath,
+      detectError,
       userDataDir: profileState?.running?.userDataDir ?? null,
       color: profileCtx.profile.color,
       headless: current.resolved.headless,
@@ -62,51 +92,45 @@ export function registerBrowserBasicRoutes(
 
   // Start browser (profile-aware)
   app.post("/start", async (req, res) => {
-    const profileCtx = getProfileContext(req, ctx);
-    if ("error" in profileCtx) {
-      return jsonError(res, profileCtx.status, profileCtx.error);
-    }
-
-    try {
-      await profileCtx.ensureBrowserAvailable();
-      res.json({ ok: true, profile: profileCtx.profile.name });
-    } catch (err) {
-      jsonError(res, 500, String(err));
-    }
+    await withBasicProfileRoute({
+      req,
+      res,
+      ctx,
+      run: async (profileCtx) => {
+        await profileCtx.ensureBrowserAvailable();
+        res.json({ ok: true, profile: profileCtx.profile.name });
+      },
+    });
   });
 
   // Stop browser (profile-aware)
   app.post("/stop", async (req, res) => {
-    const profileCtx = getProfileContext(req, ctx);
-    if ("error" in profileCtx) {
-      return jsonError(res, profileCtx.status, profileCtx.error);
-    }
-
-    try {
-      const result = await profileCtx.stopRunningBrowser();
-      res.json({
-        ok: true,
-        stopped: result.stopped,
-        profile: profileCtx.profile.name,
-      });
-    } catch (err) {
-      jsonError(res, 500, String(err));
-    }
+    await withBasicProfileRoute({
+      req,
+      res,
+      ctx,
+      run: async (profileCtx) => {
+        const result = await profileCtx.stopRunningBrowser();
+        res.json({
+          ok: true,
+          stopped: result.stopped,
+          profile: profileCtx.profile.name,
+        });
+      },
+    });
   });
 
   // Reset profile (profile-aware)
   app.post("/reset-profile", async (req, res) => {
-    const profileCtx = getProfileContext(req, ctx);
-    if ("error" in profileCtx) {
-      return jsonError(res, profileCtx.status, profileCtx.error);
-    }
-
-    try {
-      const result = await profileCtx.resetProfile();
-      res.json({ ok: true, profile: profileCtx.profile.name, ...result });
-    } catch (err) {
-      jsonError(res, 500, String(err));
-    }
+    await withBasicProfileRoute({
+      req,
+      res,
+      ctx,
+      run: async (profileCtx) => {
+        const result = await profileCtx.resetProfile();
+        res.json({ ok: true, profile: profileCtx.profile.name, ...result });
+      },
+    });
   });
 
   // Create a new profile
@@ -114,8 +138,14 @@ export function registerBrowserBasicRoutes(
     const name = toStringOrEmpty((req.body as { name?: unknown })?.name);
     const color = toStringOrEmpty((req.body as { color?: unknown })?.color);
     const cdpUrl = toStringOrEmpty((req.body as { cdpUrl?: unknown })?.cdpUrl);
+    const driver = toStringOrEmpty((req.body as { driver?: unknown })?.driver) as
+      | "openclaw"
+      | "extension"
+      | "";
 
-    if (!name) return jsonError(res, 400, "name is required");
+    if (!name) {
+      return jsonError(res, 400, "name is required");
+    }
 
     try {
       const service = createBrowserProfilesService(ctx);
@@ -123,6 +153,7 @@ export function registerBrowserBasicRoutes(
         name,
         color: color || undefined,
         cdpUrl: cdpUrl || undefined,
+        driver: driver === "extension" ? "extension" : undefined,
       });
       res.json(result);
     } catch (err) {
@@ -146,7 +177,9 @@ export function registerBrowserBasicRoutes(
   // Delete a profile
   app.delete("/profiles/:name", async (req, res) => {
     const name = toStringOrEmpty(req.params.name);
-    if (!name) return jsonError(res, 400, "profile name is required");
+    if (!name) {
+      return jsonError(res, 400, "profile name is required");
+    }
 
     try {
       const service = createBrowserProfilesService(ctx);

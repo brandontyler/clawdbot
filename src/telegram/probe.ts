@@ -1,29 +1,21 @@
+import type { BaseProbeResult } from "../channels/plugins/types.js";
+import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 import { makeProxyFetch } from "./proxy.js";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 
-export type TelegramProbe = {
-  ok: boolean;
+export type TelegramProbe = BaseProbeResult & {
   status?: number | null;
-  error?: string | null;
   elapsedMs: number;
-  bot?: { id?: number | null; username?: string | null };
+  bot?: {
+    id?: number | null;
+    username?: string | null;
+    canJoinGroups?: boolean | null;
+    canReadAllGroupMessages?: boolean | null;
+    supportsInlineQueries?: boolean | null;
+  };
   webhook?: { url?: string | null; hasCustomCert?: boolean | null };
 };
-
-async function fetchWithTimeout(
-  url: string,
-  timeoutMs: number,
-  fetcher: typeof fetch,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetcher(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 export async function probeTelegram(
   token: string,
@@ -33,6 +25,7 @@ export async function probeTelegram(
   const started = Date.now();
   const fetcher = proxyUrl ? makeProxyFetch(proxyUrl) : fetch;
   const base = `${TELEGRAM_API_BASE}/bot${token}`;
+  const retryDelayMs = Math.max(50, Math.min(1000, timeoutMs));
 
   const result: TelegramProbe = {
     ok: false,
@@ -42,11 +35,36 @@ export async function probeTelegram(
   };
 
   try {
-    const meRes = await fetchWithTimeout(`${base}/getMe`, timeoutMs, fetcher);
+    let meRes: Response | null = null;
+    let fetchError: unknown = null;
+
+    // Retry loop for initial connection (handles network/DNS startup races)
+    for (let i = 0; i < 3; i++) {
+      try {
+        meRes = await fetchWithTimeout(`${base}/getMe`, {}, timeoutMs, fetcher);
+        break;
+      } catch (err) {
+        fetchError = err;
+        if (i < 2) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
+      }
+    }
+
+    if (!meRes) {
+      throw fetchError;
+    }
+
     const meJson = (await meRes.json()) as {
       ok?: boolean;
       description?: string;
-      result?: { id?: number; username?: string };
+      result?: {
+        id?: number;
+        username?: string;
+        can_join_groups?: boolean;
+        can_read_all_group_messages?: boolean;
+        supports_inline_queries?: boolean;
+      };
     };
     if (!meRes.ok || !meJson?.ok) {
       result.status = meRes.status;
@@ -57,15 +75,21 @@ export async function probeTelegram(
     result.bot = {
       id: meJson.result?.id ?? null,
       username: meJson.result?.username ?? null,
+      canJoinGroups:
+        typeof meJson.result?.can_join_groups === "boolean" ? meJson.result?.can_join_groups : null,
+      canReadAllGroupMessages:
+        typeof meJson.result?.can_read_all_group_messages === "boolean"
+          ? meJson.result?.can_read_all_group_messages
+          : null,
+      supportsInlineQueries:
+        typeof meJson.result?.supports_inline_queries === "boolean"
+          ? meJson.result?.supports_inline_queries
+          : null,
     };
 
     // Try to fetch webhook info, but don't fail health if it errors.
     try {
-      const webhookRes = await fetchWithTimeout(
-        `${base}/getWebhookInfo`,
-        timeoutMs,
-        fetcher,
-      );
+      const webhookRes = await fetchWithTimeout(`${base}/getWebhookInfo`, {}, timeoutMs, fetcher);
       const webhookJson = (await webhookRes.json()) as {
         ok?: boolean;
         result?: { url?: string; has_custom_certificate?: boolean };

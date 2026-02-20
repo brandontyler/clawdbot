@@ -1,88 +1,95 @@
-import { cancel, isCancel, multiselect } from "@clack/prompts";
-import { discoverAuthStorage } from "@mariozechner/pi-coding-agent";
-
-import { resolveClawdbotAgentDir } from "../../agents/agent-paths.js";
-import {
-  type ModelScanResult,
-  scanOpenRouterModels,
-} from "../../agents/model-scan.js";
-import { CONFIG_PATH_CLAWDBOT } from "../../config/config.js";
-import { warn } from "../../globals.js";
+import { cancel, multiselect as clackMultiselect, isCancel } from "@clack/prompts";
+import { resolveApiKeyForProvider } from "../../agents/model-auth.js";
+import { type ModelScanResult, scanOpenRouterModels } from "../../agents/model-scan.js";
+import { withProgressTotals } from "../../cli/progress.js";
+import { loadConfig } from "../../config/config.js";
+import { logConfigUpdated } from "../../config/logging.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import {
-  buildAllowlistSet,
-  formatMs,
-  formatTokenK,
-  updateConfig,
-} from "./shared.js";
+  stylePromptHint,
+  stylePromptMessage,
+  stylePromptTitle,
+} from "../../terminal/prompt-style.js";
+import { pad, truncate } from "./list.format.js";
+import { formatMs, formatTokenK, updateConfig } from "./shared.js";
 
 const MODEL_PAD = 42;
 const CTX_PAD = 8;
 
-const pad = (value: string, size: number) => value.padEnd(size);
+const multiselect = <T>(params: Parameters<typeof clackMultiselect<T>>[0]) =>
+  clackMultiselect({
+    ...params,
+    message: stylePromptMessage(params.message),
+    options: params.options.map((opt) =>
+      opt.hint === undefined ? opt : { ...opt, hint: stylePromptHint(opt.hint) },
+    ),
+  });
 
-const truncate = (value: string, max: number) => {
-  if (value.length <= max) return value;
-  if (max <= 3) return value.slice(0, max);
-  return `${value.slice(0, max - 3)}...`;
-};
+function guardPromptCancel<T>(value: T | symbol, runtime: RuntimeEnv): T {
+  if (isCancel(value)) {
+    cancel(stylePromptTitle("Model scan cancelled.") ?? "Model scan cancelled.");
+    runtime.exit(0);
+    throw new Error("unreachable");
+  }
+  return value;
+}
 
 function sortScanResults(results: ModelScanResult[]): ModelScanResult[] {
-  return results.slice().sort((a, b) => {
+  return results.slice().toSorted((a, b) => {
     const aImage = a.image.ok ? 1 : 0;
     const bImage = b.image.ok ? 1 : 0;
-    if (aImage !== bImage) return bImage - aImage;
+    if (aImage !== bImage) {
+      return bImage - aImage;
+    }
 
     const aToolLatency = a.tool.latencyMs ?? Number.POSITIVE_INFINITY;
     const bToolLatency = b.tool.latencyMs ?? Number.POSITIVE_INFINITY;
-    if (aToolLatency !== bToolLatency) return aToolLatency - bToolLatency;
+    if (aToolLatency !== bToolLatency) {
+      return aToolLatency - bToolLatency;
+    }
 
-    const aCtx = a.contextLength ?? 0;
-    const bCtx = b.contextLength ?? 0;
-    if (aCtx !== bCtx) return bCtx - aCtx;
-
-    const aParams = a.inferredParamB ?? 0;
-    const bParams = b.inferredParamB ?? 0;
-    if (aParams !== bParams) return bParams - aParams;
-
-    return a.modelRef.localeCompare(b.modelRef);
+    return compareScanMetadata(a, b);
   });
 }
 
 function sortImageResults(results: ModelScanResult[]): ModelScanResult[] {
-  return results.slice().sort((a, b) => {
+  return results.slice().toSorted((a, b) => {
     const aLatency = a.image.latencyMs ?? Number.POSITIVE_INFINITY;
     const bLatency = b.image.latencyMs ?? Number.POSITIVE_INFINITY;
-    if (aLatency !== bLatency) return aLatency - bLatency;
+    if (aLatency !== bLatency) {
+      return aLatency - bLatency;
+    }
 
-    const aCtx = a.contextLength ?? 0;
-    const bCtx = b.contextLength ?? 0;
-    if (aCtx !== bCtx) return bCtx - aCtx;
-
-    const aParams = a.inferredParamB ?? 0;
-    const bParams = b.inferredParamB ?? 0;
-    if (aParams !== bParams) return bParams - aParams;
-
-    return a.modelRef.localeCompare(b.modelRef);
+    return compareScanMetadata(a, b);
   });
 }
 
+function compareScanMetadata(a: ModelScanResult, b: ModelScanResult): number {
+  const aCtx = a.contextLength ?? 0;
+  const bCtx = b.contextLength ?? 0;
+  if (aCtx !== bCtx) {
+    return bCtx - aCtx;
+  }
+
+  const aParams = a.inferredParamB ?? 0;
+  const bParams = b.inferredParamB ?? 0;
+  if (aParams !== bParams) {
+    return bParams - aParams;
+  }
+
+  return a.modelRef.localeCompare(b.modelRef);
+}
+
 function buildScanHint(result: ModelScanResult): string {
-  const toolLabel = result.tool.ok
-    ? `tool ${formatMs(result.tool.latencyMs)}`
-    : "tool fail";
+  const toolLabel = result.tool.ok ? `tool ${formatMs(result.tool.latencyMs)}` : "tool fail";
   const imageLabel = result.image.skipped
     ? "img skip"
     : result.image.ok
       ? `img ${formatMs(result.image.latencyMs)}`
       : "img fail";
-  const ctxLabel = result.contextLength
-    ? `ctx ${formatTokenK(result.contextLength)}`
-    : "ctx ?";
+  const ctxLabel = result.contextLength ? `ctx ${formatTokenK(result.contextLength)}` : "ctx ?";
   const paramLabel = result.inferredParamB ? `${result.inferredParamB}b` : null;
-  return [toolLabel, imageLabel, ctxLabel, paramLabel]
-    .filter(Boolean)
-    .join(" | ");
+  return [toolLabel, imageLabel, ctxLabel, paramLabel].filter(Boolean).join(" | ");
 }
 
 function printScanSummary(results: ModelScanResult[], runtime: RuntimeEnv) {
@@ -108,30 +115,16 @@ function printScanTable(results: ModelScanResult[], runtime: RuntimeEnv) {
 
   for (const entry of results) {
     const modelLabel = pad(truncate(entry.modelRef, MODEL_PAD), MODEL_PAD);
-    const toolLabel = pad(
-      entry.tool.ok ? formatMs(entry.tool.latencyMs) : "fail",
-      10,
-    );
+    const toolLabel = pad(entry.tool.ok ? formatMs(entry.tool.latencyMs) : "fail", 10);
     const imageLabel = pad(
-      entry.image.ok
-        ? formatMs(entry.image.latencyMs)
-        : entry.image.skipped
-          ? "skip"
-          : "fail",
+      entry.image.ok ? formatMs(entry.image.latencyMs) : entry.image.skipped ? "skip" : "fail",
       10,
     );
     const ctxLabel = pad(formatTokenK(entry.contextLength), CTX_PAD);
-    const paramsLabel = pad(
-      entry.inferredParamB ? `${entry.inferredParamB}b` : "-",
-      8,
-    );
+    const paramsLabel = pad(entry.inferredParamB ? `${entry.inferredParamB}b` : "-", 8);
     const notes = entry.modality ? `modality:${entry.modality}` : "";
 
-    runtime.log(
-      [modelLabel, toolLabel, imageLabel, ctxLabel, paramsLabel, notes].join(
-        " ",
-      ),
-    );
+    runtime.log([modelLabel, toolLabel, imageLabel, ctxLabel, paramsLabel, notes].join(" "));
   }
 }
 
@@ -148,21 +141,16 @@ export async function modelsScanCommand(
     setDefault?: boolean;
     setImage?: boolean;
     json?: boolean;
+    probe?: boolean;
   },
   runtime: RuntimeEnv,
 ) {
   const minParams = opts.minParams ? Number(opts.minParams) : undefined;
-  if (
-    minParams !== undefined &&
-    (!Number.isFinite(minParams) || minParams < 0)
-  ) {
+  if (minParams !== undefined && (!Number.isFinite(minParams) || minParams < 0)) {
     throw new Error("--min-params must be >= 0");
   }
   const maxAgeDays = opts.maxAgeDays ? Number(opts.maxAgeDays) : undefined;
-  if (
-    maxAgeDays !== undefined &&
-    (!Number.isFinite(maxAgeDays) || maxAgeDays < 0)
-  ) {
+  if (maxAgeDays !== undefined && (!Number.isFinite(maxAgeDays) || maxAgeDays < 0)) {
     throw new Error("--max-age-days must be >= 0");
   }
   const maxCandidates = opts.maxCandidates ? Number(opts.maxCandidates) : 6;
@@ -174,23 +162,64 @@ export async function modelsScanCommand(
     throw new Error("--timeout must be > 0");
   }
   const concurrency = opts.concurrency ? Number(opts.concurrency) : undefined;
-  if (
-    concurrency !== undefined &&
-    (!Number.isFinite(concurrency) || concurrency <= 0)
-  ) {
+  if (concurrency !== undefined && (!Number.isFinite(concurrency) || concurrency <= 0)) {
     throw new Error("--concurrency must be > 0");
   }
 
-  const authStorage = discoverAuthStorage(resolveClawdbotAgentDir());
-  const storedKey = await authStorage.getApiKey("openrouter");
-  const results = await scanOpenRouterModels({
-    apiKey: storedKey ?? undefined,
-    minParamB: minParams,
-    maxAgeDays,
-    providerFilter: opts.provider,
-    timeoutMs: timeout,
-    concurrency,
-  });
+  const cfg = loadConfig();
+  const probe = opts.probe ?? true;
+  let storedKey: string | undefined;
+  if (probe) {
+    try {
+      const resolved = await resolveApiKeyForProvider({
+        provider: "openrouter",
+        cfg,
+      });
+      storedKey = resolved.apiKey;
+    } catch {
+      storedKey = undefined;
+    }
+  }
+  const results = await withProgressTotals(
+    {
+      label: "Scanning OpenRouter models...",
+      indeterminate: false,
+      enabled: opts.json !== true,
+    },
+    async (update) =>
+      await scanOpenRouterModels({
+        apiKey: storedKey ?? undefined,
+        minParamB: minParams,
+        maxAgeDays,
+        providerFilter: opts.provider,
+        timeoutMs: timeout,
+        concurrency,
+        probe,
+        onProgress: ({ phase, completed, total }) => {
+          if (phase !== "probe") {
+            return;
+          }
+          const labelBase = probe ? "Probing models" : "Scanning models";
+          update({
+            completed,
+            total,
+            label: `${labelBase} (${completed}/${total})`,
+          });
+        },
+      }),
+  );
+
+  if (!probe) {
+    if (!opts.json) {
+      runtime.log(
+        `Found ${results.length} OpenRouter free models (metadata only; pass --probe to test tools/images).`,
+      );
+      printScanTable(sortScanResults(results), runtime);
+    } else {
+      runtime.log(JSON.stringify(results, null, 2));
+    }
+    return;
+  }
 
   const toolOk = results.filter((entry) => entry.tool.ok);
   if (toolOk.length === 0) {
@@ -231,12 +260,7 @@ export async function modelsScanCommand(
       initialValues: preselected,
     });
 
-    if (isCancel(selection)) {
-      cancel("Model scan cancelled.");
-      runtime.exit(0);
-    }
-
-    selected = selection as string[];
+    selected = guardPromptCancel(selection, runtime);
     if (imageSorted.length > 0) {
       const imageSelection = await multiselect({
         message: "Select image fallback models (ordered)",
@@ -248,12 +272,7 @@ export async function modelsScanCommand(
         initialValues: imagePreselected,
       });
 
-      if (isCancel(imageSelection)) {
-        cancel("Model scan cancelled.");
-        runtime.exit(0);
-      }
-
-      selectedImages = imageSelection as string[];
+      selectedImages = guardPromptCancel(imageSelection, runtime);
     }
   } else if (!process.stdin.isTTY && !opts.yes && !noInput && !opts.json) {
     throw new Error("Non-interactive scan: pass --yes to apply defaults.");
@@ -266,31 +285,50 @@ export async function modelsScanCommand(
     throw new Error("No image-capable models selected for image model.");
   }
 
-  const updated = await updateConfig((cfg) => {
-    const agent = {
-      ...cfg.agent,
-      modelFallbacks: selected,
-      ...(opts.setDefault ? { model: selected[0] } : {}),
-      ...(opts.setImage && selectedImages.length > 0
-        ? { imageModel: selectedImages[0] }
-        : {}),
-    } satisfies NonNullable<typeof cfg.agent>;
-    if (imageSorted.length > 0) {
-      agent.imageModelFallbacks = selectedImages;
+  const _updated = await updateConfig((cfg) => {
+    const nextModels = { ...cfg.agents?.defaults?.models };
+    for (const entry of selected) {
+      if (!nextModels[entry]) {
+        nextModels[entry] = {};
+      }
     }
+    for (const entry of selectedImages) {
+      if (!nextModels[entry]) {
+        nextModels[entry] = {};
+      }
+    }
+    const existingImageModel = cfg.agents?.defaults?.imageModel as
+      | { primary?: string; fallbacks?: string[] }
+      | undefined;
+    const nextImageModel =
+      selectedImages.length > 0
+        ? {
+            ...(existingImageModel?.primary ? { primary: existingImageModel.primary } : undefined),
+            fallbacks: selectedImages,
+            ...(opts.setImage ? { primary: selectedImages[0] } : {}),
+          }
+        : cfg.agents?.defaults?.imageModel;
+    const existingModel = cfg.agents?.defaults?.model as
+      | { primary?: string; fallbacks?: string[] }
+      | undefined;
+    const defaults = {
+      ...cfg.agents?.defaults,
+      model: {
+        ...(existingModel?.primary ? { primary: existingModel.primary } : undefined),
+        fallbacks: selected,
+        ...(opts.setDefault ? { primary: selected[0] } : {}),
+      },
+      ...(nextImageModel ? { imageModel: nextImageModel } : {}),
+      models: nextModels,
+    } satisfies NonNullable<NonNullable<typeof cfg.agents>["defaults"]>;
     return {
       ...cfg,
-      agent,
+      agents: {
+        ...cfg.agents,
+        defaults,
+      },
     };
   });
-
-  const allowlist = buildAllowlistSet(updated);
-  const allowlistMissing =
-    allowlist.size > 0 ? selected.filter((entry) => !allowlist.has(entry)) : [];
-  const allowlistMissingImages =
-    allowlist.size > 0
-      ? selectedImages.filter((entry) => !allowlist.has(entry))
-      : [];
 
   if (opts.json) {
     runtime.log(
@@ -301,21 +339,7 @@ export async function modelsScanCommand(
           setDefault: Boolean(opts.setDefault),
           setImage: Boolean(opts.setImage),
           results,
-          warnings:
-            allowlistMissing.length > 0 || allowlistMissingImages.length > 0
-              ? [
-                  ...(allowlistMissing.length > 0
-                    ? [
-                        `Selected models not in agent.allowedModels: ${allowlistMissing.join(", ")}`,
-                      ]
-                    : []),
-                  ...(allowlistMissingImages.length > 0
-                    ? [
-                        `Selected image models not in agent.allowedModels: ${allowlistMissingImages.join(", ")}`,
-                      ]
-                    : []),
-                ]
-              : [],
+          warnings: [],
         },
         null,
         2,
@@ -324,22 +348,7 @@ export async function modelsScanCommand(
     return;
   }
 
-  if (allowlistMissing.length > 0) {
-    runtime.log(
-      warn(
-        `Warning: ${allowlistMissing.length} selected models are not in agent.allowedModels and will be ignored by fallback: ${allowlistMissing.join(", ")}`,
-      ),
-    );
-  }
-  if (allowlistMissingImages.length > 0) {
-    runtime.log(
-      warn(
-        `Warning: ${allowlistMissingImages.length} selected image models are not in agent.allowedModels and will be ignored by fallback: ${allowlistMissingImages.join(", ")}`,
-      ),
-    );
-  }
-
-  runtime.log(`Updated ${CONFIG_PATH_CLAWDBOT}`);
+  logConfigUpdated(runtime);
   runtime.log(`Fallbacks: ${selected.join(", ")}`);
   if (selectedImages.length > 0) {
     runtime.log(`Image fallbacks: ${selectedImages.join(", ")}`);

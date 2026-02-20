@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { formatCliCommand } from "../cli/command-format.js";
 import { ensurePortAvailable, PortInUseError } from "../infra/ports.js";
 import { getTailnetHostname } from "../infra/tailscale.js";
 import { logInfo } from "../logger.js";
@@ -36,14 +37,14 @@ export async function ensureMediaHosted(
   if (needsServerStart && !opts.startServer) {
     await fs.rm(saved.path).catch(() => {});
     throw new Error(
-      "Media hosting requires the webhook/Funnel server. Start `clawdbot webhook`/`clawdbot up` or re-run with --serve-media.",
+      `Media hosting requires the webhook/Funnel server. Start \`${formatCliCommand("openclaw webhook")}\`/\`${formatCliCommand("openclaw up")}\` or re-run with --serve-media.`,
     );
   }
   if (needsServerStart && opts.startServer) {
     if (!mediaServer) {
       mediaServer = await startMediaServer(port, TTL_MS, runtime);
       logInfo(
-        `📡 Started temporary media host on http://localhost:${port}/media/:id (TTL ${TTL_MS / 1000}s)`,
+        `🦞 Started temporary media host on http://localhost:${port}/media/:id (TTL ${TTL_MS / 1000}s)`,
         runtime,
       );
       mediaServer.unref?.();
@@ -59,7 +60,9 @@ async function isPortFree(port: number) {
     await ensurePortAvailable(port);
     return true;
   } catch (err) {
-    if (err instanceof PortInUseError) return false;
+    if (err instanceof PortInUseError) {
+      return false;
+    }
     throw err;
   }
 }

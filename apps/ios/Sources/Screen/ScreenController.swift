@@ -1,19 +1,17 @@
-import ClawdbotKit
+import OpenClawKit
 import Observation
-import SwiftUI
+import UIKit
 import WebKit
 
 @MainActor
 @Observable
 final class ScreenController {
-    let webView: WKWebView
-    private let navigationDelegate: ScreenNavigationDelegate
-    private let a2uiActionHandler: CanvasA2UIActionMessageHandler
+    private weak var activeWebView: WKWebView?
 
     var urlString: String = ""
     var errorText: String?
 
-    /// Callback invoked when a clawdbot:// deep link is tapped in the canvas
+    /// Callback invoked when an openclaw:// deep link is tapped in the canvas
     var onDeepLink: ((URL) -> Void)?
 
     /// Callback invoked when the user clicks an A2UI action (e.g. button) inside the canvas web UI.
@@ -24,57 +22,50 @@ final class ScreenController {
     private var debugStatusSubtitle: String?
 
     init() {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        let a2uiActionHandler = CanvasA2UIActionMessageHandler()
-        let userContentController = WKUserContentController()
-        for name in CanvasA2UIActionMessageHandler.handlerNames {
-            userContentController.add(a2uiActionHandler, name: name)
-        }
-        config.userContentController = userContentController
-        self.navigationDelegate = ScreenNavigationDelegate()
-        self.a2uiActionHandler = a2uiActionHandler
-        self.webView = WKWebView(frame: .zero, configuration: config)
-        // Canvas scaffold is a fully self-contained HTML page; avoid relying on transparency underlays.
-        self.webView.isOpaque = true
-        self.webView.backgroundColor = .black
-        self.webView.scrollView.backgroundColor = .black
-        self.webView.scrollView.contentInsetAdjustmentBehavior = .never
-        self.webView.scrollView.contentInset = .zero
-        self.webView.scrollView.scrollIndicatorInsets = .zero
-        self.webView.scrollView.automaticallyAdjustsScrollIndicatorInsets = false
-        self.applyScrollBehavior()
-        self.webView.navigationDelegate = self.navigationDelegate
-        self.navigationDelegate.controller = self
-        a2uiActionHandler.controller = self
         self.reload()
     }
 
     func navigate(to urlString: String) {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            self.urlString = ""
+            self.reload()
+            return
+        }
+        if let url = URL(string: trimmed),
+           !url.isFileURL,
+           let host = url.host,
+           Self.isLoopbackHost(host)
+        {
+            // Never try to load loopback URLs from a remote gateway.
+            self.showDefaultCanvas()
+            return
+        }
         self.urlString = (trimmed == "/" ? "" : trimmed)
         self.reload()
     }
 
     func reload() {
-        let trimmed = self.urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         self.applyScrollBehavior()
+        guard let webView = self.activeWebView else { return }
+
+        let trimmed = self.urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             guard let url = Self.canvasScaffoldURL else { return }
             self.errorText = nil
-            self.webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
             return
+        }
+
+        guard let url = URL(string: trimmed) else {
+            self.errorText = "Invalid URL: \(trimmed)"
+            return
+        }
+        self.errorText = nil
+        if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         } else {
-            guard let url = URL(string: trimmed) else {
-                self.errorText = "Invalid URL: \(trimmed)"
-                return
-            }
-            self.errorText = nil
-            if url.isFileURL {
-                self.webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-            } else {
-                self.webView.load(URLRequest(url: url))
-            }
+            webView.load(URLRequest(url: url))
         }
     }
 
@@ -94,14 +85,15 @@ final class ScreenController {
         self.applyDebugStatusIfNeeded()
     }
 
-    fileprivate func applyDebugStatusIfNeeded() {
+    func applyDebugStatusIfNeeded() {
+        guard let webView = self.activeWebView else { return }
         let enabled = self.debugStatusEnabled
         let title = self.debugStatusTitle
         let subtitle = self.debugStatusSubtitle
         let js = """
         (() => {
           try {
-            const api = globalThis.__clawdbot;
+            const api = globalThis.__openclaw;
             if (!api) return;
             if (typeof api.setDebugStatusEnabled === 'function') {
               api.setDebugStatusEnabled(\(enabled ? "true" : "false"));
@@ -113,7 +105,7 @@ final class ScreenController {
           } catch (_) {}
         })()
         """
-        self.webView.evaluateJavaScript(js) { _, _ in }
+        webView.evaluateJavaScript(js) { _, _ in }
     }
 
     func waitForA2UIReady(timeoutMs: Int) async -> Bool {
@@ -124,7 +116,8 @@ final class ScreenController {
                 let res = try await self.eval(javaScript: """
                 (() => {
                   try {
-                    return !!globalThis.clawdbotA2UI && typeof globalThis.clawdbotA2UI.applyMessages === 'function';
+                    const host = globalThis.openclawA2UI;
+                    return !!host && typeof host.applyMessages === 'function';
                   } catch (_) { return false; }
                 })()
                 """)
@@ -139,8 +132,13 @@ final class ScreenController {
     }
 
     func eval(javaScript: String) async throws -> String {
-        try await withCheckedThrowingContinuation { cont in
-            self.webView.evaluateJavaScript(javaScript) { result, error in
+        guard let webView = self.activeWebView else {
+            throw NSError(domain: "Screen", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "web view unavailable",
+            ])
+        }
+        return try await withCheckedThrowingContinuation { cont in
+            webView.evaluateJavaScript(javaScript) { result, error in
                 if let error {
                     cont.resume(throwing: error)
                     return
@@ -159,8 +157,13 @@ final class ScreenController {
         if let maxWidth {
             config.snapshotWidth = NSNumber(value: Double(maxWidth))
         }
+        guard let webView = self.activeWebView else {
+            throw NSError(domain: "Screen", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "web view unavailable",
+            ])
+        }
         let image: UIImage = try await withCheckedThrowingContinuation { cont in
-            self.webView.takeSnapshot(with: config) { image, error in
+            webView.takeSnapshot(with: config) { image, error in
                 if let error {
                     cont.resume(throwing: error)
                     return
@@ -184,15 +187,20 @@ final class ScreenController {
 
     func snapshotBase64(
         maxWidth: CGFloat? = nil,
-        format: ClawdbotCanvasSnapshotFormat,
+        format: OpenClawCanvasSnapshotFormat,
         quality: Double? = nil) async throws -> String
     {
         let config = WKSnapshotConfiguration()
         if let maxWidth {
             config.snapshotWidth = NSNumber(value: Double(maxWidth))
         }
+        guard let webView = self.activeWebView else {
+            throw NSError(domain: "Screen", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "web view unavailable",
+            ])
+        }
         let image: UIImage = try await withCheckedThrowingContinuation { cont in
-            self.webView.takeSnapshot(with: config) { image, error in
+            webView.takeSnapshot(with: config) { image, error in
                 if let error {
                     cont.resume(throwing: error)
                     return
@@ -223,13 +231,24 @@ final class ScreenController {
         return data.base64EncodedString()
     }
 
+    func attachWebView(_ webView: WKWebView) {
+        self.activeWebView = webView
+        self.reload()
+        self.applyDebugStatusIfNeeded()
+    }
+
+    func detachWebView(_ webView: WKWebView) {
+        guard self.activeWebView === webView else { return }
+        self.activeWebView = nil
+    }
+
     private static func bundledResourceURL(
         name: String,
         ext: String,
         subdirectory: String)
         -> URL?
     {
-        let bundle = ClawdbotKitResources.bundle
+        let bundle = OpenClawKitResources.bundle
         return bundle.url(forResource: name, withExtension: ext, subdirectory: subdirectory)
             ?? bundle.url(forResource: name, withExtension: ext)
     }
@@ -238,6 +257,18 @@ final class ScreenController {
         name: "scaffold",
         ext: "html",
         subdirectory: "CanvasScaffold")
+
+    private static func isLoopbackHost(_ host: String) -> Bool {
+        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty { return true }
+        if normalized == "localhost" || normalized == "::1" || normalized == "0.0.0.0" {
+            return true
+        }
+        if normalized == "127.0.0.1" || normalized.hasPrefix("127.") {
+            return true
+        }
+        return false
+    }
     func isTrustedCanvasUIURL(_ url: URL) -> Bool {
         guard url.isFileURL else { return false }
         let std = url.standardizedFileURL
@@ -250,9 +281,10 @@ final class ScreenController {
     }
 
     private func applyScrollBehavior() {
+        guard let webView = self.activeWebView else { return }
         let trimmed = self.urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         let allowScroll = !trimmed.isEmpty
-        let scrollView = self.webView.scrollView
+        let scrollView = webView.scrollView
         // Default canvas needs raw touch events; external pages should scroll.
         scrollView.isScrollEnabled = allowScroll
         scrollView.bounces = allowScroll
@@ -337,75 +369,5 @@ extension Double {
         if self < range.lowerBound { return range.lowerBound }
         if self > range.upperBound { return range.upperBound }
         return self
-    }
-}
-
-// MARK: - Navigation Delegate
-
-/// Handles navigation policy to intercept clawdbot:// deep links from canvas
-@MainActor
-private final class ScreenNavigationDelegate: NSObject, WKNavigationDelegate {
-    weak var controller: ScreenController?
-
-    func webView(
-        _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void)
-    {
-        guard let url = navigationAction.request.url else {
-            decisionHandler(.allow)
-            return
-        }
-
-        // Intercept clawdbot:// deep links
-        if url.scheme == "clawdbot" {
-            decisionHandler(.cancel)
-            self.controller?.onDeepLink?(url)
-            return
-        }
-
-        decisionHandler(.allow)
-    }
-
-    func webView(
-        _: WKWebView,
-        didFailProvisionalNavigation _: WKNavigation?,
-        withError error: any Error)
-    {
-        self.controller?.errorText = error.localizedDescription
-    }
-
-    func webView(_: WKWebView, didFinish _: WKNavigation?) {
-        self.controller?.errorText = nil
-        self.controller?.applyDebugStatusIfNeeded()
-    }
-
-    func webView(_: WKWebView, didFail _: WKNavigation?, withError error: any Error) {
-        self.controller?.errorText = error.localizedDescription
-    }
-}
-
-private final class CanvasA2UIActionMessageHandler: NSObject, WKScriptMessageHandler {
-    static let messageName = "clawdbotCanvasA2UIAction"
-    static let legacyMessageNames = ["canvas", "a2ui", "userAction", "action"]
-    static let handlerNames = [messageName] + legacyMessageNames
-
-    weak var controller: ScreenController?
-
-    func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == Self.messageName else { return }
-        guard let controller else { return }
-
-        guard let url = message.webView?.url else { return }
-        if url.isFileURL {
-            guard controller.isTrustedCanvasUIURL(url) else { return }
-        } else {
-            // For security, only accept actions from local-network pages (e.g. the canvas host).
-            guard controller.isLocalNetworkCanvasURL(url) else { return }
-        }
-
-        guard let body = ScreenController.parseA2UIActionBody(message.body) else { return }
-
-        controller.onA2UIAction?(body)
     }
 }

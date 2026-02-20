@@ -1,28 +1,158 @@
 import { randomUUID } from "node:crypto";
-
+import { listAgentIds } from "../../agents/agent-scope.js";
+import { BARE_SESSION_RESET_PROMPT } from "../../auto-reply/reply/session-reset-prompt.js";
 import { agentCommand } from "../../commands/agent.js";
 import { loadConfig } from "../../config/config.js";
-import { type SessionEntry, saveSessionStore } from "../../config/sessions.js";
-import { registerAgentRunContext } from "../../infra/agent-events.js";
-import { defaultRuntime } from "../../runtime.js";
-import { resolveSendPolicy } from "../../sessions/send-policy.js";
-import { normalizeE164 } from "../../utils.js";
 import {
-  type AgentWaitParams,
+  resolveAgentIdFromSessionKey,
+  resolveExplicitAgentSessionKey,
+  resolveAgentMainSessionKey,
+  type SessionEntry,
+  updateSessionStore,
+} from "../../config/sessions.js";
+import { registerAgentRunContext } from "../../infra/agent-events.js";
+import {
+  resolveAgentDeliveryPlan,
+  resolveAgentOutboundTarget,
+} from "../../infra/outbound/agent-delivery.js";
+import { classifySessionKeyShape, normalizeAgentId } from "../../routing/session-key.js";
+import { defaultRuntime } from "../../runtime.js";
+import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
+import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
+import {
+  INTERNAL_MESSAGE_CHANNEL,
+  isDeliverableMessageChannel,
+  isGatewayMessageChannel,
+  normalizeMessageChannel,
+} from "../../utils/message-channel.js";
+import { resolveAssistantIdentity } from "../assistant-identity.js";
+import { parseMessageWithAttachments } from "../chat-attachments.js";
+import { resolveAssistantAvatarUrl } from "../control-ui-shared.js";
+import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
+import {
   ErrorCodes,
   errorShape,
   formatValidationErrors,
+  validateAgentIdentityParams,
   validateAgentParams,
   validateAgentWaitParams,
 } from "../protocol/index.js";
-import { loadSessionEntry } from "../session-utils.js";
+import {
+  canonicalizeSpawnedByForAgent,
+  loadSessionEntry,
+  pruneLegacyStoreKeys,
+  resolveGatewaySessionStoreTarget,
+} from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import { waitForAgentJob } from "./agent-job.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
+import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
+import { sessionsHandlers } from "./sessions.js";
+import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
+
+const RESET_COMMAND_RE = /^\/(new|reset)(?:\s+([\s\S]*))?$/i;
+
+function isGatewayErrorShape(value: unknown): value is { code: string; message: string } {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as { code?: unknown; message?: unknown };
+  return typeof candidate.code === "string" && typeof candidate.message === "string";
+}
+
+async function runSessionResetFromAgent(params: {
+  key: string;
+  reason: "new" | "reset";
+  idempotencyKey: string;
+  context: GatewayRequestHandlerOptions["context"];
+  client: GatewayRequestHandlerOptions["client"];
+  isWebchatConnect: GatewayRequestHandlerOptions["isWebchatConnect"];
+}): Promise<
+  | { ok: true; key: string; sessionId?: string }
+  | { ok: false; error: ReturnType<typeof errorShape> }
+> {
+  return await new Promise((resolve) => {
+    let settled = false;
+    const settle = (
+      result:
+        | { ok: true; key: string; sessionId?: string }
+        | { ok: false; error: ReturnType<typeof errorShape> },
+    ) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+
+    const respond: GatewayRequestHandlerOptions["respond"] = (ok, payload, error) => {
+      if (!ok) {
+        settle({
+          ok: false,
+          error: isGatewayErrorShape(error)
+            ? error
+            : errorShape(ErrorCodes.UNAVAILABLE, String(error ?? "sessions.reset failed")),
+        });
+        return;
+      }
+      const payloadObj = payload as
+        | {
+            key?: unknown;
+            entry?: {
+              sessionId?: unknown;
+            };
+          }
+        | undefined;
+      const key = typeof payloadObj?.key === "string" ? payloadObj.key : params.key;
+      const sessionId =
+        payloadObj?.entry && typeof payloadObj.entry.sessionId === "string"
+          ? payloadObj.entry.sessionId
+          : undefined;
+      settle({ ok: true, key, sessionId });
+    };
+
+    const resetResult = sessionsHandlers["sessions.reset"]({
+      req: {
+        type: "req",
+        id: `${params.idempotencyKey}:reset`,
+        method: "sessions.reset",
+      },
+      params: {
+        key: params.key,
+        reason: params.reason,
+      },
+      context: params.context,
+      client: params.client,
+      isWebchatConnect: params.isWebchatConnect,
+      respond,
+    });
+
+    void (async () => {
+      try {
+        await resetResult;
+        if (!settled) {
+          settle({
+            ok: false,
+            error: errorShape(
+              ErrorCodes.UNAVAILABLE,
+              "sessions.reset completed without returning a response",
+            ),
+          });
+        }
+      } catch (err: unknown) {
+        settle({
+          ok: false,
+          error: errorShape(ErrorCodes.UNAVAILABLE, String(err)),
+        });
+      }
+    })();
+  });
+}
 
 export const agentHandlers: GatewayRequestHandlers = {
-  agent: async ({ params, respond, context }) => {
-    const p = params as Record<string, unknown>;
+  agent: async ({ params, respond, context, client, isWebchatConnect }) => {
+    const p = params;
     if (!validateAgentParams(p)) {
       respond(
         false,
@@ -36,18 +166,47 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     const request = p as {
       message: string;
+      agentId?: string;
       to?: string;
+      replyTo?: string;
       sessionId?: string;
       sessionKey?: string;
       thinking?: string;
       deliver?: boolean;
+      attachments?: Array<{
+        type?: string;
+        mimeType?: string;
+        fileName?: string;
+        content?: unknown;
+      }>;
       channel?: string;
+      replyChannel?: string;
+      accountId?: string;
+      replyAccountId?: string;
+      threadId?: string;
+      groupId?: string;
+      groupChannel?: string;
+      groupSpace?: string;
       lane?: string;
       extraSystemPrompt?: string;
       idempotencyKey: string;
       timeout?: number;
+      label?: string;
+      spawnedBy?: string;
+      inputProvenance?: InputProvenance;
     };
+    const cfg = loadConfig();
     const idem = request.idempotencyKey;
+    const groupIdRaw = typeof request.groupId === "string" ? request.groupId.trim() : "";
+    const groupChannelRaw =
+      typeof request.groupChannel === "string" ? request.groupChannel.trim() : "";
+    const groupSpaceRaw = typeof request.groupSpace === "string" ? request.groupSpace.trim() : "";
+    let resolvedGroupId: string | undefined = groupIdRaw || undefined;
+    let resolvedGroupChannel: string | undefined = groupChannelRaw || undefined;
+    let resolvedGroupSpace: string | undefined = groupSpaceRaw || undefined;
+    let spawnedByValue =
+      typeof request.spawnedBy === "string" ? request.spawnedBy.trim() : undefined;
+    const inputProvenance = normalizeInputProvenance(request.inputProvenance);
     const cached = context.dedupe.get(`agent:${idem}`);
     if (cached) {
       respond(cached.ok, cached.payload, cached.error, {
@@ -55,159 +214,301 @@ export const agentHandlers: GatewayRequestHandlers = {
       });
       return;
     }
-    const message = request.message.trim();
+    const normalizedAttachments = normalizeRpcAttachmentsToChatAttachments(request.attachments);
 
-    const requestedSessionKey =
+    let message = request.message.trim();
+    let images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+    if (normalizedAttachments.length > 0) {
+      try {
+        const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
+          maxBytes: 5_000_000,
+          log: context.logGateway,
+        });
+        message = parsed.message.trim();
+        images = parsed.images;
+      } catch (err) {
+        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, String(err)));
+        return;
+      }
+    }
+
+    const isKnownGatewayChannel = (value: string): boolean => isGatewayMessageChannel(value);
+    const channelHints = [request.channel, request.replyChannel]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    for (const rawChannel of channelHints) {
+      const normalized = normalizeMessageChannel(rawChannel);
+      if (normalized && normalized !== "last" && !isKnownGatewayChannel(normalized)) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent params: unknown channel: ${String(normalized)}`,
+          ),
+        );
+        return;
+      }
+    }
+
+    const agentIdRaw = typeof request.agentId === "string" ? request.agentId.trim() : "";
+    const agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
+    if (agentId) {
+      const knownAgents = listAgentIds(cfg);
+      if (!knownAgents.includes(agentId)) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent params: unknown agent id "${request.agentId}"`,
+          ),
+        );
+        return;
+      }
+    }
+
+    const requestedSessionKeyRaw =
       typeof request.sessionKey === "string" && request.sessionKey.trim()
         ? request.sessionKey.trim()
         : undefined;
+    if (
+      requestedSessionKeyRaw &&
+      classifySessionKeyShape(requestedSessionKeyRaw) === "malformed_agent"
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid agent params: malformed session key "${requestedSessionKeyRaw}"`,
+        ),
+      );
+      return;
+    }
+    let requestedSessionKey =
+      requestedSessionKeyRaw ??
+      resolveExplicitAgentSessionKey({
+        cfg,
+        agentId,
+      });
+    if (agentId && requestedSessionKeyRaw) {
+      const sessionAgentId = resolveAgentIdFromSessionKey(requestedSessionKeyRaw);
+      if (sessionAgentId !== agentId) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent params: agent "${request.agentId}" does not match session key agent "${sessionAgentId}"`,
+          ),
+        );
+        return;
+      }
+    }
     let resolvedSessionId = request.sessionId?.trim() || undefined;
     let sessionEntry: SessionEntry | undefined;
     let bestEffortDeliver = false;
     let cfgForAgent: ReturnType<typeof loadConfig> | undefined;
+    let resolvedSessionKey = requestedSessionKey;
+    let skipTimestampInjection = false;
+
+    const resetCommandMatch = message.match(RESET_COMMAND_RE);
+    if (resetCommandMatch && requestedSessionKey) {
+      const resetReason = resetCommandMatch[1]?.toLowerCase() === "new" ? "new" : "reset";
+      const resetResult = await runSessionResetFromAgent({
+        key: requestedSessionKey,
+        reason: resetReason,
+        idempotencyKey: idem,
+        context,
+        client,
+        isWebchatConnect,
+      });
+      if (!resetResult.ok) {
+        respond(false, undefined, resetResult.error);
+        return;
+      }
+      requestedSessionKey = resetResult.key;
+      resolvedSessionId = resetResult.sessionId ?? resolvedSessionId;
+      const postResetMessage = resetCommandMatch[2]?.trim() ?? "";
+      if (postResetMessage) {
+        message = postResetMessage;
+      } else {
+        // Keep bare /new and /reset behavior aligned with chat.send:
+        // reset first, then run a fresh-session greeting prompt in-place.
+        message = BARE_SESSION_RESET_PROMPT;
+        skipTimestampInjection = true;
+      }
+    }
+
+    // Inject timestamp into user-authored messages that don't already have one.
+    // Channel messages (Discord, Telegram, etc.) get timestamps via envelope
+    // formatting in a separate code path — they never reach this handler.
+    // See: https://github.com/moltbot/moltbot/issues/3658
+    if (!skipTimestampInjection) {
+      message = injectTimestamp(message, timestampOptsFromConfig(cfg));
+    }
 
     if (requestedSessionKey) {
-      const { cfg, storePath, store, entry } =
-        loadSessionEntry(requestedSessionKey);
+      const { cfg, storePath, entry, canonicalKey } = loadSessionEntry(requestedSessionKey);
       cfgForAgent = cfg;
       const now = Date.now();
       const sessionId = entry?.sessionId ?? randomUUID();
-      sessionEntry = {
+      const labelValue = request.label?.trim() || entry?.label;
+      const sessionAgent = resolveAgentIdFromSessionKey(canonicalKey);
+      spawnedByValue = canonicalizeSpawnedByForAgent(
+        cfg,
+        sessionAgent,
+        spawnedByValue || entry?.spawnedBy,
+      );
+      let inheritedGroup:
+        | { groupId?: string; groupChannel?: string; groupSpace?: string }
+        | undefined;
+      if (spawnedByValue && (!resolvedGroupId || !resolvedGroupChannel || !resolvedGroupSpace)) {
+        try {
+          const parentEntry = loadSessionEntry(spawnedByValue)?.entry;
+          inheritedGroup = {
+            groupId: parentEntry?.groupId,
+            groupChannel: parentEntry?.groupChannel,
+            groupSpace: parentEntry?.space,
+          };
+        } catch {
+          inheritedGroup = undefined;
+        }
+      }
+      resolvedGroupId = resolvedGroupId || inheritedGroup?.groupId;
+      resolvedGroupChannel = resolvedGroupChannel || inheritedGroup?.groupChannel;
+      resolvedGroupSpace = resolvedGroupSpace || inheritedGroup?.groupSpace;
+      const deliveryFields = normalizeSessionDeliveryFields(entry);
+      const nextEntry: SessionEntry = {
         sessionId,
         updatedAt: now,
         thinkingLevel: entry?.thinkingLevel,
         verboseLevel: entry?.verboseLevel,
+        reasoningLevel: entry?.reasoningLevel,
         systemSent: entry?.systemSent,
         sendPolicy: entry?.sendPolicy,
         skillsSnapshot: entry?.skillsSnapshot,
-        lastChannel: entry?.lastChannel,
-        lastTo: entry?.lastTo,
+        deliveryContext: deliveryFields.deliveryContext,
+        lastChannel: deliveryFields.lastChannel ?? entry?.lastChannel,
+        lastTo: deliveryFields.lastTo ?? entry?.lastTo,
+        lastAccountId: deliveryFields.lastAccountId ?? entry?.lastAccountId,
+        modelOverride: entry?.modelOverride,
+        providerOverride: entry?.providerOverride,
+        label: labelValue,
+        spawnedBy: spawnedByValue,
+        spawnDepth: entry?.spawnDepth,
+        channel: entry?.channel ?? request.channel?.trim(),
+        groupId: resolvedGroupId ?? entry?.groupId,
+        groupChannel: resolvedGroupChannel ?? entry?.groupChannel,
+        space: resolvedGroupSpace ?? entry?.space,
+        cliSessionIds: entry?.cliSessionIds,
+        claudeCliSessionId: entry?.claudeCliSessionId,
       };
+      sessionEntry = nextEntry;
       const sendPolicy = resolveSendPolicy({
         cfg,
         entry,
-        sessionKey: requestedSessionKey,
-        surface: entry?.surface,
+        sessionKey: canonicalKey,
+        channel: entry?.channel,
         chatType: entry?.chatType,
       });
       if (sendPolicy === "deny") {
         respond(
           false,
           undefined,
-          errorShape(
-            ErrorCodes.INVALID_REQUEST,
-            "send blocked by session policy",
-          ),
+          errorShape(ErrorCodes.INVALID_REQUEST, "send blocked by session policy"),
         );
         return;
       }
-      if (store) {
-        store[requestedSessionKey] = sessionEntry;
-        if (storePath) {
-          await saveSessionStore(storePath, store);
-        }
-      }
       resolvedSessionId = sessionId;
-      const mainKey = (cfg.session?.mainKey ?? "main").trim() || "main";
-      if (requestedSessionKey === mainKey) {
+      const canonicalSessionKey = canonicalKey;
+      resolvedSessionKey = canonicalSessionKey;
+      const agentId = resolveAgentIdFromSessionKey(canonicalSessionKey);
+      const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId });
+      if (storePath) {
+        await updateSessionStore(storePath, (store) => {
+          const target = resolveGatewaySessionStoreTarget({
+            cfg,
+            key: requestedSessionKey,
+            store,
+          });
+          pruneLegacyStoreKeys({
+            store,
+            canonicalKey: target.canonicalKey,
+            candidates: target.storeKeys,
+          });
+          store[canonicalSessionKey] = nextEntry;
+        });
+      }
+      if (canonicalSessionKey === mainSessionKey || canonicalSessionKey === "global") {
         context.addChatRun(idem, {
-          sessionKey: requestedSessionKey,
+          sessionKey: canonicalSessionKey,
           clientRunId: idem,
         });
         bestEffortDeliver = true;
       }
-      registerAgentRunContext(idem, { sessionKey: requestedSessionKey });
+      registerAgentRunContext(idem, { sessionKey: canonicalSessionKey });
     }
 
     const runId = idem;
-
-    const requestedChannelRaw =
-      typeof request.channel === "string" ? request.channel.trim() : "";
-    const requestedChannelNormalized = requestedChannelRaw
-      ? requestedChannelRaw.toLowerCase()
-      : "last";
-    const requestedChannel =
-      requestedChannelNormalized === "imsg"
-        ? "imessage"
-        : requestedChannelNormalized;
-
-    const lastChannel = sessionEntry?.lastChannel;
-    const lastTo =
-      typeof sessionEntry?.lastTo === "string"
-        ? sessionEntry.lastTo.trim()
-        : "";
-
-    const resolvedChannel = (() => {
-      if (requestedChannel === "last") {
-        // WebChat is not a deliverable surface. Treat it as "unset" for routing,
-        // so VoiceWake and CLI callers don't get stuck with deliver=false.
-        return lastChannel && lastChannel !== "webchat"
-          ? lastChannel
-          : "whatsapp";
+    const connId = typeof client?.connId === "string" ? client.connId : undefined;
+    const wantsToolEvents = hasGatewayClientCap(
+      client?.connect?.caps,
+      GATEWAY_CLIENT_CAPS.TOOL_EVENTS,
+    );
+    if (connId && wantsToolEvents) {
+      context.registerToolEventRecipient(runId, connId);
+      // Register for any other active runs *in the same session* so
+      // late-joining clients (e.g. page refresh mid-response) receive
+      // in-progress tool events without leaking cross-session data.
+      for (const [activeRunId, active] of context.chatAbortControllers) {
+        if (activeRunId !== runId && active.sessionKey === requestedSessionKey) {
+          context.registerToolEventRecipient(activeRunId, connId);
+        }
       }
-      if (
-        requestedChannel === "whatsapp" ||
-        requestedChannel === "telegram" ||
-        requestedChannel === "discord" ||
-        requestedChannel === "signal" ||
-        requestedChannel === "imessage" ||
-        requestedChannel === "webchat"
-      ) {
-        return requestedChannel;
-      }
-      return lastChannel && lastChannel !== "webchat"
-        ? lastChannel
-        : "whatsapp";
-    })();
+    }
 
-    const resolvedTo = (() => {
-      const explicit =
-        typeof request.to === "string" && request.to.trim()
+    const wantsDelivery = request.deliver === true;
+    const explicitTo =
+      typeof request.replyTo === "string" && request.replyTo.trim()
+        ? request.replyTo.trim()
+        : typeof request.to === "string" && request.to.trim()
           ? request.to.trim()
           : undefined;
-      if (explicit) return explicit;
-      if (
-        resolvedChannel === "whatsapp" ||
-        resolvedChannel === "telegram" ||
-        resolvedChannel === "discord" ||
-        resolvedChannel === "signal" ||
-        resolvedChannel === "imessage"
-      ) {
-        return lastTo || undefined;
+    const explicitThreadId =
+      typeof request.threadId === "string" && request.threadId.trim()
+        ? request.threadId.trim()
+        : undefined;
+    const deliveryPlan = resolveAgentDeliveryPlan({
+      sessionEntry,
+      requestedChannel: request.replyChannel ?? request.channel,
+      explicitTo,
+      explicitThreadId,
+      accountId: request.replyAccountId ?? request.accountId,
+      wantsDelivery,
+    });
+
+    const resolvedChannel = deliveryPlan.resolvedChannel;
+    const deliveryTargetMode = deliveryPlan.deliveryTargetMode;
+    const resolvedAccountId = deliveryPlan.resolvedAccountId;
+    let resolvedTo = deliveryPlan.resolvedTo;
+
+    if (!resolvedTo && isDeliverableMessageChannel(resolvedChannel)) {
+      const cfgResolved = cfgForAgent ?? cfg;
+      const fallback = resolveAgentOutboundTarget({
+        cfg: cfgResolved,
+        plan: deliveryPlan,
+        targetMode: "implicit",
+        validateExplicitTarget: false,
+      });
+      if (fallback.resolvedTarget?.ok) {
+        resolvedTo = fallback.resolvedTo;
       }
-      return undefined;
-    })();
+    }
 
-    const sanitizedTo = (() => {
-      // If we derived a WhatsApp recipient from session "lastTo", ensure it is still valid
-      // for the configured allowlist. Otherwise, fall back to the first allowed number so
-      // voice wake doesn't silently route to stale/test recipients.
-      if (resolvedChannel !== "whatsapp") return resolvedTo;
-      const explicit =
-        typeof request.to === "string" && request.to.trim()
-          ? request.to.trim()
-          : undefined;
-      if (explicit) return resolvedTo;
-
-      const cfg = cfgForAgent ?? loadConfig();
-      const rawAllow = cfg.whatsapp?.allowFrom ?? [];
-      if (rawAllow.includes("*")) return resolvedTo;
-      const allowFrom = rawAllow
-        .map((val) => normalizeE164(val))
-        .filter((val) => val.length > 1);
-      if (allowFrom.length === 0) return resolvedTo;
-
-      const normalizedLast =
-        typeof resolvedTo === "string" && resolvedTo.trim()
-          ? normalizeE164(resolvedTo)
-          : undefined;
-      if (normalizedLast && allowFrom.includes(normalizedLast)) {
-        return normalizedLast;
-      }
-      return allowFrom[0];
-    })();
-
-    const deliver = request.deliver === true && resolvedChannel !== "webchat";
+    const deliver = request.deliver === true && resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
 
     const accepted = {
       runId,
@@ -222,29 +523,50 @@ export const agentHandlers: GatewayRequestHandlers = {
     });
     respond(true, accepted, undefined, { runId });
 
+    const resolvedThreadId = explicitThreadId ?? deliveryPlan.resolvedThreadId;
+
     void agentCommand(
       {
         message,
-        to: sanitizedTo,
+        images,
+        to: resolvedTo,
         sessionId: resolvedSessionId,
+        sessionKey: resolvedSessionKey,
         thinking: request.thinking,
         deliver,
-        provider: resolvedChannel,
+        deliveryTargetMode,
+        channel: resolvedChannel,
+        accountId: resolvedAccountId,
+        threadId: resolvedThreadId,
+        runContext: {
+          messageChannel: resolvedChannel,
+          accountId: resolvedAccountId,
+          groupId: resolvedGroupId,
+          groupChannel: resolvedGroupChannel,
+          groupSpace: resolvedGroupSpace,
+          currentThreadTs: resolvedThreadId != null ? String(resolvedThreadId) : undefined,
+        },
+        groupId: resolvedGroupId,
+        groupChannel: resolvedGroupChannel,
+        groupSpace: resolvedGroupSpace,
+        spawnedBy: spawnedByValue,
         timeout: request.timeout?.toString(),
         bestEffortDeliver,
-        surface: "VoiceWake",
+        messageChannel: resolvedChannel,
         runId,
         lane: request.lane,
         extraSystemPrompt: request.extraSystemPrompt,
+        inputProvenance,
       },
       defaultRuntime,
       context.deps,
     )
-      .then(() => {
+      .then((result) => {
         const payload = {
           runId,
           status: "ok" as const,
           summary: "completed",
+          result,
         };
         context.dedupe.set(`agent:${idem}`, {
           ts: Date.now(),
@@ -274,6 +596,60 @@ export const agentHandlers: GatewayRequestHandlers = {
         });
       });
   },
+  "agent.identity.get": ({ params, respond }) => {
+    if (!validateAgentIdentityParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid agent.identity.get params: ${formatValidationErrors(
+            validateAgentIdentityParams.errors,
+          )}`,
+        ),
+      );
+      return;
+    }
+    const p = params;
+    const agentIdRaw = typeof p.agentId === "string" ? p.agentId.trim() : "";
+    const sessionKeyRaw = typeof p.sessionKey === "string" ? p.sessionKey.trim() : "";
+    let agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : undefined;
+    if (sessionKeyRaw) {
+      if (classifySessionKeyShape(sessionKeyRaw) === "malformed_agent") {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent.identity.get params: malformed session key "${sessionKeyRaw}"`,
+          ),
+        );
+        return;
+      }
+      const resolved = resolveAgentIdFromSessionKey(sessionKeyRaw);
+      if (agentId && resolved !== agentId) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `invalid agent.identity.get params: agent "${agentIdRaw}" does not match session key agent "${resolved}"`,
+          ),
+        );
+        return;
+      }
+      agentId = resolved;
+    }
+    const cfg = loadConfig();
+    const identity = resolveAssistantIdentity({ cfg, agentId });
+    const avatarValue =
+      resolveAssistantAvatarUrl({
+        avatar: identity.avatar,
+        agentId: identity.agentId,
+        basePath: cfg.gateway?.controlUi?.basePath,
+      }) ?? identity.avatar;
+    respond(true, { ...identity, avatar: avatarValue }, undefined);
+  },
   "agent.wait": async ({ params, respond }) => {
     if (!validateAgentWaitParams(params)) {
       respond(
@@ -286,12 +662,8 @@ export const agentHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const p = params as AgentWaitParams;
+    const p = params;
     const runId = p.runId.trim();
-    const afterMs =
-      typeof p.afterMs === "number" && Number.isFinite(p.afterMs)
-        ? Math.max(0, Math.floor(p.afterMs))
-        : undefined;
     const timeoutMs =
       typeof p.timeoutMs === "number" && Number.isFinite(p.timeoutMs)
         ? Math.max(0, Math.floor(p.timeoutMs))
@@ -299,7 +671,6 @@ export const agentHandlers: GatewayRequestHandlers = {
 
     const snapshot = await waitForAgentJob({
       runId,
-      afterMs,
       timeoutMs,
     });
     if (!snapshot) {
@@ -311,7 +682,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     respond(true, {
       runId,
-      status: snapshot.state === "done" ? "ok" : "error",
+      status: snapshot.status,
       startedAt: snapshot.startedAt,
       endedAt: snapshot.endedAt,
       error: snapshot.error,

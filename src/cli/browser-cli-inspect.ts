@@ -1,13 +1,10 @@
 import type { Command } from "commander";
-
-import {
-  browserSnapshot,
-  resolveBrowserControlUrl,
-} from "../browser/client.js";
-import { browserScreenshotAction } from "../browser/client-actions.js";
+import type { SnapshotResult } from "../browser/client.js";
+import { loadConfig } from "../config/config.js";
 import { danger } from "../globals.js";
 import { defaultRuntime } from "../runtime.js";
-import type { BrowserParentOpts } from "./browser-cli-shared.js";
+import { shortenHomePath } from "../utils.js";
+import { callBrowserRequest, type BrowserParentOpts } from "./browser-cli-shared.js";
 
 export function registerBrowserInspectCommands(
   browser: Command,
@@ -23,22 +20,29 @@ export function registerBrowserInspectCommands(
     .option("--type <png|jpeg>", "Output type (default: png)", "png")
     .action(async (targetId: string | undefined, opts, cmd) => {
       const parent = parentOpts(cmd);
-      const baseUrl = resolveBrowserControlUrl(parent?.url);
-      const profile = parent?.profile;
+      const profile = parent?.browserProfile;
       try {
-        const result = await browserScreenshotAction(baseUrl, {
-          targetId: targetId?.trim() || undefined,
-          fullPage: Boolean(opts.fullPage),
-          ref: opts.ref?.trim() || undefined,
-          element: opts.element?.trim() || undefined,
-          type: opts.type === "jpeg" ? "jpeg" : "png",
-          profile,
-        });
+        const result = await callBrowserRequest<{ path: string }>(
+          parent,
+          {
+            method: "POST",
+            path: "/screenshot",
+            query: profile ? { profile } : undefined,
+            body: {
+              targetId: targetId?.trim() || undefined,
+              fullPage: Boolean(opts.fullPage),
+              ref: opts.ref?.trim() || undefined,
+              element: opts.element?.trim() || undefined,
+              type: opts.type === "jpeg" ? "jpeg" : "png",
+            },
+          },
+          { timeoutMs: 20000 },
+        );
         if (parent?.json) {
           defaultRuntime.log(JSON.stringify(result, null, 2));
           return;
         }
-        defaultRuntime.log(`MEDIA:${result.path}`);
+        defaultRuntime.log(`MEDIA:${shortenHomePath(result.path)}`);
       } catch (err) {
         defaultRuntime.error(danger(String(err)));
         defaultRuntime.exit(1);
@@ -47,27 +51,51 @@ export function registerBrowserInspectCommands(
 
   browser
     .command("snapshot")
-    .description(
-      "Capture a snapshot (default: ai; aria is the accessibility tree)",
-    )
+    .description("Capture a snapshot (default: ai; aria is the accessibility tree)")
     .option("--format <aria|ai>", "Snapshot format (default: ai)", "ai")
     .option("--target-id <id>", "CDP target id (or unique prefix)")
-    .option("--limit <n>", "Max nodes (default: 500/800)", (v: string) =>
-      Number(v),
-    )
+    .option("--limit <n>", "Max nodes (default: 500/800)", (v: string) => Number(v))
+    .option("--mode <efficient>", "Snapshot preset (efficient)")
+    .option("--efficient", "Use the efficient snapshot preset", false)
+    .option("--interactive", "Role snapshot: interactive elements only", false)
+    .option("--compact", "Role snapshot: compact output", false)
+    .option("--depth <n>", "Role snapshot: max depth", (v: string) => Number(v))
+    .option("--selector <sel>", "Role snapshot: scope to CSS selector")
+    .option("--frame <sel>", "Role snapshot: scope to an iframe selector")
+    .option("--labels", "Include viewport label overlay screenshot", false)
     .option("--out <path>", "Write snapshot to a file")
     .action(async (opts, cmd) => {
       const parent = parentOpts(cmd);
-      const baseUrl = resolveBrowserControlUrl(parent?.url);
-      const profile = parent?.profile;
+      const profile = parent?.browserProfile;
       const format = opts.format === "aria" ? "aria" : "ai";
+      const configMode =
+        format === "ai" && loadConfig().browser?.snapshotDefaults?.mode === "efficient"
+          ? "efficient"
+          : undefined;
+      const mode = opts.efficient === true || opts.mode === "efficient" ? "efficient" : configMode;
       try {
-        const result = await browserSnapshot(baseUrl, {
+        const query: Record<string, string | number | boolean | undefined> = {
           format,
           targetId: opts.targetId?.trim() || undefined,
           limit: Number.isFinite(opts.limit) ? opts.limit : undefined,
+          interactive: opts.interactive ? true : undefined,
+          compact: opts.compact ? true : undefined,
+          depth: Number.isFinite(opts.depth) ? opts.depth : undefined,
+          selector: opts.selector?.trim() || undefined,
+          frame: opts.frame?.trim() || undefined,
+          labels: opts.labels ? true : undefined,
+          mode,
           profile,
-        });
+        };
+        const result = await callBrowserRequest<SnapshotResult>(
+          parent,
+          {
+            method: "GET",
+            path: "/snapshot",
+            query,
+          },
+          { timeoutMs: 20000 },
+        );
 
         if (opts.out) {
           const fs = await import("node:fs/promises");
@@ -79,10 +107,23 @@ export function registerBrowserInspectCommands(
           }
           if (parent?.json) {
             defaultRuntime.log(
-              JSON.stringify({ ok: true, out: opts.out }, null, 2),
+              JSON.stringify(
+                {
+                  ok: true,
+                  out: opts.out,
+                  ...(result.format === "ai" && result.imagePath
+                    ? { imagePath: result.imagePath }
+                    : {}),
+                },
+                null,
+                2,
+              ),
             );
           } else {
-            defaultRuntime.log(opts.out);
+            defaultRuntime.log(shortenHomePath(opts.out));
+            if (result.format === "ai" && result.imagePath) {
+              defaultRuntime.log(`MEDIA:${shortenHomePath(result.imagePath)}`);
+            }
           }
           return;
         }
@@ -94,6 +135,9 @@ export function registerBrowserInspectCommands(
 
         if (result.format === "ai") {
           defaultRuntime.log(result.snapshot);
+          if (result.imagePath) {
+            defaultRuntime.log(`MEDIA:${shortenHomePath(result.imagePath)}`);
+          }
           return;
         }
 

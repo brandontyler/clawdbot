@@ -1,94 +1,57 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-
 import { Type } from "@sinclair/typebox";
 import { writeBase64ToFile } from "../../cli/nodes-camera.js";
-import {
-  canvasSnapshotTempPath,
-  parseCanvasSnapshotPayload,
-} from "../../cli/nodes-canvas.js";
+import { canvasSnapshotTempPath, parseCanvasSnapshotPayload } from "../../cli/nodes-canvas.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import { imageMimeFromFormat } from "../../media/mime.js";
-import {
-  type AnyAgentTool,
-  imageResult,
-  jsonResult,
-  readStringParam,
-} from "./common.js";
-import { callGatewayTool, type GatewayCallOptions } from "./gateway.js";
+import { resolveImageSanitizationLimits } from "../image-sanitization.js";
+import { optionalStringEnum, stringEnum } from "../schema/typebox.js";
+import { type AnyAgentTool, imageResult, jsonResult, readStringParam } from "./common.js";
+import { callGatewayTool, readGatewayCallOptions } from "./gateway.js";
 import { resolveNodeId } from "./nodes-utils.js";
 
-const CanvasToolSchema = Type.Union([
-  Type.Object({
-    action: Type.Literal("present"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-    target: Type.Optional(Type.String()),
-    x: Type.Optional(Type.Number()),
-    y: Type.Optional(Type.Number()),
-    width: Type.Optional(Type.Number()),
-    height: Type.Optional(Type.Number()),
-  }),
-  Type.Object({
-    action: Type.Literal("hide"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-  }),
-  Type.Object({
-    action: Type.Literal("navigate"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-    url: Type.String(),
-  }),
-  Type.Object({
-    action: Type.Literal("eval"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-    javaScript: Type.String(),
-  }),
-  Type.Object({
-    action: Type.Literal("snapshot"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-    format: Type.Optional(
-      Type.Union([
-        Type.Literal("png"),
-        Type.Literal("jpg"),
-        Type.Literal("jpeg"),
-      ]),
-    ),
-    maxWidth: Type.Optional(Type.Number()),
-    quality: Type.Optional(Type.Number()),
-    delayMs: Type.Optional(Type.Number()),
-  }),
-  Type.Object({
-    action: Type.Literal("a2ui_push"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-    jsonl: Type.Optional(Type.String()),
-    jsonlPath: Type.Optional(Type.String()),
-  }),
-  Type.Object({
-    action: Type.Literal("a2ui_reset"),
-    gatewayUrl: Type.Optional(Type.String()),
-    gatewayToken: Type.Optional(Type.String()),
-    timeoutMs: Type.Optional(Type.Number()),
-    node: Type.Optional(Type.String()),
-  }),
-]);
+const CANVAS_ACTIONS = [
+  "present",
+  "hide",
+  "navigate",
+  "eval",
+  "snapshot",
+  "a2ui_push",
+  "a2ui_reset",
+] as const;
 
-export function createCanvasTool(): AnyAgentTool {
+const CANVAS_SNAPSHOT_FORMATS = ["png", "jpg", "jpeg"] as const;
+
+// Flattened schema: runtime validates per-action requirements.
+const CanvasToolSchema = Type.Object({
+  action: stringEnum(CANVAS_ACTIONS),
+  gatewayUrl: Type.Optional(Type.String()),
+  gatewayToken: Type.Optional(Type.String()),
+  timeoutMs: Type.Optional(Type.Number()),
+  node: Type.Optional(Type.String()),
+  // present
+  target: Type.Optional(Type.String()),
+  x: Type.Optional(Type.Number()),
+  y: Type.Optional(Type.Number()),
+  width: Type.Optional(Type.Number()),
+  height: Type.Optional(Type.Number()),
+  // navigate
+  url: Type.Optional(Type.String()),
+  // eval
+  javaScript: Type.Optional(Type.String()),
+  // snapshot
+  outputFormat: optionalStringEnum(CANVAS_SNAPSHOT_FORMATS),
+  maxWidth: Type.Optional(Type.Number()),
+  quality: Type.Optional(Type.Number()),
+  delayMs: Type.Optional(Type.Number()),
+  // a2ui_push
+  jsonl: Type.Optional(Type.String()),
+  jsonlPath: Type.Optional(Type.String()),
+});
+
+export function createCanvasTool(options?: { config?: OpenClawConfig }): AnyAgentTool {
+  const imageSanitization = resolveImageSanitizationLimits(options?.config);
   return {
     label: "Canvas",
     name: "canvas",
@@ -98,12 +61,7 @@ export function createCanvasTool(): AnyAgentTool {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const action = readStringParam(params, "action", { required: true });
-      const gatewayOpts: GatewayCallOptions = {
-        gatewayUrl: readStringParam(params, "gatewayUrl", { trim: false }),
-        gatewayToken: readStringParam(params, "gatewayToken", { trim: false }),
-        timeoutMs:
-          typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
-      };
+      const gatewayOpts = readGatewayCallOptions(params);
 
       const nodeId = await resolveNodeId(
         gatewayOpts,
@@ -111,10 +69,7 @@ export function createCanvasTool(): AnyAgentTool {
         true,
       );
 
-      const invoke = async (
-        command: string,
-        invokeParams?: Record<string, unknown>,
-      ) =>
+      const invoke = async (command: string, invokeParams?: Record<string, unknown>) =>
         await callGatewayTool("node.invoke", gatewayOpts, {
           nodeId,
           command,
@@ -128,12 +83,16 @@ export function createCanvasTool(): AnyAgentTool {
             x: typeof params.x === "number" ? params.x : undefined,
             y: typeof params.y === "number" ? params.y : undefined,
             width: typeof params.width === "number" ? params.width : undefined,
-            height:
-              typeof params.height === "number" ? params.height : undefined,
+            height: typeof params.height === "number" ? params.height : undefined,
           };
           const invokeParams: Record<string, unknown> = {};
-          if (typeof params.target === "string" && params.target.trim()) {
-            invokeParams.url = params.target.trim();
+          // Accept both `target` and `url` for present to match common caller expectations.
+          // `target` remains the canonical field for CLI compatibility.
+          const presentTarget =
+            readStringParam(params, "target", { trim: true }) ??
+            readStringParam(params, "url", { trim: true });
+          if (presentTarget) {
+            invokeParams.url = presentTarget;
           }
           if (
             Number.isFinite(placement.x) ||
@@ -150,7 +109,10 @@ export function createCanvasTool(): AnyAgentTool {
           await invoke("canvas.hide", undefined);
           return jsonResult({ ok: true });
         case "navigate": {
-          const url = readStringParam(params, "url", { required: true });
+          // Support `target` as an alias so callers can reuse the same field across present/navigate.
+          const url =
+            readStringParam(params, "url", { trim: true }) ??
+            readStringParam(params, "target", { required: true, trim: true, label: "url" });
           await invoke("canvas.navigate", { url });
           return jsonResult({ ok: true });
         }
@@ -172,19 +134,14 @@ export function createCanvasTool(): AnyAgentTool {
         }
         case "snapshot": {
           const formatRaw =
-            typeof params.format === "string"
-              ? params.format.toLowerCase()
-              : "png";
-          const format =
-            formatRaw === "jpg" || formatRaw === "jpeg" ? "jpeg" : "png";
+            typeof params.outputFormat === "string" ? params.outputFormat.toLowerCase() : "png";
+          const format = formatRaw === "jpg" || formatRaw === "jpeg" ? "jpeg" : "png";
           const maxWidth =
-            typeof params.maxWidth === "number" &&
-            Number.isFinite(params.maxWidth)
+            typeof params.maxWidth === "number" && Number.isFinite(params.maxWidth)
               ? params.maxWidth
               : undefined;
           const quality =
-            typeof params.quality === "number" &&
-            Number.isFinite(params.quality)
+            typeof params.quality === "number" && Number.isFinite(params.quality)
               ? params.quality
               : undefined;
           const raw = (await invoke("canvas.snapshot", {
@@ -204,6 +161,7 @@ export function createCanvasTool(): AnyAgentTool {
             base64: payload.base64,
             mimeType,
             details: { format: payload.format },
+            imageSanitization,
           });
         }
         case "a2ui_push": {
@@ -213,7 +171,9 @@ export function createCanvasTool(): AnyAgentTool {
               : typeof params.jsonlPath === "string" && params.jsonlPath.trim()
                 ? await fs.readFile(params.jsonlPath.trim(), "utf8")
                 : "";
-          if (!jsonl.trim()) throw new Error("jsonl or jsonlPath required");
+          if (!jsonl.trim()) {
+            throw new Error("jsonl or jsonlPath required");
+          }
           await invoke("canvas.a2ui.pushJSONL", { jsonl });
           return jsonResult({ ok: true });
         }

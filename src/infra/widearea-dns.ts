@@ -1,14 +1,31 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
 import { CONFIG_DIR, ensureDir } from "../utils.js";
 
-export const WIDE_AREA_DISCOVERY_DOMAIN = "clawdbot.internal.";
-export const WIDE_AREA_ZONE_FILENAME = "clawdbot.internal.db";
+export function normalizeWideAreaDomain(raw?: string | null): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.endsWith(".") ? trimmed : `${trimmed}.`;
+}
 
-export function getWideAreaZonePath(): string {
-  return path.join(CONFIG_DIR, "dns", WIDE_AREA_ZONE_FILENAME);
+export function resolveWideAreaDiscoveryDomain(params?: {
+  env?: NodeJS.ProcessEnv;
+  configDomain?: string | null;
+}): string | null {
+  const env = params?.env ?? process.env;
+  const candidate = params?.configDomain ?? env.OPENCLAW_WIDE_AREA_DOMAIN ?? null;
+  return normalizeWideAreaDomain(candidate);
+}
+
+function zoneFilenameForDomain(domain: string): string {
+  return `${domain.replace(/\.$/, "")}.db`;
+}
+
+export function getWideAreaZonePath(domain: string): string {
+  return path.join(CONFIG_DIR, "dns", zoneFilenameForDomain(domain));
 }
 
 function dnsLabel(raw: string, fallback: string): string {
@@ -23,10 +40,7 @@ function dnsLabel(raw: string, fallback: string): string {
 }
 
 function txtQuote(value: string): string {
-  const escaped = value
-    .replaceAll("\\", "\\\\")
-    .replaceAll('"', '\\"')
-    .replaceAll("\n", "\\n");
+  const escaped = value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n");
   return `"${escaped}"`;
 }
 
@@ -40,21 +54,27 @@ function formatYyyyMmDd(date: Date): string {
 function nextSerial(existingSerial: number | null, now: Date): number {
   const today = formatYyyyMmDd(now);
   const base = Number.parseInt(`${today}01`, 10);
-  if (!existingSerial || !Number.isFinite(existingSerial)) return base;
+  if (!existingSerial || !Number.isFinite(existingSerial)) {
+    return base;
+  }
   const existing = String(existingSerial);
-  if (existing.startsWith(today)) return existingSerial + 1;
+  if (existing.startsWith(today)) {
+    return existingSerial + 1;
+  }
   return base;
 }
 
 function extractSerial(zoneText: string): number | null {
   const match = zoneText.match(/^\s*@\s+IN\s+SOA\s+\S+\s+\S+\s+(\d+)\s+/m);
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
   const parsed = Number.parseInt(match[1], 10);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
 function extractContentHash(zoneText: string): string | null {
-  const match = zoneText.match(/^\s*;\s*clawdbot-content-hash:\s*(\S+)\s*$/m);
+  const match = zoneText.match(/^\s*;\s*openclaw-content-hash:\s*(\S+)\s*$/m);
   return match?.[1] ?? null;
 }
 
@@ -68,36 +88,52 @@ function computeContentHash(body: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-export type WideAreaBridgeZoneOpts = {
-  bridgePort: number;
+export type WideAreaGatewayZoneOpts = {
+  domain: string;
+  gatewayPort: number;
   displayName: string;
   tailnetIPv4: string;
   tailnetIPv6?: string;
+  gatewayTlsEnabled?: boolean;
+  gatewayTlsFingerprintSha256?: string;
   instanceLabel?: string;
   hostLabel?: string;
   tailnetDns?: string;
+  sshPort?: number;
+  cliPath?: string;
 };
 
-function renderZone(opts: WideAreaBridgeZoneOpts & { serial: number }): string {
-  const hostname = os.hostname().split(".")[0] ?? "clawdbot";
-  const hostLabel = dnsLabel(opts.hostLabel ?? hostname, "clawdbot");
-  const instanceLabel = dnsLabel(
-    opts.instanceLabel ?? `${hostname}-bridge`,
-    "clawdbot-bridge",
-  );
+function renderZone(opts: WideAreaGatewayZoneOpts & { serial: number }): string {
+  const hostname = os.hostname().split(".")[0] ?? "openclaw";
+  const hostLabel = dnsLabel(opts.hostLabel ?? hostname, "openclaw");
+  const instanceLabel = dnsLabel(opts.instanceLabel ?? `${hostname}-gateway`, "openclaw-gw");
+  const domain = normalizeWideAreaDomain(opts.domain) ?? "local.";
 
   const txt = [
     `displayName=${opts.displayName.trim() || hostname}`,
-    `transport=bridge`,
-    `bridgePort=${opts.bridgePort}`,
+    `role=gateway`,
+    `transport=gateway`,
+    `gatewayPort=${opts.gatewayPort}`,
   ];
+  if (opts.gatewayTlsEnabled) {
+    txt.push(`gatewayTls=1`);
+    if (opts.gatewayTlsFingerprintSha256) {
+      txt.push(`gatewayTlsSha256=${opts.gatewayTlsFingerprintSha256}`);
+    }
+  }
   if (opts.tailnetDns?.trim()) {
     txt.push(`tailnetDns=${opts.tailnetDns.trim()}`);
+  }
+  if (typeof opts.sshPort === "number" && opts.sshPort > 0) {
+    txt.push(`sshPort=${opts.sshPort}`);
+  }
+  if (opts.cliPath?.trim()) {
+    txt.push(`cliPath=${opts.cliPath.trim()}`);
   }
 
   const records: string[] = [];
 
-  records.push(`$ORIGIN ${WIDE_AREA_DISCOVERY_DOMAIN}`);
+  records.push(`$ORIGIN ${domain}`);
   records.push(`$TTL 60`);
   const soaLine = `@ IN SOA ns1 hostmaster ${opts.serial} 7200 3600 1209600 60`;
   records.push(soaLine);
@@ -108,39 +144,35 @@ function renderZone(opts: WideAreaBridgeZoneOpts & { serial: number }): string {
     records.push(`${hostLabel} IN AAAA ${opts.tailnetIPv6}`);
   }
 
-  records.push(
-    `_clawdbot-bridge._tcp IN PTR ${instanceLabel}._clawdbot-bridge._tcp`,
-  );
-  records.push(
-    `${instanceLabel}._clawdbot-bridge._tcp IN SRV 0 0 ${opts.bridgePort} ${hostLabel}`,
-  );
-  records.push(
-    `${instanceLabel}._clawdbot-bridge._tcp IN TXT ${txt.map(txtQuote).join(" ")}`,
-  );
+  records.push(`_openclaw-gw._tcp IN PTR ${instanceLabel}._openclaw-gw._tcp`);
+  records.push(`${instanceLabel}._openclaw-gw._tcp IN SRV 0 0 ${opts.gatewayPort} ${hostLabel}`);
+  records.push(`${instanceLabel}._openclaw-gw._tcp IN TXT ${txt.map(txtQuote).join(" ")}`);
 
   const contentBody = `${records.join("\n")}\n`;
   const hashBody = `${records
     .map((line) =>
-      line === soaLine
-        ? `@ IN SOA ns1 hostmaster SERIAL 7200 3600 1209600 60`
-        : line,
+      line === soaLine ? `@ IN SOA ns1 hostmaster SERIAL 7200 3600 1209600 60` : line,
     )
     .join("\n")}\n`;
   const contentHash = computeContentHash(hashBody);
 
-  return `; clawdbot-content-hash: ${contentHash}\n${contentBody}`;
+  return `; openclaw-content-hash: ${contentHash}\n${contentBody}`;
 }
 
-export function renderWideAreaBridgeZoneText(
-  opts: WideAreaBridgeZoneOpts & { serial: number },
+export function renderWideAreaGatewayZoneText(
+  opts: WideAreaGatewayZoneOpts & { serial: number },
 ): string {
   return renderZone(opts);
 }
 
-export async function writeWideAreaBridgeZone(
-  opts: WideAreaBridgeZoneOpts,
+export async function writeWideAreaGatewayZone(
+  opts: WideAreaGatewayZoneOpts,
 ): Promise<{ zonePath: string; changed: boolean }> {
-  const zonePath = getWideAreaZonePath();
+  const domain = normalizeWideAreaDomain(opts.domain);
+  if (!domain) {
+    throw new Error("wide-area discovery domain is required");
+  }
+  const zonePath = getWideAreaZonePath(domain);
   await ensureDir(path.dirname(zonePath));
 
   const existing = (() => {
@@ -151,7 +183,7 @@ export async function writeWideAreaBridgeZone(
     }
   })();
 
-  const nextNoSerial = renderWideAreaBridgeZoneText({ ...opts, serial: 0 });
+  const nextNoSerial = renderWideAreaGatewayZoneText({ ...opts, serial: 0 });
   const nextHash = extractContentHash(nextNoSerial);
   const existingHash = existing ? extractContentHash(existing) : null;
 
@@ -161,7 +193,7 @@ export async function writeWideAreaBridgeZone(
 
   const existingSerial = existing ? extractSerial(existing) : null;
   const serial = nextSerial(existingSerial, new Date());
-  const next = renderWideAreaBridgeZoneText({ ...opts, serial });
+  const next = renderWideAreaGatewayZoneText({ ...opts, serial });
   fs.writeFileSync(zonePath, next, "utf-8");
   return { zonePath, changed: true };
 }

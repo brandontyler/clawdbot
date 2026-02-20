@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
+import type { OpenClawConfig } from "../config/config.js";
+import type { BackoffPolicy } from "../infra/backoff.js";
+import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
+import { clamp } from "../utils.js";
 
-import type { ClawdbotConfig } from "../config/config.js";
-
-export type ReconnectPolicy = {
-  initialMs: number;
-  maxMs: number;
-  factor: number;
-  jitter: number;
+export type ReconnectPolicy = BackoffPolicy & {
   maxAttempts: number;
 };
 
@@ -19,20 +17,16 @@ export const DEFAULT_RECONNECT_POLICY: ReconnectPolicy = {
   maxAttempts: 12,
 };
 
-const clamp = (val: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, val));
-
-export function resolveHeartbeatSeconds(
-  cfg: ClawdbotConfig,
-  overrideSeconds?: number,
-): number {
+export function resolveHeartbeatSeconds(cfg: OpenClawConfig, overrideSeconds?: number): number {
   const candidate = overrideSeconds ?? cfg.web?.heartbeatSeconds;
-  if (typeof candidate === "number" && candidate > 0) return candidate;
+  if (typeof candidate === "number" && candidate > 0) {
+    return candidate;
+  }
   return DEFAULT_HEARTBEAT_SECONDS;
 }
 
 export function resolveReconnectPolicy(
-  cfg: ClawdbotConfig,
+  cfg: OpenClawConfig,
   overrides?: Partial<ReconnectPolicy>,
 ): ReconnectPolicy {
   const reconnectOverrides = cfg.web?.reconnect ?? {};
@@ -51,35 +45,7 @@ export function resolveReconnectPolicy(
   return merged;
 }
 
-export function computeBackoff(policy: ReconnectPolicy, attempt: number) {
-  const base = policy.initialMs * policy.factor ** Math.max(attempt - 1, 0);
-  const jitter = base * policy.jitter * Math.random();
-  return Math.min(policy.maxMs, Math.round(base + jitter));
-}
-
-export function sleepWithAbort(ms: number, abortSignal?: AbortSignal) {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, ms);
-
-    const onAbort = () => {
-      cleanup();
-      reject(new Error("aborted"));
-    };
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      abortSignal?.removeEventListener("abort", onAbort);
-    };
-
-    if (abortSignal) {
-      abortSignal.addEventListener("abort", onAbort, { once: true });
-    }
-  });
-}
+export { computeBackoff, sleepWithAbort };
 
 export function newConnectionId() {
   return randomUUID();

@@ -2,48 +2,66 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { inspect } from "node:util";
-
 import { cancel, isCancel } from "@clack/prompts";
-
-import {
-  DEFAULT_AGENT_WORKSPACE_DIR,
-  ensureAgentWorkspace,
-} from "../agents/workspace.js";
-import type { ClawdbotConfig } from "../config/config.js";
-import { CONFIG_PATH_CLAWDBOT } from "../config/config.js";
-import { resolveSessionTranscriptsDir } from "../config/sessions.js";
+import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../agents/workspace.js";
+import type { OpenClawConfig } from "../config/config.js";
+import { CONFIG_PATH } from "../config/config.js";
+import { resolveSessionTranscriptsDirForAgent } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
-import { normalizeControlUiBasePath } from "../gateway/control-ui.js";
+import { normalizeControlUiBasePath } from "../gateway/control-ui-shared.js";
+import { pickPrimaryLanIPv4, isValidIPv4 } from "../gateway/net.js";
+import { isSafeExecutableValue } from "../infra/exec-safety.js";
 import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
+import { isWSL } from "../infra/wsl.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { CONFIG_DIR, resolveUserPath } from "../utils.js";
+import { stylePromptTitle } from "../terminal/prompt-style.js";
+import {
+  CONFIG_DIR,
+  resolveUserPath,
+  shortenHomeInString,
+  shortenHomePath,
+  sleep,
+} from "../utils.js";
+import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { VERSION } from "../version.js";
-import type { NodeManagerChoice, ResetScope } from "./onboard-types.js";
+import type { NodeManagerChoice, OnboardMode, ResetScope } from "./onboard-types.js";
 
-export function guardCancel<T>(value: T, runtime: RuntimeEnv): T {
+export function guardCancel<T>(value: T | symbol, runtime: RuntimeEnv): T {
   if (isCancel(value)) {
-    cancel("Setup cancelled.");
+    cancel(stylePromptTitle("Setup cancelled.") ?? "Setup cancelled.");
     runtime.exit(0);
+    throw new Error("unreachable");
   }
   return value;
 }
 
-export function summarizeExistingConfig(config: ClawdbotConfig): string {
+export function summarizeExistingConfig(config: OpenClawConfig): string {
   const rows: string[] = [];
-  if (config.agent?.workspace)
-    rows.push(`workspace: ${config.agent.workspace}`);
-  if (config.agent?.model) rows.push(`model: ${config.agent.model}`);
-  if (config.gateway?.mode) rows.push(`gateway.mode: ${config.gateway.mode}`);
-  if (typeof config.gateway?.port === "number") {
-    rows.push(`gateway.port: ${config.gateway.port}`);
+  const defaults = config.agents?.defaults;
+  if (defaults?.workspace) {
+    rows.push(shortenHomeInString(`workspace: ${defaults.workspace}`));
   }
-  if (config.gateway?.bind) rows.push(`gateway.bind: ${config.gateway.bind}`);
+  if (defaults?.model) {
+    const model = typeof defaults.model === "string" ? defaults.model : defaults.model.primary;
+    if (model) {
+      rows.push(shortenHomeInString(`model: ${model}`));
+    }
+  }
+  if (config.gateway?.mode) {
+    rows.push(shortenHomeInString(`gateway.mode: ${config.gateway.mode}`));
+  }
+  if (typeof config.gateway?.port === "number") {
+    rows.push(shortenHomeInString(`gateway.port: ${config.gateway.port}`));
+  }
+  if (config.gateway?.bind) {
+    rows.push(shortenHomeInString(`gateway.bind: ${config.gateway.bind}`));
+  }
   if (config.gateway?.remote?.url) {
-    rows.push(`gateway.remote.url: ${config.gateway.remote.url}`);
+    rows.push(shortenHomeInString(`gateway.remote.url: ${config.gateway.remote.url}`));
   }
   if (config.skills?.install?.nodeManager) {
-    rows.push(`skills.nodeManager: ${config.skills.install.nodeManager}`);
+    rows.push(shortenHomeInString(`skills.nodeManager: ${config.skills.install.nodeManager}`));
   }
   return rows.length ? rows.join("\n") : "No key settings detected.";
 }
@@ -52,24 +70,51 @@ export function randomToken(): string {
   return crypto.randomBytes(24).toString("hex");
 }
 
+export function normalizeGatewayTokenInput(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  // Reject the literal string "undefined" — a common bug when JS undefined
+  // gets coerced to a string via template literals or String(undefined).
+  if (trimmed === "undefined" || trimmed === "null") {
+    return "";
+  }
+  return trimmed;
+}
+
+export function validateGatewayPasswordInput(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return "Required";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "Required";
+  }
+  if (trimmed === "undefined" || trimmed === "null") {
+    return 'Cannot be the literal string "undefined" or "null"';
+  }
+  return undefined;
+}
+
 export function printWizardHeader(runtime: RuntimeEnv) {
   const header = [
-    "░████░█░░░░░█████░█░░░█░███░░████░░████░░▀█▀",
-    "█░░░░░█░░░░░█░░░█░█░█░█░█░░█░█░░░█░█░░░█░░█░",
-    "█░░░░░█░░░░░█████░█░█░█░█░░█░████░░█░░░█░░█░",
-    "█░░░░░█░░░░░█░░░█░█░█░█░█░░█░█░░█░░█░░░█░░█░",
-    "░████░█████░█░░░█░░█░█░░███░░████░░░███░░░█░",
-    "              🦞 FRESH DAILY 🦞",
+    "▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄",
+    "██░▄▄▄░██░▄▄░██░▄▄▄██░▀██░██░▄▄▀██░████░▄▄▀██░███░██",
+    "██░███░██░▀▀░██░▄▄▄██░█░█░██░█████░████░▀▀░██░█░█░██",
+    "██░▀▀▀░██░█████░▀▀▀██░██▄░██░▀▀▄██░▀▀░█░██░██▄▀▄▀▄██",
+    "▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+    "                  🦞 OPENCLAW 🦞                    ",
+    " ",
   ].join("\n");
   runtime.log(header);
 }
 
 export function applyWizardMetadata(
-  cfg: ClawdbotConfig,
-  params: { command: string; mode: "local" | "remote" },
-): ClawdbotConfig {
-  const commit =
-    process.env.GIT_COMMIT?.trim() || process.env.GIT_SHA?.trim() || undefined;
+  cfg: OpenClawConfig,
+  params: { command: string; mode: OnboardMode },
+): OpenClawConfig {
+  const commit = process.env.GIT_COMMIT?.trim() || process.env.GIT_SHA?.trim() || undefined;
   return {
     ...cfg,
     wizard: {
@@ -89,42 +134,20 @@ type BrowserOpenSupport = {
   command?: string;
 };
 
-let wslCached: boolean | null = null;
-
-async function isWSL(): Promise<boolean> {
-  if (wslCached !== null) return wslCached;
-  if (process.platform !== "linux") {
-    wslCached = false;
-    return wslCached;
-  }
-  if (
-    process.env.WSL_INTEROP ||
-    process.env.WSL_DISTRO_NAME ||
-    process.env.WSLENV
-  ) {
-    wslCached = true;
-    return wslCached;
-  }
-  try {
-    const release = (await fs.readFile("/proc/version", "utf8")).toLowerCase();
-    wslCached = release.includes("microsoft") || release.includes("wsl");
-  } catch {
-    wslCached = false;
-  }
-  return wslCached;
-}
-
 type BrowserOpenCommand = {
   argv: string[] | null;
   reason?: string;
   command?: string;
+  /**
+   * Whether the URL must be wrapped in quotes when appended to argv.
+   * Needed for Windows `cmd /c start` where `&` splits commands.
+   */
+  quoteUrl?: boolean;
 };
 
-async function resolveBrowserOpenCommand(): Promise<BrowserOpenCommand> {
+export async function resolveBrowserOpenCommand(): Promise<BrowserOpenCommand> {
   const platform = process.platform;
-  const hasDisplay = Boolean(
-    process.env.DISPLAY || process.env.WAYLAND_DISPLAY,
-  );
+  const hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
   const isSsh =
     Boolean(process.env.SSH_CLIENT) ||
     Boolean(process.env.SSH_TTY) ||
@@ -135,14 +158,16 @@ async function resolveBrowserOpenCommand(): Promise<BrowserOpenCommand> {
   }
 
   if (platform === "win32") {
-    return { argv: ["cmd", "/c", "start", ""], command: "cmd" };
+    return {
+      argv: ["cmd", "/c", "start", ""],
+      command: "cmd",
+      quoteUrl: true,
+    };
   }
 
   if (platform === "darwin") {
     const hasOpen = await detectBinary("open");
-    return hasOpen
-      ? { argv: ["open"], command: "open" }
-      : { argv: null, reason: "missing-open" };
+    return hasOpen ? { argv: ["open"], command: "open" } : { argv: null, reason: "missing-open" };
   }
 
   if (platform === "linux") {
@@ -152,8 +177,12 @@ async function resolveBrowserOpenCommand(): Promise<BrowserOpenCommand> {
     }
     if (wsl) {
       const hasWslview = await detectBinary("wslview");
-      if (hasWslview) return { argv: ["wslview"], command: "wslview" };
-      if (!hasDisplay) return { argv: null, reason: "wsl-no-wslview" };
+      if (hasWslview) {
+        return { argv: ["wslview"], command: "wslview" };
+      }
+      if (!hasDisplay) {
+        return { argv: null, reason: "wsl-no-wslview" };
+      }
     }
     const hasXdgOpen = await detectBinary("xdg-open");
     return hasXdgOpen
@@ -166,7 +195,9 @@ async function resolveBrowserOpenCommand(): Promise<BrowserOpenCommand> {
 
 export async function detectBrowserOpenSupport(): Promise<BrowserOpenSupport> {
   const resolved = await resolveBrowserOpenCommand();
-  if (!resolved.argv) return { ok: false, reason: resolved.reason };
+  if (!resolved.argv) {
+    return { ok: false, reason: resolved.reason };
+  }
   return { ok: true, command: resolved.command };
 }
 
@@ -178,10 +209,9 @@ export function formatControlUiSshHint(params: {
   const basePath = normalizeControlUiBasePath(params.basePath);
   const uiPath = basePath ? `${basePath}/` : "/";
   const localUrl = `http://localhost:${params.port}${uiPath}`;
-  const tokenParam = params.token
-    ? `?token=${encodeURIComponent(params.token)}`
-    : "";
-  const authedUrl = params.token ? `${localUrl}${tokenParam}` : undefined;
+  const authedUrl = params.token
+    ? `${localUrl}#token=${encodeURIComponent(params.token)}`
+    : undefined;
   const sshTarget = resolveSshTargetHint();
   return [
     "No GUI detected. Open from your computer:",
@@ -189,6 +219,9 @@ export function formatControlUiSshHint(params: {
     "Then open:",
     localUrl,
     authedUrl,
+    "Docs:",
+    "https://docs.openclaw.ai/gateway/remote",
+    "https://docs.openclaw.ai/web/control-ui",
   ]
     .filter(Boolean)
     .join("\n");
@@ -202,11 +235,29 @@ function resolveSshTargetHint(): string {
 }
 
 export async function openUrl(url: string): Promise<boolean> {
+  if (shouldSkipBrowserOpenInTests()) {
+    return false;
+  }
   const resolved = await resolveBrowserOpenCommand();
-  if (!resolved.argv) return false;
-  const command = [...resolved.argv, url];
+  if (!resolved.argv) {
+    return false;
+  }
+  const quoteUrl = resolved.quoteUrl === true;
+  const command = [...resolved.argv];
+  if (quoteUrl) {
+    if (command.at(-1) === "") {
+      // Preserve the empty title token for `start` when using verbatim args.
+      command[command.length - 1] = '""';
+    }
+    command.push(`"${url}"`);
+  } else {
+    command.push(url);
+  }
   try {
-    await runCommandWithTimeout(command, { timeoutMs: 5_000 });
+    await runCommandWithTimeout(command, {
+      timeoutMs: 5_000,
+      windowsVerbatimArguments: quoteUrl,
+    });
     return true;
   } catch {
     // ignore; we still print the URL for manual open
@@ -214,18 +265,39 @@ export async function openUrl(url: string): Promise<boolean> {
   }
 }
 
+export async function openUrlInBackground(url: string): Promise<boolean> {
+  if (shouldSkipBrowserOpenInTests()) {
+    return false;
+  }
+  if (process.platform !== "darwin") {
+    return false;
+  }
+  const resolved = await resolveBrowserOpenCommand();
+  if (!resolved.argv || resolved.command !== "open") {
+    return false;
+  }
+  const command = ["open", "-g", url];
+  try {
+    await runCommandWithTimeout(command, { timeoutMs: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureWorkspaceAndSessions(
   workspaceDir: string,
   runtime: RuntimeEnv,
+  options?: { skipBootstrap?: boolean; agentId?: string },
 ) {
   const ws = await ensureAgentWorkspace({
     dir: workspaceDir,
-    ensureBootstrapFiles: true,
+    ensureBootstrapFiles: !options?.skipBootstrap,
   });
-  runtime.log(`Workspace OK: ${ws.dir}`);
-  const sessionsDir = resolveSessionTranscriptsDir();
+  runtime.log(`Workspace OK: ${shortenHomePath(ws.dir)}`);
+  const sessionsDir = resolveSessionTranscriptsDirForAgent(options?.agentId);
   await fs.mkdir(sessionsDir, { recursive: true });
-  runtime.log(`Sessions OK: ${sessionsDir}`);
+  runtime.log(`Sessions OK: ${shortenHomePath(sessionsDir)}`);
 }
 
 export function resolveNodeManagerOptions(): Array<{
@@ -239,11 +311,10 @@ export function resolveNodeManagerOptions(): Array<{
   ];
 }
 
-export async function moveToTrash(
-  pathname: string,
-  runtime: RuntimeEnv,
-): Promise<void> {
-  if (!pathname) return;
+export async function moveToTrash(pathname: string, runtime: RuntimeEnv): Promise<void> {
+  if (!pathname) {
+    return;
+  }
   try {
     await fs.access(pathname);
   } catch {
@@ -251,30 +322,38 @@ export async function moveToTrash(
   }
   try {
     await runCommandWithTimeout(["trash", pathname], { timeoutMs: 5000 });
-    runtime.log(`Moved to Trash: ${pathname}`);
+    runtime.log(`Moved to Trash: ${shortenHomePath(pathname)}`);
   } catch {
-    runtime.log(`Failed to move to Trash (manual delete): ${pathname}`);
+    runtime.log(`Failed to move to Trash (manual delete): ${shortenHomePath(pathname)}`);
   }
 }
 
-export async function handleReset(
-  scope: ResetScope,
-  workspaceDir: string,
-  runtime: RuntimeEnv,
-) {
-  await moveToTrash(CONFIG_PATH_CLAWDBOT, runtime);
-  if (scope === "config") return;
+export async function handleReset(scope: ResetScope, workspaceDir: string, runtime: RuntimeEnv) {
+  await moveToTrash(CONFIG_PATH, runtime);
+  if (scope === "config") {
+    return;
+  }
   await moveToTrash(path.join(CONFIG_DIR, "credentials"), runtime);
-  await moveToTrash(resolveSessionTranscriptsDir(), runtime);
+  await moveToTrash(resolveSessionTranscriptsDirForAgent(), runtime);
   if (scope === "full") {
     await moveToTrash(workspaceDir, runtime);
   }
 }
 
 export async function detectBinary(name: string): Promise<boolean> {
-  if (!name?.trim()) return false;
+  if (!name?.trim()) {
+    return false;
+  }
+  if (!isSafeExecutableValue(name)) {
+    return false;
+  }
   const resolved = name.startsWith("~") ? resolveUserPath(name) : name;
-  if (path.isAbsolute(resolved) || resolved.startsWith(".")) {
+  if (
+    path.isAbsolute(resolved) ||
+    resolved.startsWith(".") ||
+    resolved.includes("/") ||
+    resolved.includes("\\")
+  ) {
     try {
       await fs.access(resolved);
       return true;
@@ -283,16 +362,20 @@ export async function detectBinary(name: string): Promise<boolean> {
     }
   }
 
-  const command =
-    process.platform === "win32"
-      ? ["where", name]
-      : ["/usr/bin/env", "sh", "-lc", `command -v ${name}`];
+  const command = process.platform === "win32" ? ["where", name] : ["/usr/bin/env", "which", name];
   try {
     const result = await runCommandWithTimeout(command, { timeoutMs: 2000 });
     return result.code === 0 && result.stdout.trim().length > 0;
   } catch {
     return false;
   }
+}
+
+function shouldSkipBrowserOpenInTests(): boolean {
+  if (process.env.VITEST) {
+    return true;
+  }
+  return process.env.NODE_ENV === "test";
 }
 
 export async function probeGatewayReachable(params: {
@@ -310,13 +393,47 @@ export async function probeGatewayReachable(params: {
       password: params.password,
       method: "health",
       timeoutMs,
-      clientName: "clawdbot-probe",
-      mode: "probe",
+      clientName: GATEWAY_CLIENT_NAMES.PROBE,
+      mode: GATEWAY_CLIENT_MODES.PROBE,
     });
     return { ok: true };
   } catch (err) {
     return { ok: false, detail: summarizeError(err) };
   }
+}
+
+export async function waitForGatewayReachable(params: {
+  url: string;
+  token?: string;
+  password?: string;
+  /** Total time to wait before giving up. */
+  deadlineMs?: number;
+  /** Per-probe timeout (each probe makes a full gateway health request). */
+  probeTimeoutMs?: number;
+  /** Delay between probes. */
+  pollMs?: number;
+}): Promise<{ ok: boolean; detail?: string }> {
+  const deadlineMs = params.deadlineMs ?? 15_000;
+  const pollMs = params.pollMs ?? 400;
+  const probeTimeoutMs = params.probeTimeoutMs ?? 1500;
+  const startedAt = Date.now();
+  let lastDetail: string | undefined;
+
+  while (Date.now() - startedAt < deadlineMs) {
+    const probe = await probeGatewayReachable({
+      url: params.url,
+      token: params.token,
+      password: params.password,
+      timeoutMs: probeTimeoutMs,
+    });
+    if (probe.ok) {
+      return probe;
+    }
+    lastDetail = probe.detail;
+    await sleep(pollMs);
+  }
+
+  return { ok: false, detail: lastDetail };
 }
 
 function summarizeError(err: unknown): string {
@@ -340,16 +457,26 @@ export const DEFAULT_WORKSPACE = DEFAULT_AGENT_WORKSPACE_DIR;
 
 export function resolveControlUiLinks(params: {
   port: number;
-  bind?: "auto" | "lan" | "tailnet" | "loopback";
+  bind?: "auto" | "lan" | "loopback" | "custom" | "tailnet";
+  customBindHost?: string;
   basePath?: string;
 }): { httpUrl: string; wsUrl: string } {
   const port = params.port;
   const bind = params.bind ?? "loopback";
+  const customBindHost = params.customBindHost?.trim();
   const tailnetIPv4 = pickPrimaryTailnetIPv4();
-  const host =
-    bind === "tailnet" || (bind === "auto" && tailnetIPv4)
-      ? (tailnetIPv4 ?? "127.0.0.1")
-      : "127.0.0.1";
+  const host = (() => {
+    if (bind === "custom" && customBindHost && isValidIPv4(customBindHost)) {
+      return customBindHost;
+    }
+    if (bind === "tailnet" && tailnetIPv4) {
+      return tailnetIPv4 ?? "127.0.0.1";
+    }
+    if (bind === "lan") {
+      return pickPrimaryLanIPv4() ?? "127.0.0.1";
+    }
+    return "127.0.0.1";
+  })();
   const basePath = normalizeControlUiBasePath(params.basePath);
   const uiPath = basePath ? `${basePath}/` : "/";
   const wsPath = basePath ? basePath : "";

@@ -55,7 +55,7 @@ final class ScreenRecordService: @unchecked Sendable {
             outPath: outPath)
 
         let state = CaptureState()
-        let recordQueue = DispatchQueue(label: "com.clawdbot.screenrecord")
+        let recordQueue = DispatchQueue(label: "bot.molt.screenrecord")
 
         try await self.startCapture(state: state, config: config, recordQueue: recordQueue)
         try await Task.sleep(nanoseconds: UInt64(config.durationMs) * 1_000_000)
@@ -91,7 +91,7 @@ final class ScreenRecordService: @unchecked Sendable {
         let includeAudio = includeAudio ?? true
 
         let outURL = self.makeOutputURL(outPath: outPath)
-        try? FileManager.default.removeItem(at: outURL)
+        try? FileManager().removeItem(at: outURL)
 
         return RecordConfig(
             durationMs: durationMs,
@@ -104,8 +104,8 @@ final class ScreenRecordService: @unchecked Sendable {
         if let outPath, !outPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return URL(fileURLWithPath: outPath)
         }
-        return FileManager.default.temporaryDirectory
-            .appendingPathComponent("clawdbot-screen-record-\(UUID().uuidString).mp4")
+        return FileManager().temporaryDirectory
+            .appendingPathComponent("openclaw-screen-record-\(UUID().uuidString).mp4")
     }
 
     private func startCapture(
@@ -137,9 +137,11 @@ final class ScreenRecordService: @unchecked Sendable {
         recordQueue: DispatchQueue) -> @Sendable (CMSampleBuffer, RPSampleBufferType, Error?) -> Void
     {
         { sample, type, error in
+            let sampleBox = UncheckedSendableBox(value: sample)
             // ReplayKit can call the capture handler on a background queue.
             // Serialize writes to avoid queue asserts.
             recordQueue.async {
+                let sample = sampleBox.value
                 if let error {
                     state.withLock { state in
                         if state.handlerError == nil { state.handlerError = error }

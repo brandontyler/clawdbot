@@ -1,40 +1,27 @@
 import fs from "node:fs/promises";
-import path from "node:path";
-
 import JSON5 from "json5";
-
-import {
-  DEFAULT_AGENT_WORKSPACE_DIR,
-  ensureAgentWorkspace,
-} from "../agents/workspace.js";
-import { type ClawdbotConfig, CONFIG_PATH_CLAWDBOT } from "../config/config.js";
-import { applyModelAliasDefaults } from "../config/defaults.js";
+import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../agents/workspace.js";
+import { type OpenClawConfig, createConfigIO, writeConfigFile } from "../config/config.js";
+import { formatConfigPath, logConfigUpdated } from "../config/logging.js";
 import { resolveSessionTranscriptsDir } from "../config/sessions.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
+import { shortenHomePath } from "../utils.js";
 
-async function readConfigFileRaw(): Promise<{
+async function readConfigFileRaw(configPath: string): Promise<{
   exists: boolean;
-  parsed: ClawdbotConfig;
+  parsed: OpenClawConfig;
 }> {
   try {
-    const raw = await fs.readFile(CONFIG_PATH_CLAWDBOT, "utf-8");
+    const raw = await fs.readFile(configPath, "utf-8");
     const parsed = JSON5.parse(raw);
     if (parsed && typeof parsed === "object") {
-      return { exists: true, parsed: parsed as ClawdbotConfig };
+      return { exists: true, parsed: parsed as OpenClawConfig };
     }
     return { exists: true, parsed: {} };
   } catch {
     return { exists: false, parsed: {} };
   }
-}
-
-async function writeConfigFile(cfg: ClawdbotConfig) {
-  await fs.mkdir(path.dirname(CONFIG_PATH_CLAWDBOT), { recursive: true });
-  const json = JSON.stringify(applyModelAliasDefaults(cfg), null, 2)
-    .trimEnd()
-    .concat("\n");
-  await fs.writeFile(CONFIG_PATH_CLAWDBOT, json, "utf-8");
 }
 
 export async function setupCommand(
@@ -46,39 +33,43 @@ export async function setupCommand(
       ? opts.workspace.trim()
       : undefined;
 
-  const existingRaw = await readConfigFileRaw();
+  const io = createConfigIO();
+  const configPath = io.configPath;
+  const existingRaw = await readConfigFileRaw(configPath);
   const cfg = existingRaw.parsed;
-  const agent = cfg.agent ?? {};
+  const defaults = cfg.agents?.defaults ?? {};
 
-  const workspace =
-    desiredWorkspace ?? agent.workspace ?? DEFAULT_AGENT_WORKSPACE_DIR;
+  const workspace = desiredWorkspace ?? defaults.workspace ?? DEFAULT_AGENT_WORKSPACE_DIR;
 
-  const next: ClawdbotConfig = {
+  const next: OpenClawConfig = {
     ...cfg,
-    agent: {
-      ...agent,
-      workspace,
+    agents: {
+      ...cfg.agents,
+      defaults: {
+        ...defaults,
+        workspace,
+      },
     },
   };
 
-  if (!existingRaw.exists || agent.workspace !== workspace) {
+  if (!existingRaw.exists || defaults.workspace !== workspace) {
     await writeConfigFile(next);
-    runtime.log(
-      !existingRaw.exists
-        ? `Wrote ${CONFIG_PATH_CLAWDBOT}`
-        : `Updated ${CONFIG_PATH_CLAWDBOT} (set agent.workspace)`,
-    );
+    if (!existingRaw.exists) {
+      runtime.log(`Wrote ${formatConfigPath(configPath)}`);
+    } else {
+      logConfigUpdated(runtime, { path: configPath, suffix: "(set agents.defaults.workspace)" });
+    }
   } else {
-    runtime.log(`Config OK: ${CONFIG_PATH_CLAWDBOT}`);
+    runtime.log(`Config OK: ${formatConfigPath(configPath)}`);
   }
 
   const ws = await ensureAgentWorkspace({
     dir: workspace,
-    ensureBootstrapFiles: true,
+    ensureBootstrapFiles: !next.agents?.defaults?.skipBootstrap,
   });
-  runtime.log(`Workspace OK: ${ws.dir}`);
+  runtime.log(`Workspace OK: ${shortenHomePath(ws.dir)}`);
 
   const sessionsDir = resolveSessionTranscriptsDir();
   await fs.mkdir(sessionsDir, { recursive: true });
-  runtime.log(`Sessions OK: ${sessionsDir}`);
+  runtime.log(`Sessions OK: ${shortenHomePath(sessionsDir)}`);
 }

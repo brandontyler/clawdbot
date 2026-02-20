@@ -1,4 +1,10 @@
 export {
+  listEnabledSlackAccounts,
+  listSlackAccountIds,
+  resolveDefaultSlackAccountId,
+  resolveSlackAccount,
+} from "./accounts.js";
+export {
   deleteSlackMessage,
   editSlackMessage,
   getSlackMemberInfo,
@@ -8,6 +14,8 @@ export {
   pinSlackMessage,
   reactSlackMessage,
   readSlackMessages,
+  removeOwnSlackReactions,
+  removeSlackReaction,
   sendSlackMessage,
   unpinSlackMessage,
 } from "./actions.js";
