@@ -117,9 +117,12 @@ Callers can also pass an explicit session key via:
 ## Manual Steps (User)
 
 ```bash
-# 1. Install Kiro CLI  (check https://kiro.dev for current install method)
-# 2. Authenticate
-kiro-cli auth login
+# 1. Install Kiro CLI
+curl -fsSL https://cli.kiro.dev/install | bash
+# (also: brew install --cask kiro-cli  or  .deb at https://desktop-release.q.us-east-1.amazonaws.com/latest/kiro-cli.deb)
+
+# 2. Authenticate (opens browser OAuth — requires free AWS Builder ID)
+kiro-cli login
 
 # 3. Start the proxy (terminal 1)
 openclaw kiro-proxy
