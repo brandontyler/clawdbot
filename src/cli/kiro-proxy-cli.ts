@@ -23,7 +23,7 @@ export function registerKiroProxyCli(program: Command): void {
     .description("Start a local OpenAI-compatible proxy backed by kiro CLI (ACP)")
     .option("-p, --port <number>", "HTTP port to listen on", "18790")
     .option("--host <host>", "Host to bind to", "127.0.0.1")
-    .option("--kiro-bin <path>", "Path to kiro executable", "kiro")
+    .option("--kiro-bin <path>", "Path to kiro executable", "kiro-cli")
     .option("--kiro-args <args...>", "Extra arguments to pass after 'acp'")
     .option("--cwd <dir>", "Working directory for kiro sessions", process.cwd())
     .option("--idle-secs <number>", "Seconds before an idle session is killed", "1800")

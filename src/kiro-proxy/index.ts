@@ -42,7 +42,7 @@ const DEFAULT_HOST = "127.0.0.1";
 export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() => Promise<void>> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? DEFAULT_HOST;
-  const kiroBin = opts.kiroBin ?? "kiro";
+  const kiroBin = opts.kiroBin ?? "kiro-cli";
   const kiroArgs = opts.kiroArgs ?? [];
   const cwd = opts.cwd ?? process.cwd();
   const idleSecs = opts.sessionIdleSecs ?? 1800;
