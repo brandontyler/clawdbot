@@ -12,10 +12,15 @@
  *   stream.  We translate that into ACP prompt() calls against kiro.
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { KiroProxyOptions, OpenAIChatRequest, OpenAIChunk, OpenAICompletion } from "./types.js";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { SessionManager } from "./session-manager.js";
+import type {
+  KiroProxyOptions,
+  OpenAIChatRequest,
+  OpenAIChunk,
+  OpenAICompletion,
+} from "./types.js";
 
 const KIRO_MODEL_ID = "kiro-default";
 
@@ -113,11 +118,16 @@ async function handleCompletions(
   const wantStream = body.stream !== false;
   const completionId = `kiro-${randomUUID()}`;
 
-  // Resolve session key: prefer explicit `user` field, then fingerprint.
-  const explicitKey = (req.headers["x-kiro-session-id"] as string | undefined) ?? body.user;
+  // Resolve session key: prefer explicit headers/fields, then fingerprint.
+  const explicitKey =
+    (req.headers["x-kiro-session-id"] as string | undefined) ??
+    (req.headers["x-openclaw-session-key"] as string | undefined) ??
+    body.user;
   const sessionKey = SessionManager.resolveSessionKey(body.messages, explicitKey);
 
-  log(`${wantStream ? "stream" : "sync"} session=${sessionKey.slice(0, 8)}… msgs=${body.messages.length}`);
+  log(
+    `${wantStream ? "stream" : "sync"} session=${sessionKey.slice(0, 8)}… msgs=${body.messages.length}`,
+  );
 
   // Get or create Kiro ACP session
   let sessionResult: Awaited<ReturnType<SessionManager["getOrCreate"]>>;
@@ -137,7 +147,7 @@ async function handleCompletions(
     return;
   }
 
-  const { session, promptText } = sessionResult;
+  const { session, promptText, managed } = sessionResult;
 
   if (!promptText.trim()) {
     // Nothing new to send (e.g. only assistant messages in the delta)
@@ -169,16 +179,22 @@ async function handleCompletions(
       choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
     });
 
+    let resolvePromptLock: () => void;
+    managed.promptLock = new Promise((r) => {
+      resolvePromptLock = r;
+    });
+
     try {
       await session.prompt(promptText, (text) => {
         sseChunk(res, buildChunk(completionId, text));
       });
     } catch (err) {
-      log(`prompt error: ${String(err)}`);
-      // Best-effort error in stream
+      log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
       sseChunk(res, buildFinalChunk(completionId));
       sseDone(res);
       return;
+    } finally {
+      resolvePromptLock!();
     }
 
     sseChunk(res, buildFinalChunk(completionId));
@@ -186,10 +202,15 @@ async function handleCompletions(
   } else {
     // ── Blocking (non-streaming) response ─────────────────────────────────
     const parts: string[] = [];
+    let resolveBlockLock: () => void;
+    managed.promptLock = new Promise((r) => {
+      resolveBlockLock = r;
+    });
+
     try {
       await session.prompt(promptText, (text) => parts.push(text));
     } catch (err) {
-      log(`prompt error: ${String(err)}`);
+      log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -197,6 +218,8 @@ async function handleCompletions(
         }),
       );
       return;
+    } finally {
+      resolveBlockLock!();
     }
 
     const fullText = parts.join("");

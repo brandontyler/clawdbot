@@ -141,10 +141,21 @@ export class KiroSession {
     this.chunkCallback = onChunk;
 
     try {
-      const response = await this.client.prompt({
+      const promptPromise = this.client.prompt({
         sessionId: this.acpSessionId,
         prompt: [{ type: "text", text }],
       });
+
+      // Race against process death so we don't hang forever if kiro-cli crashes.
+      const deathPromise = new Promise<never>((_, reject) => {
+        const onExit = (code: number | null, signal: string | null) => {
+          reject(new Error(`kiro-cli exited unexpectedly (code=${code}, signal=${signal})`));
+        };
+        this.proc.once("exit", onExit);
+        promptPromise.finally(() => this.proc.removeListener("exit", onExit)).catch(() => {});
+      });
+
+      const response = await Promise.race([promptPromise, deathPromise]);
       return response.stopReason ?? "end_turn";
     } finally {
       this.chunkCallback = null;

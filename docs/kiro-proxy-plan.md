@@ -33,39 +33,55 @@ Discord / Slack / Telegram / Web
 
 ## Implemented Files
 
-| File | Purpose |
-|------|---------|
-| `src/kiro-proxy/types.ts` | OpenAI wire types + `KiroProxyOptions` |
-| `src/kiro-proxy/kiro-session.ts` | Single kiro-cli ACP session wrapper |
-| `src/kiro-proxy/session-manager.ts` | Session pool, fingerprinting, idle GC |
-| `src/kiro-proxy/server.ts` | OpenAI-compatible HTTP server |
-| `src/kiro-proxy/index.ts` | `startKiroProxy()` entry + exports |
-| `src/cli/kiro-proxy-cli.ts` | `openclaw kiro-proxy` CLI command |
+| File                                | Purpose                                |
+| ----------------------------------- | -------------------------------------- |
+| `src/kiro-proxy/types.ts`           | OpenAI wire types + `KiroProxyOptions` |
+| `src/kiro-proxy/kiro-session.ts`    | Single kiro-cli ACP session wrapper    |
+| `src/kiro-proxy/session-manager.ts` | Session pool, fingerprinting, idle GC  |
+| `src/kiro-proxy/server.ts`          | OpenAI-compatible HTTP server          |
+| `src/kiro-proxy/index.ts`           | `startKiroProxy()` entry + exports     |
+| `src/cli/kiro-proxy-cli.ts`         | `openclaw kiro-proxy` CLI command      |
 
-## OpenClaw Configuration (~/.openclaw/config.yaml)
+## OpenClaw Configuration (~/.openclaw/openclaw.json)
 
-The proxy prints this exact snippet to stderr on startup:
+Config format is **JSON5** (not YAML). Add the Kiro provider to `~/.openclaw/openclaw.json`:
 
-```yaml
-models:
-  providers:
-    kiro:
-      baseUrl: http://127.0.0.1:18790
-      apiKey: kiro-local          # any non-empty string; auth is kiro-cli's job
-      api: openai-completions
-      models:
-        - id: kiro-default
-          name: "Kiro (AWS Bedrock)"
-          api: openai-completions
-          contextWindow: 200000
-          maxTokens: 8192
-          input: [text]
-          reasoning: false
-          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
-
-agents:
-  default:
-    model: kiro:kiro-default
+```json5
+{
+  models: {
+    mode: "merge",
+    providers: {
+      kiro: {
+        baseUrl: "http://127.0.0.1:18790",
+        apiKey: "kiro-local", // any non-empty string; auth is kiro-cli's job
+        api: "openai-completions",
+        models: [
+          {
+            id: "kiro-default",
+            name: "Kiro (AWS Bedrock)",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 200000,
+            maxTokens: 8192,
+          },
+        ],
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      model: {
+        primary: "kiro/kiro-default",
+      },
+    },
+  },
+  gateway: {
+    mode: "local",
+    port: 18789,
+    bind: "loopback",
+  },
+}
 ```
 
 ## ACP Protocol (Confirmed)
@@ -96,9 +112,9 @@ Key ACP types used:
 
 ```typescript
 // Streaming chunks arrive via sessionUpdate callback (before prompt() resolves):
-SessionUpdate = ContentChunk & { sessionUpdate: "agent_message_chunk" }
-ContentChunk  = { content: ContentBlock }
-ContentBlock  = { type: "text", text: string }  // (also image, audio, resource_link, etc.)
+SessionUpdate = ContentChunk & { sessionUpdate: "agent_message_chunk" };
+ContentChunk = { content: ContentBlock };
+ContentBlock = { type: "text", text: string }; // (also image, audio, resource_link, etc.)
 ```
 
 ## Session Identity & Memory
@@ -111,6 +127,7 @@ pi-ai sends the **full conversation** in every OpenAI request. The proxy:
 4. Kiro maintains its own context window internally → full session memory.
 
 Callers can also pass an explicit session key via:
+
 - `X-Kiro-Session-Id` HTTP header
 - OpenAI `user` field in the request body
 
@@ -129,7 +146,7 @@ openclaw kiro-proxy
 #   Or with full path if not on $PATH:
 openclaw kiro-proxy --kiro-bin ~/.local/bin/kiro-cli
 
-# 4. Add the printed config snippet to ~/.openclaw/config.yaml
+# 4. Add the Kiro provider config to ~/.openclaw/openclaw.json (JSON5 format, see above)
 
 # 5. Start the gateway (terminal 2)
 openclaw gateway
