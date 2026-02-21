@@ -29,7 +29,7 @@ export function resolveDiscordGatewayIntents(
 
 // ─── Resilient GatewayPlugin ──────────────────────────────────────────────────
 //
-// Fixes two @buape/carbon bugs:
+// Fixes @buape/carbon gateway bugs and adds flap detection:
 //
 // 1. reconnectAttempts resets on every WS "open" event, even if the connection
 //    immediately closes again. This defeats exponential backoff on flapping
@@ -39,6 +39,16 @@ export function resolveDiscordGatewayIntents(
 //    "Attempted to reconnect zombie connection" as an uncaught exception that
 //    crashes the process. We override setupWebSocket to catch that throw and
 //    route it through handleZombieConnection() instead.
+//
+// 3. Flap detection: if the connection drops repeatedly within a short window
+//    after each successful RESUMED, the session is likely stale. After
+//    MAX_RAPID_RESUMES consecutive rapid disconnects we clear session state
+//    and force a fresh IDENTIFY instead of resuming forever.
+
+/** A resume that lasts less than this is considered a "flap". */
+const STABLE_CONNECTION_MS = 60_000;
+/** After this many consecutive flaps, force a fresh IDENTIFY. */
+const MAX_RAPID_RESUMES = 8;
 
 class ResilientGatewayPlugin extends GatewayPlugin {
   private get _reconnectAttempts(): number {
@@ -46,6 +56,27 @@ class ResilientGatewayPlugin extends GatewayPlugin {
   }
   private set _reconnectAttempts(v: number) {
     (this as unknown as { reconnectAttempts: number }).reconnectAttempts = v;
+  }
+
+  /** Timestamp of the last successful READY/RESUMED dispatch. */
+  private _lastResumedAt = 0;
+  /** How many consecutive resumes lasted less than STABLE_CONNECTION_MS. */
+  private _rapidResumeCount = 0;
+
+  private get _state() {
+    return (
+      this as unknown as {
+        state: {
+          sessionId: string | null;
+          resumeGatewayUrl: string | null;
+          sequence: number | null;
+        };
+      }
+    ).state;
+  }
+
+  private set _sequence(v: number | null) {
+    (this as unknown as { sequence: number | null }).sequence = v;
   }
 
   override setupWebSocket(): void {
@@ -59,15 +90,9 @@ class ResilientGatewayPlugin extends GatewayPlugin {
 
     super.setupWebSocket();
 
-    // The parent's "open" handler already ran via super.setupWebSocket() and
-    // will reset reconnectAttempts=0 when the socket opens. We undo that by
-    // prepending our own "open" listener that runs AFTER the parent's (since
-    // the parent attached its listener first in setupWebSocket, and we append
-    // ours after). Actually — we need to run AFTER the parent's open handler.
-    // Use a regular listener (not prepend) so it fires after the parent's.
+    // Parent's "open" handler resets reconnectAttempts=0. Restore saved value;
+    // it will be properly reset only when READY/RESUMED arrives.
     ws.on("open", () => {
-      // Parent just set reconnectAttempts = 0. Restore the saved value.
-      // It will be properly reset to 0 only when READY/RESUMED arrives.
       this._reconnectAttempts = savedAttempts;
     });
 
@@ -79,6 +104,7 @@ class ResilientGatewayPlugin extends GatewayPlugin {
         const parsed = JSON.parse(raw);
         if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
           this._reconnectAttempts = 0;
+          this._lastResumedAt = Date.now();
           this.emitter.emit("debug", `Resumed successfully (${parsed.t})`);
         }
       } catch {
@@ -91,11 +117,35 @@ class ResilientGatewayPlugin extends GatewayPlugin {
 
   /**
    * Override connect to:
+   * - detect flapping (rapid disconnect after resume) and force fresh IDENTIFY
+   * - add exponential backoff with jitter when attempts pile up
    * - catch the zombie heartbeat throw from @buape/carbon
-   * - add exponential backoff with jitter when attempts pile up, so a brief
-   *   network outage doesn't burn through all 50 attempts in under 3 minutes
    */
   override connect(resume?: boolean): void {
+    // Flap detection: if the last resume was very short-lived, count it.
+    if (this._lastResumedAt > 0) {
+      const uptime = Date.now() - this._lastResumedAt;
+      if (uptime < STABLE_CONNECTION_MS) {
+        this._rapidResumeCount++;
+      } else {
+        this._rapidResumeCount = 0;
+      }
+    }
+
+    // After too many rapid flaps, clear session and force fresh IDENTIFY.
+    if (resume && this._rapidResumeCount >= MAX_RAPID_RESUMES) {
+      this.emitter.emit(
+        "debug",
+        `${this._rapidResumeCount} rapid disconnects detected, forcing fresh IDENTIFY`,
+      );
+      this._state.sessionId = null;
+      this._state.resumeGatewayUrl = null;
+      this._state.sequence = null;
+      this._sequence = null;
+      this._rapidResumeCount = 0;
+      resume = false;
+    }
+
     const attempts = this._reconnectAttempts;
     if (attempts > 3) {
       // Exponential backoff: 4s, 8s, 16s … capped at 60s, plus up to 3s jitter
