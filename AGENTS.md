@@ -69,6 +69,13 @@
 - Format fix: `pnpm format:fix` (oxfmt --write)
 - Tests: `pnpm test` (vitest); coverage: `pnpm test:coverage`
 
+## Upstream Fork Management
+
+- This is a fork of OpenClaw customized for `kiro-cli`. Read `UPSTREAM.md` before touching upstream files.
+- Kiro-specific logic goes in **separate files**; upstream file patches must be **surgical** (a few lines max).
+- When you add or change a patch to an upstream file, **update `UPSTREAM.md`** (patched files table).
+- When you add a new Kiro-only file, add it to the "Kiro-Only Files" table in `UPSTREAM.md`.
+
 ## Coding Style & Naming Conventions
 
 - Language: TypeScript (ESM). Prefer strict typing; avoid `any`.
