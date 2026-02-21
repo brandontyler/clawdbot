@@ -18,7 +18,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { KiroSession, type KiroSessionOptions } from "./kiro-session.js";
+import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
 import type { OpenAIMessage, KiroSessionHandle } from "./types.js";
 
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes
@@ -47,11 +47,17 @@ export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly sessionOpts: KiroSessionOptions;
   private readonly idleMs: number;
+  private readonly log: (msg: string) => void;
   private gcTimer: NodeJS.Timeout | null = null;
 
-  constructor(sessionOpts: KiroSessionOptions, opts: { idleSecs?: number } = {}) {
+  constructor(
+    sessionOpts: KiroSessionOptions,
+    opts: { idleSecs?: number; log?: (msg: string) => void } = {},
+  ) {
     this.sessionOpts = sessionOpts;
     this.idleMs = (opts.idleSecs ?? DEFAULT_IDLE_SECS) * 1000;
+    this.log = opts.log ?? (() => {});
+    this.scheduleGc();
   }
 
   /**
@@ -68,7 +74,9 @@ export class SessionManager {
       .map((m) => {
         let text = extractText(m.content).slice(0, 512);
         text = text.replace(/"message_id"\s*:\s*"[^"]*",?\s*/g, "");
-        text = text.replace(/\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z]+\]\s*/g, "");
+        // Strip envelope timestamps: both bare [Thu 2026-02-20 19:30 CST]
+        // and prefixed [Discord 123 Thu 2026-02-20 19:30 CST]
+        text = text.replace(/\[[^\]]*[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z]+\]\s*/g, "");
         return `${m.role}:${text.trim()}`;
       })
       .join("|");
@@ -102,7 +110,7 @@ export class SessionManager {
       this.sessions.delete(sessionKey);
     }
 
-    const session = await KiroSession.create(this.sessionOpts);
+    const session = await KiroSession.create(this.sessionOpts, this.buildSessionEvents(sessionKey));
 
     // For the very first turn, send system prompt (if any) prepended to the
     // first user message so Kiro can establish context.
@@ -115,7 +123,6 @@ export class SessionManager {
     };
     const managed: ManagedSession = { session, handle, promptLock: Promise.resolve() };
     this.sessions.set(sessionKey, managed);
-    this.scheduleGc();
 
     return { session, promptText, managed };
   }
@@ -152,6 +159,21 @@ export class SessionManager {
     return parts.join("\n\n").trim();
   }
 
+  private buildSessionEvents(sessionKey: string): KiroSessionEvents {
+    return {
+      onContextUsage: (pct) => {
+        this.log(`context: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 8)}…)`);
+      },
+      onActivity: () => {
+        const managed = this.sessions.get(sessionKey);
+        if (managed) {
+          managed.handle.lastTouchedAt = Date.now();
+          managed.session.lastTouchedAt = Date.now();
+        }
+      },
+    };
+  }
+
   private scheduleGc(): void {
     if (this.gcTimer) {
       return;
@@ -175,9 +197,8 @@ export class SessionManager {
         this.sessions.delete(key);
       }
     }
-    if (this.sessions.size === 0 && this.gcTimer) {
-      clearInterval(this.gcTimer);
-      this.gcTimer = null;
-    }
+    // GC timer stays alive even when empty — avoids edge case where
+    // orphaned sessions survive because the timer was cleared and never
+    // restarted (the timer is unref'd so it won't prevent exit).
   }
 }
