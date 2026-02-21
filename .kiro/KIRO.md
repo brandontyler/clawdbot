@@ -30,6 +30,9 @@ touching any upstream files. Key rules:
 
 - Kiro-specific logic goes in **separate files** (never weave into upstream code).
 - Upstream file patches must be **surgical** (a few lines max).
+- When you add or change a patch to an upstream file, **update `UPSTREAM.md`** —
+  add the file to the "Upstream Files We Patch" table with what changed and why.
+- When you add a new Kiro-only file, add it to the "Kiro-Only Files" table.
 - After syncing upstream: check patched files listed in `UPSTREAM.md`, re-run
   `pnpm canvas:a2ui:bundle` for generated files, then `pnpm build && pnpm check`.
 
@@ -39,6 +42,7 @@ When working in a specific area, pull in the relevant doc:
 
 | Area                       | Load                                                               |
 | -------------------------- | ------------------------------------------------------------------ |
+| Upstream fork / sync       | `UPSTREAM.md`                                                      |
 | Gateway / WS protocol      | `docs/architecture.md`, `docs/gateway/protocol.md`                 |
 | Agent loop / auto-reply    | `docs/concepts/agent-loop.md`                                      |
 | Multi-agent routing        | `docs/concepts/multi-agent.md`                                     |
