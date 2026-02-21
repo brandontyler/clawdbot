@@ -21,6 +21,13 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 
+// ─── Kiro extension notifications ─────────────────────────────────────────────
+
+type KiroMetadata = {
+  sessionId: string;
+  contextUsagePercentage: number;
+};
+
 // ─── Permission handling ──────────────────────────────────────────────────────
 
 /** Auto-approve all permissions in proxy mode (no TTY available). */
@@ -44,10 +51,16 @@ export type KiroSessionOptions = {
   verbose: boolean;
 };
 
+export type KiroSessionEvents = {
+  onContextUsage?: (pct: number) => void;
+  onActivity?: () => void;
+};
+
 export class KiroSession {
   private readonly log: (msg: string) => void;
   private readonly proc: ChildProcess;
   private readonly client: ClientSideConnection;
+  private readonly events: KiroSessionEvents;
 
   /** Set during an active prompt() call; null otherwise. */
   private chunkCallback: ChunkCallback | null = null;
@@ -60,14 +73,19 @@ export class KiroSession {
     proc: ChildProcess,
     client: ClientSideConnection,
     log: (msg: string) => void,
+    events: KiroSessionEvents,
   ) {
     this.proc = proc;
     this.client = client;
     this.log = log;
+    this.events = events;
   }
 
   /** Spawn kiro, perform ACP handshake, and return a ready-to-use session. */
-  static async create(opts: KiroSessionOptions): Promise<KiroSession> {
+  static async create(
+    opts: KiroSessionOptions,
+    events: KiroSessionEvents = {},
+  ): Promise<KiroSession> {
     const log = opts.verbose
       ? (msg: string) => process.stderr.write(`[kiro-session] ${msg}\n`)
       : () => {};
@@ -106,11 +124,14 @@ export class KiroSession {
           log(`permission requested: ${params.toolCall?.title ?? "unknown"}`);
           return autoApprovePermission(params);
         },
+        extNotification: async (method: string, params: Record<string, unknown>) => {
+          holder.session?.handleExtNotification(method, params);
+        },
       }),
       stream,
     );
 
-    const session = new KiroSession(proc, client, log);
+    const session = new KiroSession(proc, client, log, events);
     holder.session = session;
 
     // ACP handshake
@@ -178,11 +199,25 @@ export class KiroSession {
       }
       case "tool_call": {
         this.log(`tool: ${update.title ?? "unknown"} (${update.status ?? ""})`);
+        this.events.onActivity?.();
         break;
       }
       default:
         break;
     }
+  }
+
+  /** Handle Kiro-specific extension notifications (e.g. _kiro.dev/*). */
+  private handleExtNotification(method: string, params: Record<string, unknown>): void {
+    if (method === "_kiro.dev/metadata") {
+      const meta = params as KiroMetadata | undefined;
+      if (meta?.contextUsagePercentage != null) {
+        this.events.onContextUsage?.(meta.contextUsagePercentage);
+        this.events.onActivity?.();
+      }
+      return;
+    }
+    // Silently ignore other _kiro.dev/* notifications (e.g. commands/available)
   }
 
   /** Kill the underlying kiro process. */

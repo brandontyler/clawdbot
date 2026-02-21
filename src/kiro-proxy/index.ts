@@ -44,7 +44,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
 
   log(`starting (kiro=${kiroBin}, port=${port}, idle=${idleSecs}s)`);
 
-  const manager = new SessionManager({ kiroBin, kiroArgs, cwd, verbose }, { idleSecs });
+  const manager = new SessionManager({ kiroBin, kiroArgs, cwd, verbose }, { idleSecs, log });
 
   const server = createKiroProxyServer(manager, opts);
 
