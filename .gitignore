@@ -120,3 +120,6 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+
+# Beads (local issue tracking)
+.beads/
