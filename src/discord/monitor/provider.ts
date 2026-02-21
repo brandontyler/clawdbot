@@ -51,7 +51,7 @@ import {
 } from "./agent-components.js";
 import { resolveDiscordSlashCommandConfig } from "./commands.js";
 import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
-import { createDiscordGatewayPlugin } from "./gateway-plugin.js";
+import { createKiroGatewayPlugin } from "./gateway-plugin-kiro.js";
 import {
   DiscordMessageListener,
   DiscordPresenceListener,
@@ -474,7 +474,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     }
 
     const clientPlugins: Plugin[] = [
-      createDiscordGatewayPlugin({ discordConfig: discordCfg, runtime }),
+      createKiroGatewayPlugin({ discordConfig: discordCfg, runtime }),
     ];
     if (voiceEnabled) {
       clientPlugins.push(new VoicePlugin());
@@ -624,7 +624,7 @@ async function clearDiscordNativeCommands(params: {
 }
 
 export const __testing = {
-  createDiscordGatewayPlugin,
+  createKiroGatewayPlugin,
   dedupeSkillCommandsForDiscord,
   resolveDiscordRuntimeGroupPolicy: resolveOpenProviderRuntimeGroupPolicy,
   resolveDefaultGroupPolicy,
