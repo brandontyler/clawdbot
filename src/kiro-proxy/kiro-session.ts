@@ -161,6 +161,13 @@ export class KiroSession {
     this.lastTouchedAt = Date.now();
     this.chunkCallback = onChunk;
 
+    // Keep-alive: bump lastTouchedAt periodically while the prompt is in-flight
+    // so the GC doesn't kill sessions with long-running tools (e.g. sleep + tmux).
+    const keepAlive = setInterval(() => {
+      this.lastTouchedAt = Date.now();
+      this.events.onActivity?.();
+    }, 60_000);
+
     try {
       const promptPromise = this.client.prompt({
         sessionId: this.acpSessionId,
@@ -179,6 +186,7 @@ export class KiroSession {
       const response = await Promise.race([promptPromise, deathPromise]);
       return response.stopReason ?? "end_turn";
     } finally {
+      clearInterval(keepAlive);
       this.chunkCallback = null;
     }
   }
@@ -190,6 +198,9 @@ export class KiroSession {
       return;
     }
 
+    // Any session update means the session is alive — bump idle timer.
+    this.events.onActivity?.();
+
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         if (update.content?.type === "text" && this.chunkCallback) {
@@ -199,7 +210,6 @@ export class KiroSession {
       }
       case "tool_call": {
         this.log(`tool: ${update.title ?? "unknown"} (${update.status ?? ""})`);
-        this.events.onActivity?.();
         break;
       }
       default:
