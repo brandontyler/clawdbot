@@ -30,31 +30,27 @@ These files don't exist upstream. They'll never cause merge conflicts.
 
 These files have small, intentional edits. Check them after every `git pull --rebase`.
 
-| File                                    | What we changed                                                                                                        | Why                                                                         |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `src/discord/monitor/gateway-plugin.ts` | `class` → `export class`, `private` → `protected` on `_reconnectAttempts` accessors (3 lines)                          | Allows `gateway-plugin-kiro.ts` to subclass and access reconnect state      |
-| `src/discord/monitor/provider.ts`       | Import `createKiroGatewayPlugin` instead of `createDiscordGatewayPlugin`; 5s `setTimeout` on stall reconnect (2 lines) | Routes through Kiro hardened plugin; prevents hammering Discord after stall |
-| `src/discord/gateway-logging.ts`        | Added `"Resumed successfully"` to `INFO_DEBUG_MARKERS` array (1 line)                                                  | Promotes resume debug messages to info level for visibility                 |
-| `.gitignore`                            | Added `.beads/` (3 lines appended)                                                                                     | Local issue tracker data                                                    |
+| File                                    | What we changed                                                                                                                  | Why                                                                 |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `src/discord/monitor/gateway-plugin.ts` | Added `ResilientGatewayPlugin` class (exported, protected accessors) + factory uses it instead of bare `GatewayPlugin` (~80 LOC) | Fixes @buape/carbon reconnect-counter and zombie-heartbeat bugs     |
+| `src/discord/monitor/provider.ts`       | Import `createKiroGatewayPlugin` instead of `createDiscordGatewayPlugin` (3 lines)                                               | Routes through Kiro hardened plugin with flap detection and backoff |
+| `src/discord/gateway-logging.ts`        | Added `"Resumed successfully"` to `INFO_DEBUG_MARKERS` array (1 line)                                                            | Promotes resume debug messages to info level for visibility         |
+| `.gitignore`                            | Added `.beads/` (3 lines appended)                                                                                               | Local issue tracker data                                            |
 
-## Generated Files (re-run after sync)
+## Generated Files
 
-| File                                  | Regenerate with           |
-| ------------------------------------- | ------------------------- |
-| `src/canvas-host/a2ui/.bundle.hash`   | `pnpm canvas:a2ui:bundle` |
-| `src/canvas-host/a2ui/a2ui.bundle.js` | `pnpm canvas:a2ui:bundle` |
+None currently — upstream removed the a2ui bundle files.
 
 ## Sync Workflow
 
 ```bash
 git fetch origin main
-git rebase origin/main
+git rebase upstream/main
 
 # If conflicts in patched files: re-apply the small edits listed above
-# If conflicts in generated files: just accept upstream, then regenerate:
-pnpm canvas:a2ui:bundle
 
 # Verify
+pnpm install
 pnpm build
 pnpm check
 ```
