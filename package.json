@@ -87,6 +87,8 @@
     "ios:gen": "bash -lc './scripts/ios-configure-signing.sh && cd apps/ios && xcodegen generate'",
     "ios:open": "bash -lc './scripts/ios-configure-signing.sh && cd apps/ios && xcodegen generate && open OpenClaw.xcodeproj'",
     "ios:run": "bash -lc './scripts/ios-configure-signing.sh && cd apps/ios && xcodegen generate && xcodebuild -project OpenClaw.xcodeproj -scheme OpenClaw -destination \"${IOS_DEST:-platform=iOS Simulator,name=iPhone 17}\" -configuration Debug build && xcrun simctl boot \"${IOS_SIM:-iPhone 17}\" || true && xcrun simctl launch booted ai.openclaw.ios'",
+    "kiro-proxy": "node scripts/run-node.mjs kiro-proxy",
+    "kiro-proxy:dev": "node scripts/run-node.mjs --dev kiro-proxy",
     "lint": "oxlint --type-aware",
     "lint:all": "pnpm lint && pnpm lint:swift",
     "lint:docs": "pnpm dlx markdownlint-cli2",
@@ -137,9 +139,7 @@
     "tui:dev": "OPENCLAW_PROFILE=dev CLAWDBOT_PROFILE=dev node scripts/run-node.mjs --dev tui",
     "ui:build": "node scripts/ui.js build",
     "ui:dev": "node scripts/ui.js dev",
-    "ui:install": "node scripts/ui.js install",
-    "kiro-proxy": "node scripts/run-node.mjs kiro-proxy",
-    "kiro-proxy:dev": "node scripts/run-node.mjs --dev kiro-proxy"
+    "ui:install": "node scripts/ui.js install"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.14.1",
