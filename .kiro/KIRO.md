@@ -48,11 +48,11 @@ The proxy parses the channel ID from the `x-openclaw-session-key` header
 ### Self-management constraints
 
 When running as the `#oc-tmux-session` Discord agent, you ARE running inside
-the proxy. You can use `spinup status`, `spinup logs`, and
-`spinup restart-pane <title>` to diagnose and fix individual panes. But
-**never run `spinup oc`** — that kills the entire oc session including the
-proxy, which kills your own process. Use `spinup restart-pane gateway` or
-`spinup restart-pane kiro-proxy` for targeted recovery instead.
+the `oc-cli` tmux session (separate from the `oc` infra session). You can
+safely run `spinup oc` to restart the proxy + gateway without killing yourself.
+Use `spinup status`, `spinup logs`, and `spinup restart-pane <title>` for
+diagnosis. **Never run `spinup oc-cli`** or `spinup` (all) — those kill your
+own session.
 
 ## Lessons Learned
 
@@ -128,7 +128,8 @@ This file tells agents how to manage Tyler's local development environment. The 
 
 ```bash
 spinup               # Start/reset ALL sessions
-spinup oc            # Start/reset only the openclaw session (proxy + gateway + kiro-cli)
+spinup oc            # Start/reset only the openclaw infra session (proxy + gateway)
+spinup oc-cli        # Start/reset only the openclaw kiro-cli session
 spinup mcp           # Start/reset only the MCP session (kiro-cli + dev-browser)
 spinup pwc           # Start/reset only the PwC session
 spinup sermon        # Start/reset only the sermon session
@@ -161,14 +162,30 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-brows
 | "restart pwc" / "reset pwc"                                                  | `spinup pwc`    |
 | "restart sermon" / "reset sermon"                                            | `spinup sermon` |
 
+#### Internals
+
+- **ANSI stripping**: all service output is piped through `sed -u "s/\x1b\[[0-9;]*m//g"` before `tee` to keep logs clean.
+- **Port cleanup**: `kill_port` (`lsof -ti:<port> | xargs -r kill -9`) runs before starting services that bind ports (kiro-proxy on 18790, dev-browser on 9222/9223).
+- **`remain-on-exit on`**: set on all sessions so crashed panes stay readable (enables `dead=1` detection in `spinup status`).
+
+#### Pane commands
+
+| Pane        | Actual command                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------ |
+| kiro-proxy  | `pnpm openclaw kiro-proxy --verbose --routes kiro-proxy-routes.json` (cwd: `~/code/personal/clawdbot`)       |
+| gateway     | `pnpm openclaw gateway run --verbose --force --port 18789 --bind loopback` (cwd: `~/code/personal/clawdbot`) |
+| kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                         |
+| dev-browser | kills ports 9222/9223, then `./server.sh --headless` (cwd: `~/code/work/dev-browser/skills/dev-browser`)     |
+
 #### Sessions & ports
 
-| Session    | What runs                     | Ports        | Panes/Windows |
-| ---------- | ----------------------------- | ------------ | ------------- |
-| **oc**     | kiro-proxy, gateway, kiro-cli | 18790, 18789 | 3 windows     |
-| **mcp**    | kiro-cli, dev-browser         | 9222, 9223   | 2 windows     |
-| **pwc**    | kiro-cli                      | —            | 1 pane        |
-| **sermon** | kiro-cli                      | —            | 1 pane        |
+| Session    | What runs             | Ports        | Panes/Windows |
+| ---------- | --------------------- | ------------ | ------------- |
+| **oc**     | kiro-proxy, gateway   | 18790, 18789 | 2 windows     |
+| **oc-cli** | kiro-cli              | —            | 1 window      |
+| **mcp**    | kiro-cli, dev-browser | 9222, 9223   | 2 windows     |
+| **pwc**    | kiro-cli              | —            | 1 pane        |
+| **sermon** | kiro-cli              | —            | 1 pane        |
 
 #### Diagnosing problems
 
