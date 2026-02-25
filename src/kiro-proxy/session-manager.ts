@@ -115,14 +115,23 @@ export class SessionManager {
     const existing = this.sessions.get(sessionKey);
 
     if (existing && existing.session.alive) {
-      // Wait for any in-flight prompt to finish before sending the next one.
-      await existing.promptLock;
-      const newMessages = messages.slice(existing.handle.sentMessageCount);
-      const promptText = this.buildPromptFromMessages(newMessages);
-      existing.handle.sentMessageCount = messages.length;
-      existing.handle.lastTouchedAt = Date.now();
-      existing.session.lastTouchedAt = Date.now();
-      return { session: existing.session, promptText, managed: existing };
+      // Session was reset upstream — message count dropped below what we've sent.
+      if (messages.length < existing.handle.sentMessageCount) {
+        this.log(
+          `session reset detected (msgs=${messages.length} < sent=${existing.handle.sentMessageCount}), replacing`,
+        );
+        existing.session.kill("session-reset");
+        this.sessions.delete(sessionKey);
+      } else {
+        // Wait for any in-flight prompt to finish before sending the next one.
+        await existing.promptLock;
+        const newMessages = messages.slice(existing.handle.sentMessageCount);
+        const promptText = this.buildPromptFromMessages(newMessages);
+        existing.handle.sentMessageCount = messages.length;
+        existing.handle.lastTouchedAt = Date.now();
+        existing.session.lastTouchedAt = Date.now();
+        return { session: existing.session, promptText, managed: existing };
+      }
     }
 
     // Dead or non-existent session — create a fresh one.
