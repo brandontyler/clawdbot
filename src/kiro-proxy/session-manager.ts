@@ -142,9 +142,6 @@ export class SessionManager {
 
     // Resolve per-channel cwd/args overrides.
     const channelId = detectChannelId(openclawSessionKey);
-    this.log(
-      `detectChannelId: channelId=${channelId ?? "none"} routeKeys=[${Object.keys(this.channelRoutes).join(",")}]`,
-    );
     const route = channelId ? this.channelRoutes[channelId] : undefined;
     const sessionOpts: KiroSessionOptions = route
       ? {
