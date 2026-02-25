@@ -89,3 +89,96 @@ Key commands: `br ready`, `br show <id>`, `br update <id> --claim`,
 - When touching shared logic (routing, pairing, allowlists), all channels are affected.
 - Don't modify or add tests unless explicitly asked.
 - Run `pnpm build && pnpm check` before considering work done.
+
+## Agent Instructions
+
+This file tells agents how to manage Tyler's local development environment. The setup runs across multiple tmux sessions — openclaw services (proxy + gateway), an MCP session with a headless browser for automation, and project-specific kiro-cli sessions. Everything is managed through a single script.
+
+### spinup — Session Manager
+
+`~/bin/spinup` manages tmux development sessions. It is idempotent and safe to run repeatedly.
+
+#### Usage
+
+```bash
+spinup          # Start/reset ALL sessions
+spinup oc       # Start/reset only the openclaw session (proxy + gateway)
+spinup mcp      # Start/reset only the MCP session (kiro-cli + dev-browser)
+spinup pwc      # Start/reset only the PwC session
+spinup sermon   # Start/reset only the sermon session
+```
+
+#### When to run it
+
+| User says                                                                    | Command         |
+| ---------------------------------------------------------------------------- | --------------- |
+| "spin up" / "spinup" / "start everything" / "set me up" / "boot up"          | `spinup`        |
+| "restart everything" / "reset everything" / "nuke it"                        | `spinup`        |
+| "the proxy is down" / "proxy crashed" / "gateway is broken" / "oc is broken" | `spinup oc`     |
+| "restart openclaw" / "reset oc"                                              | `spinup oc`     |
+| "dev-browser is broken" / "browser server crashed" / "restart mcp"           | `spinup mcp`    |
+| "restart pwc" / "reset pwc"                                                  | `spinup pwc`    |
+| "restart sermon" / "reset sermon"                                            | `spinup sermon` |
+
+#### Sessions & ports
+
+| Session    | What runs                  | Ports        | Panes/Windows       |
+| ---------- | -------------------------- | ------------ | ------------------- |
+| **oc**     | kiro-proxy, gateway, shell | 18790, 18789 | 3 panes in 1 window |
+| **mcp**    | kiro-cli, dev-browser      | 9222, 9223   | 2 windows           |
+| **pwc**    | kiro-cli                   | —            | 1 pane              |
+| **sermon** | kiro-cli                   | —            | 1 pane              |
+
+#### Diagnosing problems
+
+If the user reports something isn't working, check before blindly re-running spinup:
+
+```bash
+# Is the session alive?
+tmux has-session -t <name> 2>&1
+
+# Are the panes healthy or dead?
+tmux list-panes -t <name> -a 2>&1
+
+# What does the pane output say?
+tmux capture-pane -t <name>:<window>.<pane> -p | tail -20
+
+# Are the ports occupied?
+lsof -ti:18790  # proxy
+lsof -ti:18789  # gateway
+lsof -ti:9222   # dev-browser HTTP
+lsof -ti:9223   # dev-browser CDP
+```
+
+A pane showing `(dead)` means the process crashed but the pane was preserved. Read its output to understand what went wrong before restarting.
+
+#### Targeted recovery
+
+Only reset the session that's broken — don't nuke everything:
+
+- Proxy or gateway issue → `spinup oc`
+- Dev-browser or MCP issue → `spinup mcp`
+- Only reset all (`spinup`) if the user explicitly asks or multiple sessions are broken
+
+#### After running
+
+1. Confirm exit code 0
+2. Tell the user which sessions were started
+3. Remind them to attach: `tmux attach -t <session-name>`
+4. For **oc**, services take ~5–10 seconds to fully start. If the user immediately reports issues, wait and recheck ports before re-running spinup.
+
+#### Logs
+
+Processes write logs that can help diagnose issues without attaching to tmux:
+
+| Service     | Log file                    |
+| ----------- | --------------------------- |
+| kiro-proxy  | `/tmp/kiro-proxy.log`       |
+| gateway     | `/tmp/openclaw-gateway.log` |
+| dev-browser | `/tmp/dev-browser.log`      |
+
+```bash
+tail -20 /tmp/kiro-proxy.log        # recent proxy output
+tail -20 /tmp/openclaw-gateway.log   # recent gateway output
+tail -20 /tmp/dev-browser.log        # recent dev-browser output
+```
