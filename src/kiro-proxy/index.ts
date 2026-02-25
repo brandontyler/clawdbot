@@ -24,9 +24,9 @@ import { SessionManager } from "./session-manager.js";
 import type { KiroProxyOptions } from "./types.js";
 
 export { KiroSession } from "./kiro-session.js";
-export { SessionManager } from "./session-manager.js";
+export { SessionManager, detectChannelId } from "./session-manager.js";
 export { createKiroProxyServer } from "./server.js";
-export type { KiroProxyOptions } from "./types.js";
+export type { KiroProxyOptions, ChannelRoute } from "./types.js";
 
 const DEFAULT_PORT = 18790;
 const DEFAULT_HOST = "127.0.0.1";
@@ -44,7 +44,10 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
 
   log(`starting (kiro=${kiroBin}, port=${port}, idle=${idleSecs}s)`);
 
-  const manager = new SessionManager({ kiroBin, kiroArgs, cwd, verbose }, { idleSecs, log });
+  const manager = new SessionManager(
+    { kiroBin, kiroArgs, cwd, verbose },
+    { channelRoutes: opts.channelRoutes, idleSecs, log },
+  );
 
   const server = createKiroProxyServer(manager, opts);
 

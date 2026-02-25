@@ -52,6 +52,14 @@ export type OpenAICompletion = {
 
 // ─── Kiro proxy internal ──────────────────────────────────────────────────────
 
+/** Per-channel routing override: lets the proxy spawn kiro-cli in the right cwd. */
+export type ChannelRoute = {
+  /** Working directory for kiro-cli processes handling this channel. */
+  cwd: string;
+  /** Optional extra args for kiro-cli (appended after "acp"). */
+  kiroArgs?: string[];
+};
+
 export type KiroProxyOptions = {
   /** TCP port for the HTTP server. Default: 18790 */
   port?: number;
@@ -70,6 +78,12 @@ export type KiroProxyOptions = {
   kiroArgs?: string[];
   /** Working directory passed to every kiro process. Default: process.cwd() */
   cwd?: string;
+  /**
+   * Map of Discord channel ID → routing overrides.
+   * When a message arrives from a matched channel, the proxy spawns kiro-cli
+   * in that channel's cwd instead of the default.
+   */
+  channelRoutes?: Record<string, ChannelRoute>;
   /**
    * Seconds of inactivity before an idle Kiro session is killed.
    * Default: 1800 (30 min)

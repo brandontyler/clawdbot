@@ -25,6 +25,7 @@ These files don't exist upstream. They'll never cause merge conflicts.
 | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `src/kiro-proxy/`                            | Kiro proxy session management, context usage events, ACP bridge                               |
 | `src/cli/kiro-proxy-cli.ts`                  | CLI wiring for the `openclaw kiro-proxy` subcommand                                           |
+| `kiro-proxy-routes.json`                     | Discord channel ID → project cwd mapping for per-channel routing                              |
 | `src/discord/monitor/gateway-plugin-kiro.ts` | Flap detection, exponential backoff, resume logging — subclasses our `ResilientGatewayPlugin` |
 | `docs/kiro-proxy-plan.md`                    | Kiro proxy design doc                                                                         |
 | `.kiro/`                                     | Kiro agent config (gitignored)                                                                |
