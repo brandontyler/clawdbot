@@ -144,7 +144,7 @@ Every pane has a title and its startup command stored in tmux env (`CMD_<title>`
 - **Diagnose** with `spinup status` — one command gives session/pane liveness, PIDs, dead flags, cwds, and port status in parseable key=value format.
 - **Read logs** with `spinup logs gateway 50` — no need to remember log file paths.
 - **Restart surgically** with `spinup restart-pane gateway` — respawns just that pane using its stored command, without touching other panes or sessions.
-- **Target panes** via `tmux send-keys -t oc:main.0` or by title lookup.
+- **Target windows** via `tmux send-keys -t oc:kiro-proxy` or by title lookup.
 - **Discover commands** with `tmux show-environment -t oc` to see what each pane runs.
 
 Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-browser`.
@@ -163,12 +163,12 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-brows
 
 #### Sessions & ports
 
-| Session    | What runs                     | Ports        | Panes/Windows       |
-| ---------- | ----------------------------- | ------------ | ------------------- |
-| **oc**     | kiro-proxy, gateway, kiro-cli | 18790, 18789 | 3 panes in 1 window |
-| **mcp**    | kiro-cli, dev-browser         | 9222, 9223   | 2 windows           |
-| **pwc**    | kiro-cli                      | —            | 1 pane              |
-| **sermon** | kiro-cli                      | —            | 1 pane              |
+| Session    | What runs                     | Ports        | Panes/Windows |
+| ---------- | ----------------------------- | ------------ | ------------- |
+| **oc**     | kiro-proxy, gateway, kiro-cli | 18790, 18789 | 3 windows     |
+| **mcp**    | kiro-cli, dev-browser         | 9222, 9223   | 2 windows     |
+| **pwc**    | kiro-cli                      | —            | 1 pane        |
+| **sermon** | kiro-cli                      | —            | 1 pane        |
 
 #### Diagnosing problems
 
