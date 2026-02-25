@@ -23,10 +23,36 @@ file and every Kiro-only file.
 
 | Location                                     | What                                                                                                 |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `src/kiro-proxy/`                            | Kiro proxy session management, ACP bridge, context usage events                                      |
+| `src/kiro-proxy/`                            | Kiro proxy session management, ACP bridge, per-channel cwd routing                                   |
 | `src/discord/monitor/gateway-plugin-kiro.ts` | Flap detection, exponential backoff, resume logging (subclasses upstream's `ResilientGatewayPlugin`) |
+| `kiro-proxy-routes.json`                     | Discord channel ID → project cwd mapping                                                             |
 | `.kiro/`                                     | This file and agent config (gitignored)                                                              |
 | `UPSTREAM.md`                                | Tracks all fork changes — the source of truth for merge safety                                       |
+
+## Discord → Proxy Architecture
+
+Discord messages flow: Discord → OpenClaw gateway (port 18789) → kiro-proxy
+(port 18790) → spawns kiro-cli in the correct project directory.
+
+Each Discord channel is mapped to a project directory via `kiro-proxy-routes.json`.
+The proxy parses the channel ID from the `x-openclaw-session-key` header
+(injected by a small patch in `attempt.ts`) and spawns kiro-cli in the matched cwd.
+
+| Discord Channel        | Project Directory                      |
+| ---------------------- | -------------------------------------- |
+| `#oc-tmux-session`     | `~/code/personal/clawdbot`             |
+| `#mcp-tmux-session`    | `~/code/work/amazon-connect-mcp-tools` |
+| `#pwc-tmux-session`    | `~/code/work/PwC`                      |
+| `#sermon-tmux-session` | `~/code/personal/sermon`               |
+
+### Self-management constraints
+
+When running as the `#oc-tmux-session` Discord agent, you ARE running inside
+the proxy. You can use `spinup status`, `spinup logs`, and
+`spinup restart-pane <title>` to diagnose and fix individual panes. But
+**never run `spinup oc`** — that kills the entire oc session including the
+proxy, which kills your own process. Use `spinup restart-pane gateway` or
+`spinup restart-pane kiro-proxy` for targeted recovery instead.
 
 ## Lessons Learned
 
