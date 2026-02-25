@@ -119,10 +119,9 @@ async function handleCompletions(
   const completionId = `kiro-${randomUUID()}`;
 
   // Resolve session key: prefer explicit headers/fields, then fingerprint.
+  const openclawSessionKey = req.headers["x-openclaw-session-key"] as string | undefined;
   const explicitKey =
-    (req.headers["x-kiro-session-id"] as string | undefined) ??
-    (req.headers["x-openclaw-session-key"] as string | undefined) ??
-    body.user;
+    (req.headers["x-kiro-session-id"] as string | undefined) ?? openclawSessionKey ?? body.user;
   const sessionKey = SessionManager.resolveSessionKey(body.messages, explicitKey);
 
   log(
@@ -132,7 +131,7 @@ async function handleCompletions(
   // Get or create Kiro ACP session
   let sessionResult: Awaited<ReturnType<SessionManager["getOrCreate"]>>;
   try {
-    sessionResult = await manager.getOrCreate(sessionKey, body.messages);
+    sessionResult = await manager.getOrCreate(sessionKey, body.messages, openclawSessionKey);
   } catch (err) {
     log(`session error: ${String(err)}`);
     res.writeHead(503, { "Content-Type": "application/json" });
