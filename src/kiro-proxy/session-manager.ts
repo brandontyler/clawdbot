@@ -19,7 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
-import type { OpenAIMessage, KiroSessionHandle } from "./types.js";
+import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes
 
@@ -37,6 +37,27 @@ function extractText(content: unknown): string {
   return JSON.stringify(content ?? "");
 }
 
+/**
+ * Detect a Discord channel ID from the message envelope.
+ * The gateway wraps inbound messages like:
+ *   [Discord Guild #channel-name channel id:1475216992956059698 ...]
+ */
+const CHANNEL_ID_RE = /\[Discord[^\]]*channel id:(\d+)/;
+
+export function detectChannelId(messages: OpenAIMessage[]): string | undefined {
+  for (const msg of messages) {
+    if (msg.role !== "user") {
+      continue;
+    }
+    const text = extractText(msg.content);
+    const match = CHANNEL_ID_RE.exec(text);
+    if (match) {
+      return match[1];
+    }
+  }
+  return undefined;
+}
+
 type ManagedSession = {
   session: KiroSession;
   handle: KiroSessionHandle;
@@ -46,15 +67,21 @@ type ManagedSession = {
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly sessionOpts: KiroSessionOptions;
+  private readonly channelRoutes: Record<string, ChannelRoute>;
   private readonly idleMs: number;
   private readonly log: (msg: string) => void;
   private gcTimer: NodeJS.Timeout | null = null;
 
   constructor(
     sessionOpts: KiroSessionOptions,
-    opts: { idleSecs?: number; log?: (msg: string) => void } = {},
+    opts: {
+      channelRoutes?: Record<string, ChannelRoute>;
+      idleSecs?: number;
+      log?: (msg: string) => void;
+    } = {},
   ) {
     this.sessionOpts = sessionOpts;
+    this.channelRoutes = opts.channelRoutes ?? {};
     this.idleMs = (opts.idleSecs ?? DEFAULT_IDLE_SECS) * 1000;
     this.log = opts.log ?? (() => {});
     this.scheduleGc();
@@ -110,7 +137,22 @@ export class SessionManager {
       this.sessions.delete(sessionKey);
     }
 
-    const session = await KiroSession.create(this.sessionOpts, this.buildSessionEvents(sessionKey));
+    // Resolve per-channel cwd/args overrides.
+    const channelId = detectChannelId(messages);
+    const route = channelId ? this.channelRoutes[channelId] : undefined;
+    const sessionOpts: KiroSessionOptions = route
+      ? {
+          ...this.sessionOpts,
+          cwd: route.cwd,
+          kiroArgs: route.kiroArgs ?? this.sessionOpts.kiroArgs,
+        }
+      : this.sessionOpts;
+
+    if (route) {
+      this.log(`channel route: channel=${channelId} cwd=${route.cwd}`);
+    }
+
+    const session = await KiroSession.create(sessionOpts, this.buildSessionEvents(sessionKey));
 
     // For the very first turn, send system prompt (if any) prepended to the
     // first user message so Kiro can establish context.

@@ -13,8 +13,11 @@
  *   3. Start gateway:                  openclaw gateway
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Command } from "commander";
 import { startKiroProxy } from "../kiro-proxy/index.js";
+import type { ChannelRoute } from "../kiro-proxy/types.js";
 import { defaultRuntime } from "../runtime.js";
 
 export function registerKiroProxyCli(program: Command): void {
@@ -27,6 +30,7 @@ export function registerKiroProxyCli(program: Command): void {
     .option("--kiro-args <args...>", "Extra arguments to pass after 'acp'")
     .option("--cwd <dir>", "Working directory for kiro sessions", process.cwd())
     .option("--idle-secs <number>", "Seconds before an idle session is killed", "1800")
+    .option("--routes <path>", "JSON file mapping Discord channel IDs to {cwd, kiroArgs?}")
     .option("-v, --verbose", "Enable verbose logging", false)
     .addHelpText(
       "after",
@@ -68,6 +72,21 @@ Config (~/.openclaw/openclaw.json, JSON5):
         return;
       }
 
+      let channelRoutes: Record<string, ChannelRoute> | undefined;
+      if (opts.routes) {
+        try {
+          const routesPath = resolve(opts.routes as string);
+          channelRoutes = JSON.parse(readFileSync(routesPath, "utf8")) as Record<
+            string,
+            ChannelRoute
+          >;
+        } catch (err) {
+          defaultRuntime.error(`Failed to load --routes file: ${String(err)}`);
+          defaultRuntime.exit(1);
+          return;
+        }
+      }
+
       let shutdown: (() => Promise<void>) | null = null;
 
       const cleanup = async () => {
@@ -91,6 +110,7 @@ Config (~/.openclaw/openclaw.json, JSON5):
           kiroBin: opts.kiroBin as string,
           kiroArgs: (opts.kiroArgs as string[] | undefined) ?? [],
           cwd: opts.cwd as string,
+          channelRoutes,
           sessionIdleSecs: idleSecs,
           verbose: Boolean(opts.verbose),
         });
