@@ -35,17 +35,18 @@ These files don't exist upstream. They'll never cause merge conflicts.
 
 These files have small, intentional edits. Check them after every rebase.
 
-| File                                         | What we changed                                                                                                                  | Why                                                                 |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `src/discord/monitor/gateway-plugin.ts`      | Added `ResilientGatewayPlugin` class (exported, protected accessors) + factory uses it instead of bare `GatewayPlugin` (~80 LOC) | Fixes @buape/carbon reconnect-counter and zombie-heartbeat bugs     |
-| `src/discord/monitor/provider.ts`            | Import `createKiroGatewayPlugin` instead of `createDiscordGatewayPlugin` (3 lines)                                               | Routes through Kiro hardened plugin with flap detection and backoff |
-| `src/discord/monitor/provider.proxy.test.ts` | `toBeInstanceOf(GatewayPlugin)` instead of prototype check (1 line)                                                              | Test assertion updated for `ResilientGatewayPlugin` subclass        |
-| `src/discord/gateway-logging.ts`             | Added `"Resumed successfully"` to `INFO_DEBUG_MARKERS` array (1 line)                                                            | Promotes resume debug messages to info level for visibility         |
-| `src/index.ts`                               | Suppress `"zombie connection"` uncaught exceptions instead of crashing (~8 lines)                                                | @buape/carbon heartbeat race is non-fatal; gateway reconnects fine  |
-| `src/auto-reply/reply/queue/settings.ts`     | Default queue mode `"collect"` → `"steer-backlog"` (1 line)                                                                      | Better behavior for long-running Discord tasks                      |
-| `src/cli/program/register.subclis.ts`        | Register `kiro-proxy` subcli entry (~9 lines)                                                                                    | Wires `openclaw kiro-proxy` command                                 |
-| `package.json`                               | Added `kiro-proxy` and `kiro-proxy:dev` scripts (2 lines)                                                                        | Dev convenience scripts                                             |
-| `.gitignore`                                 | Added `.beads/` (3 lines appended)                                                                                               | Local issue tracker data                                            |
+| File                                           | What we changed                                                                                                                  | Why                                                                 |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `src/discord/monitor/gateway-plugin.ts`        | Added `ResilientGatewayPlugin` class (exported, protected accessors) + factory uses it instead of bare `GatewayPlugin` (~80 LOC) | Fixes @buape/carbon reconnect-counter and zombie-heartbeat bugs     |
+| `src/discord/monitor/provider.ts`              | Import `createKiroGatewayPlugin` instead of `createDiscordGatewayPlugin` (3 lines)                                               | Routes through Kiro hardened plugin with flap detection and backoff |
+| `src/discord/monitor/provider.proxy.test.ts`   | `toBeInstanceOf(GatewayPlugin)` instead of prototype check (1 line)                                                              | Test assertion updated for `ResilientGatewayPlugin` subclass        |
+| `src/discord/gateway-logging.ts`               | Added `"Resumed successfully"` to `INFO_DEBUG_MARKERS` array (1 line)                                                            | Promotes resume debug messages to info level for visibility         |
+| `src/index.ts`                                 | Suppress `"zombie connection"` uncaught exceptions instead of crashing (~8 lines)                                                | @buape/carbon heartbeat race is non-fatal; gateway reconnects fine  |
+| `src/auto-reply/reply/queue/settings.ts`       | Default queue mode `"collect"` → `"steer-backlog"` (1 line)                                                                      | Better behavior for long-running Discord tasks                      |
+| `src/cli/program/register.subclis.ts`          | Register `kiro-proxy` subcli entry (~9 lines)                                                                                    | Wires `openclaw kiro-proxy` command                                 |
+| `src/agents/pi-embedded-runner/run/attempt.ts` | Inject `x-openclaw-session-key` header for kiro provider (~5 lines after `applyExtraParamsToAgent`)                              | Lets kiro-proxy route sessions to per-channel cwd                   |
+| `package.json`                                 | Added `kiro-proxy` and `kiro-proxy:dev` scripts (2 lines)                                                                        | Dev convenience scripts                                             |
+| `.gitignore`                                   | Added `.beads/` (3 lines appended)                                                                                               | Local issue tracker data                                            |
 
 ## Generated Files
 

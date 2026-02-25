@@ -38,24 +38,17 @@ function extractText(content: unknown): string {
 }
 
 /**
- * Detect a Discord channel ID from the message envelope.
- * The gateway wraps inbound messages like:
- *   [Discord Guild #channel-name channel id:1475216992956059698 ...]
+ * Extract a Discord channel ID from an OpenClaw session key.
+ * Session keys look like: agent:main:discord:channel:1475216992956059698
  */
-const CHANNEL_ID_RE = /\[Discord[^\]]*channel id:(\d+)/;
+const SESSION_KEY_CHANNEL_RE = /discord:channel:(\d+)/;
 
-export function detectChannelId(messages: OpenAIMessage[]): string | undefined {
-  for (const msg of messages) {
-    if (msg.role !== "user") {
-      continue;
-    }
-    const text = extractText(msg.content);
-    const match = CHANNEL_ID_RE.exec(text);
-    if (match) {
-      return match[1];
-    }
+export function detectChannelId(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey) {
+    return undefined;
   }
-  return undefined;
+  const match = SESSION_KEY_CHANNEL_RE.exec(sessionKey);
+  return match ? match[1] : undefined;
 }
 
 type ManagedSession = {
@@ -117,6 +110,7 @@ export class SessionManager {
   async getOrCreate(
     sessionKey: string,
     messages: OpenAIMessage[],
+    openclawSessionKey?: string,
   ): Promise<{ session: KiroSession; promptText: string; managed: ManagedSession }> {
     const existing = this.sessions.get(sessionKey);
 
@@ -138,7 +132,10 @@ export class SessionManager {
     }
 
     // Resolve per-channel cwd/args overrides.
-    const channelId = detectChannelId(messages);
+    const channelId = detectChannelId(openclawSessionKey);
+    this.log(
+      `detectChannelId: channelId=${channelId ?? "none"} routeKeys=[${Object.keys(this.channelRoutes).join(",")}]`,
+    );
     const route = channelId ? this.channelRoutes[channelId] : undefined;
     const sessionOpts: KiroSessionOptions = route
       ? {

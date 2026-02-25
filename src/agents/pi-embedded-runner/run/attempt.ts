@@ -759,6 +759,17 @@ export async function runEmbeddedAttempt(
         sessionAgentId,
       );
 
+      // Inject session key header for kiro provider so the proxy can route
+      // to the correct per-channel cwd.
+      if (params.provider === "kiro" && params.sessionKey) {
+        const inner = activeSession.agent.streamFn;
+        activeSession.agent.streamFn = (model, context, options) =>
+          inner(model, context, {
+            ...options,
+            headers: { ...options?.headers, "x-openclaw-session-key": params.sessionKey! },
+          });
+      }
+
       if (cacheTrace) {
         cacheTrace.recordStage("session:loaded", {
           messages: activeSession.messages,
