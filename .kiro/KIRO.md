@@ -101,12 +101,27 @@ This file tells agents how to manage Tyler's local development environment. The 
 #### Usage
 
 ```bash
-spinup          # Start/reset ALL sessions
-spinup oc       # Start/reset only the openclaw session (proxy + gateway)
-spinup mcp      # Start/reset only the MCP session (kiro-cli + dev-browser)
-spinup pwc      # Start/reset only the PwC session
-spinup sermon   # Start/reset only the sermon session
+spinup               # Start/reset ALL sessions
+spinup oc            # Start/reset only the openclaw session (proxy + gateway + kiro-cli)
+spinup mcp           # Start/reset only the MCP session (kiro-cli + dev-browser)
+spinup pwc           # Start/reset only the PwC session
+spinup sermon        # Start/reset only the sermon session
+spinup status        # Machine-readable health of all sessions, panes, and ports
+spinup logs [name]   # Tail logs (kiro-proxy|gateway|dev-browser|all) [lines=30]
+spinup restart-pane <title>  # Restart a single crashed pane by title without nuking the session
 ```
+
+#### Agent interaction
+
+Every pane has a title and its startup command stored in tmux env (`CMD_<title>`). This means agents can:
+
+- **Diagnose** with `spinup status` — one command gives session/pane liveness, PIDs, dead flags, cwds, and port status in parseable key=value format.
+- **Read logs** with `spinup logs gateway 50` — no need to remember log file paths.
+- **Restart surgically** with `spinup restart-pane gateway` — respawns just that pane using its stored command, without touching other panes or sessions.
+- **Target panes** via `tmux send-keys -t oc:main.0` or by title lookup.
+- **Discover commands** with `tmux show-environment -t oc` to see what each pane runs.
+
+Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-browser`.
 
 #### When to run it
 
@@ -122,63 +137,40 @@ spinup sermon   # Start/reset only the sermon session
 
 #### Sessions & ports
 
-| Session    | What runs                  | Ports        | Panes/Windows       |
-| ---------- | -------------------------- | ------------ | ------------------- |
-| **oc**     | kiro-proxy, gateway, shell | 18790, 18789 | 3 panes in 1 window |
-| **mcp**    | kiro-cli, dev-browser      | 9222, 9223   | 2 windows           |
-| **pwc**    | kiro-cli                   | —            | 1 pane              |
-| **sermon** | kiro-cli                   | —            | 1 pane              |
+| Session    | What runs                     | Ports        | Panes/Windows       |
+| ---------- | ----------------------------- | ------------ | ------------------- |
+| **oc**     | kiro-proxy, gateway, kiro-cli | 18790, 18789 | 3 panes in 1 window |
+| **mcp**    | kiro-cli, dev-browser         | 9222, 9223   | 2 windows           |
+| **pwc**    | kiro-cli                      | —            | 1 pane              |
+| **sermon** | kiro-cli                      | —            | 1 pane              |
 
 #### Diagnosing problems
 
-If the user reports something isn't working, check before blindly re-running spinup:
+First step is always `spinup status` — it gives session/pane liveness, PIDs, dead flags, cwds, and port status in one shot.
 
-```bash
-# Is the session alive?
-tmux has-session -t <name> 2>&1
+If a specific service is misbehaving, check its logs: `spinup logs gateway 50` (or `kiro-proxy`, `dev-browser`, `all`).
 
-# Are the panes healthy or dead?
-tmux list-panes -t <name> -a 2>&1
-
-# What does the pane output say?
-tmux capture-pane -t <name>:<window>.<pane> -p | tail -20
-
-# Are the ports occupied?
-lsof -ti:18790  # proxy
-lsof -ti:18789  # gateway
-lsof -ti:9222   # dev-browser HTTP
-lsof -ti:9223   # dev-browser CDP
-```
-
-A pane showing `(dead)` means the process crashed but the pane was preserved. Read its output to understand what went wrong before restarting.
+A pane showing `dead=1` means the process crashed but the pane was preserved. Read its output with `tmux capture-pane -t <session>:<window>.<pane> -p | tail -20` to understand what went wrong.
 
 #### Targeted recovery
 
-Only reset the session that's broken — don't nuke everything:
-
-- Proxy or gateway issue → `spinup oc`
-- Dev-browser or MCP issue → `spinup mcp`
-- Only reset all (`spinup`) if the user explicitly asks or multiple sessions are broken
+- **Single pane crashed** → `spinup restart-pane <title>` (e.g. `spinup restart-pane gateway`) — respawns just that pane using its stored command.
+- **Whole session broken** → `spinup oc` / `spinup mcp` etc.
+- **Only reset all** (`spinup`) if the user explicitly asks or multiple sessions are broken.
 
 #### After running
 
 1. Confirm exit code 0
 2. Tell the user which sessions were started
 3. Remind them to attach: `tmux attach -t <session-name>`
-4. For **oc**, services take ~5–10 seconds to fully start. If the user immediately reports issues, wait and recheck ports before re-running spinup.
+4. For **oc**, services take ~5–10 seconds to fully start. If the user immediately reports issues, wait and recheck with `spinup status` before re-running spinup.
 
 #### Logs
 
-Processes write logs that can help diagnose issues without attaching to tmux:
+`spinup logs [name] [lines]` tails logs without needing to remember paths. Direct paths if needed:
 
 | Service     | Log file                    |
 | ----------- | --------------------------- |
 | kiro-proxy  | `/tmp/kiro-proxy.log`       |
 | gateway     | `/tmp/openclaw-gateway.log` |
 | dev-browser | `/tmp/dev-browser.log`      |
-
-```bash
-tail -20 /tmp/kiro-proxy.log        # recent proxy output
-tail -20 /tmp/openclaw-gateway.log   # recent gateway output
-tail -20 /tmp/dev-browser.log        # recent dev-browser output
-```
