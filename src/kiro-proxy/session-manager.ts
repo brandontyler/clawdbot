@@ -188,17 +188,16 @@ export class SessionManager {
 
   /**
    * Convert an array of OpenAI messages into a single text block to send
-   * to Kiro.  System messages are prefixed with "System: "; user messages
-   * with "User: "; assistant echoes are skipped (Kiro has them already).
+   * to Kiro.  Only user messages are forwarded — system messages from the
+   * gateway are dropped because kiro-cli builds its own context from the
+   * project's `.kiro/` config.  Forwarding them would inject the shared
+   * workspace memory/persona into every channel (cross-contamination).
    */
   private buildPromptFromMessages(messages: OpenAIMessage[]): string {
     const parts: string[] = [];
     for (const msg of messages) {
-      const text = extractText(msg.content);
-      if (msg.role === "system") {
-        parts.push(`[System context]\n${text}`);
-      } else if (msg.role === "user") {
-        parts.push(text);
+      if (msg.role === "user") {
+        parts.push(extractText(msg.content));
       }
     }
     return parts.join("\n\n").trim();
