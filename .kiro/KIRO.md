@@ -38,12 +38,12 @@ Each Discord channel is mapped to a project directory via `kiro-proxy-routes.jso
 The proxy parses the channel ID from the `x-openclaw-session-key` header
 (injected by a small patch in `attempt.ts`) and spawns kiro-cli in the matched cwd.
 
-| Discord Channel        | Project Directory                      |
-| ---------------------- | -------------------------------------- |
-| `#oc-tmux-session`     | `~/code/personal/clawdbot`             |
-| `#mcp-tmux-session`    | `~/code/work/amazon-connect-mcp-tools` |
-| `#pwc-tmux-session`    | `~/code/work/PwC`                      |
-| `#sermon-tmux-session` | `~/code/personal/sermon`               |
+| Discord Channel        | Project Directory          |
+| ---------------------- | -------------------------- |
+| `#oc-tmux-session`     | `~/code/personal/clawdbot` |
+| `#mcp-tmux-session`    | `~/code/work/accode-agent` |
+| `#pwc-tmux-session`    | `~/code/work/PwC`          |
+| `#sermon-tmux-session` | `~/code/personal/sermon`   |
 
 ### Self-management constraints
 
