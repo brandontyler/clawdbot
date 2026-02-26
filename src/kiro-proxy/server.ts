@@ -115,6 +115,7 @@ async function handleCompletions(
     return;
   }
 
+  const t0 = performance.now();
   const wantStream = body.stream !== false;
   const completionId = `kiro-${randomUUID()}`;
 
@@ -123,10 +124,9 @@ async function handleCompletions(
   const explicitKey =
     (req.headers["x-kiro-session-id"] as string | undefined) ?? openclawSessionKey ?? body.user;
   const sessionKey = SessionManager.resolveSessionKey(body.messages, explicitKey);
+  const sessionTag = sessionKey.slice(0, 8);
 
-  log(
-    `${wantStream ? "stream" : "sync"} session=${sessionKey.slice(0, 8)}… msgs=${body.messages.length}`,
-  );
+  log(`${wantStream ? "stream" : "sync"} session=${sessionTag}… msgs=${body.messages.length}`);
 
   // Get or create Kiro ACP session
   let sessionResult: Awaited<ReturnType<SessionManager["getOrCreate"]>>;
@@ -147,6 +147,8 @@ async function handleCompletions(
   }
 
   const { session, promptText, managed } = sessionResult;
+  const tSession = performance.now();
+  log(`timing: session=${sessionTag}… resolve=${Math.round(tSession - t0)}ms`);
 
   if (!promptText.trim()) {
     // Nothing new to send (e.g. only assistant messages in the delta)
@@ -183,8 +185,12 @@ async function handleCompletions(
       resolvePromptLock = r;
     });
 
+    let tFirstChunk = 0;
     try {
       await session.prompt(promptText, (text) => {
+        if (!tFirstChunk) {
+          tFirstChunk = performance.now();
+        }
         sseChunk(res, buildChunk(completionId, text));
       });
     } catch (err) {
@@ -193,6 +199,10 @@ async function handleCompletions(
       sseDone(res);
       return;
     } finally {
+      const tDone = performance.now();
+      log(
+        `timing: session=${sessionTag}… ttfc=${tFirstChunk ? Math.round(tFirstChunk - tSession) : "none"}ms total=${Math.round(tDone - t0)}ms`,
+      );
       resolvePromptLock!();
     }
 
@@ -218,6 +228,8 @@ async function handleCompletions(
       );
       return;
     } finally {
+      const tDone = performance.now();
+      log(`timing: session=${sessionTag}… total=${Math.round(tDone - t0)}ms`);
       resolveBlockLock!();
     }
 
