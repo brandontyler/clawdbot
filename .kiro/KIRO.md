@@ -48,11 +48,21 @@ The proxy parses the channel ID from the `x-openclaw-session-key` header
 ### Self-management constraints
 
 When running as the `#oc-tmux-session` Discord agent, you ARE running inside
-the `oc-cli` tmux session (separate from the `oc` infra session). You can
-safely run `spinup oc` to restart the proxy + gateway without killing yourself.
-Use `spinup status`, `spinup logs`, and `spinup restart-pane <title>` for
-diagnosis. **Never run `spinup oc-cli`** or `spinup` (all) — those kill your
-own session.
+the `oc-cli` tmux session (separate from the `oc` infra session). Use
+`spinup status`, `spinup logs`, and `spinup restart-pane <title>` for diagnosis.
+**Never run `spinup oc-cli`** or `spinup` (all) — those kill your own session.
+
+**Restarting oc from Discord:** only the `#oc-tmux-session` agent should restart
+the `oc` session — it runs in the companion `oc-cli` session and can verify the
+restart. Other channel agents (`#mcp-tmux-session`, `#pwc-tmux-session`, etc.)
+depend on the gateway but should not restart it; they can diagnose with
+`spinup status` / `spinup logs` and tell the user to restart via `#oc-tmux-session`.
+
+When restarting, always use `spinup oc --defer` (not bare `spinup oc`). The
+`--defer` flag backgrounds the restart with a 45-second delay so the Discord
+response can be delivered before the gateway goes down. Without it, the gateway
+dies mid-response and the conversation drops. You can also specify a custom
+delay: `spinup oc --defer=5`.
 
 ## Lessons Learned
 
@@ -129,6 +139,7 @@ This file tells agents how to manage Tyler's local development environment. The 
 ```bash
 spinup               # Start/reset ALL sessions
 spinup oc            # Start/reset only the openclaw infra session (proxy + gateway)
+spinup oc --defer    # Same, but backgrounds with 3s delay (safe from Discord agent)
 spinup oc-cli        # Start/reset only the openclaw kiro-cli session
 spinup mcp           # Start/reset only the MCP session (kiro-cli + dev-browser)
 spinup pwc           # Start/reset only the PwC session
