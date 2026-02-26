@@ -231,12 +231,13 @@ export class SessionManager {
     const now = Date.now();
     for (const [key, { session, handle }] of this.sessions) {
       const idleFor = now - handle.lastTouchedAt;
+      const keyTag = `session=${key.slice(0, 12)}…`;
       if (!session.alive) {
-        session.kill(`gc-already-dead (idle=${Math.round(idleFor / 1000)}s)`);
+        session.kill(`gc-already-dead (${keyTag}, idle=${Math.round(idleFor / 1000)}s)`);
         this.sessions.delete(key);
       } else if (idleFor > this.idleMs) {
         session.kill(
-          `gc-idle-timeout (idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s)`,
+          `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s)`,
         );
         this.sessions.delete(key);
       }
