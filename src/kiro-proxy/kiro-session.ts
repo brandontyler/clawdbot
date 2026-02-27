@@ -272,8 +272,9 @@ export class KiroSession {
 
   /** Kill the underlying kiro process. */
   kill(reason?: string): void {
+    const rssKb = this.getRssKb();
     this.log(
-      `killing process (pid ${this.proc.pid ?? "?"}) reason=${reason ?? "unknown"} exitCode=${this.proc.exitCode} signal=${this.proc.signalCode}`,
+      `killing process (pid ${this.proc.pid ?? "?"}) reason=${reason ?? "unknown"} exitCode=${this.proc.exitCode} signal=${this.proc.signalCode} rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"}`,
     );
     this.proc.kill("SIGTERM");
     setTimeout(() => {
@@ -285,5 +286,25 @@ export class KiroSession {
 
   get alive(): boolean {
     return !this.proc.killed && this.proc.exitCode === null;
+  }
+
+  get pid(): number | undefined {
+    return this.proc.pid;
+  }
+
+  /** Read RSS in KB from /proc (Linux only). Returns undefined on failure. */
+  getRssKb(): number | undefined {
+    const pid = this.proc.pid;
+    if (!pid) {
+      return undefined;
+    }
+    try {
+      const fs = require("node:fs") as typeof import("node:fs");
+      const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+      const match = /VmRSS:\s+(\d+)\s+kB/.exec(status);
+      return match ? Number(match[1]) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 }
