@@ -38,12 +38,13 @@ Each Discord channel is mapped to a project directory via `kiro-proxy-routes.jso
 The proxy parses the channel ID from the `x-openclaw-session-key` header
 (injected by a small patch in `attempt.ts`) and spawns kiro-cli in the matched cwd.
 
-| Discord Channel        | Project Directory          |
-| ---------------------- | -------------------------- |
-| `#oc-tmux-session`     | `~/code/personal/clawdbot` |
-| `#mcp-tmux-session`    | `~/code/work/accode-agent` |
-| `#pwc-tmux-session`    | `~/code/work/PwC`          |
-| `#sermon-tmux-session` | `~/code/personal/sermon`   |
+| Discord Channel   | Channel ID          | Project Directory          |
+| ----------------- | ------------------- | -------------------------- |
+| `#openclaw`       | 1475513267433767014 | `~/code/personal/clawdbot` |
+| `#accode-agent`   | 1475211350291779594 | `~/code/work/accode-agent` |
+| `#pwc`            | 1475210716632973494 | `~/code/work/PwC`          |
+| `#sermon-metrics` | 1475216992956059698 | `~/code/personal/sermon`   |
+| `#main`           | —                   | (general / unrouted)       |
 
 ### Self-management constraints
 
@@ -228,3 +229,74 @@ A pane showing `dead=1` means the process crashed but the pane was preserved. Re
 | kiro-proxy  | `/tmp/kiro-proxy.log`       |
 | gateway     | `/tmp/openclaw-gateway.log` |
 | dev-browser | `/tmp/dev-browser.log`      |
+
+## Operational Diagnostics
+
+### Checking context usage across all sessions
+
+The kiro-proxy logs `context: X%` after each ACP response. The gateway logs
+detailed `[context-diag]` entries with message counts, history chars, image
+blocks, and system prompt size per session key.
+
+Quick commands:
+
+```bash
+# Latest context % per channel (from proxy logs)
+grep -E 'channel route:|context:' /tmp/kiro-proxy.log | tail -40
+
+# Detailed context-diag per session (from gateway logs)
+grep 'context-diag' /tmp/openclaw-gateway.log | tail -20
+
+# Latest context-diag per unique session
+grep 'context-diag' /tmp/openclaw-gateway.log | awk -F'sessionKey=' '{print $2}' | \
+  awk '{print $1}' | sort -u | while read key; do
+    grep "sessionKey=$key " /tmp/openclaw-gateway.log | grep 'context-diag' | tail -1
+  done
+```
+
+### Key metrics to watch
+
+| Metric                | Where                                   | Warning threshold    |
+| --------------------- | --------------------------------------- | -------------------- |
+| kiro-cli context %    | proxy log `context: X%`                 | >50% consider `/new` |
+| Gateway history chars | gateway `context-diag` historyTextChars | >200K chars          |
+| Gateway message count | gateway `context-diag` messages=        | >200 msgs            |
+| System memory         | `free -h`                               | <1GB available       |
+| Load average          | `uptime`                                | >2.0 sustained       |
+| ACP child process RSS | `ps aux --sort=-%mem \| head -15`       | >200MB per process   |
+
+### GC idle timeout behavior
+
+The proxy kills idle ACP sessions after 1800s (30 min) of inactivity. When
+this happens, the log shows:
+
+```
+[kiro-session] killing process (pid XXXXX) reason=gc-idle-timeout (session=..., idle=XXXXs, limit=1800s)
+```
+
+The session respawns automatically on the next message. Context resets to ~2%.
+This is normal and expected — it keeps memory usage bounded.
+
+### System resource baseline (exe.dev VM)
+
+- 7.8GB RAM total, ~4.5GB available under normal load
+- Gateway: ~390MB RSS (largest single process)
+- kiro-proxy: ~180MB RSS
+- Each kiro-cli ACP child: 65-90MB RSS
+- dev-browser + Chromium: ~170MB combined
+- Swap usage of 1-1.5GB is normal; watch for >3GB
+
+### ACP session architecture (not tmux)
+
+The kiro-proxy spawns `kiro-cli acp` as direct child processes with
+stdin/stdout ACP protocol pipes. These are NOT the tmux kiro-cli sessions.
+The tmux sessions (`oc-cli`, `mcp:main`, `pwc:main`, `sermon:main`) are
+separate interactive sessions for manual laptop use. The proxy doesn't
+interact with tmux at all.
+
+### Cross-session communication
+
+There is no inter-agent communication. Each Discord channel → kiro-cli ACP
+session is fully isolated. The `#oc-tmux-session` agent can monitor all
+sessions via logs and `spinup status` but cannot inject messages into other
+channels' ACP sessions.
