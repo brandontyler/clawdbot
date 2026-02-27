@@ -46,6 +46,25 @@ The proxy parses the channel ID from the `x-openclaw-session-key` header
 | `#sermon-metrics` | 1475216992956059698 | `~/code/personal/sermon`   |
 | `#main`           | —                   | (general / unrouted)       |
 
+### Adding a new project channel
+
+One command sets up everything (Discord channel, proxy route, tmux session):
+
+```bash
+scripts/add-channel.sh <name> <project-dir>
+# e.g.: scripts/add-channel.sh newproject ~/code/work/newproject
+```
+
+Then restart the proxy and start the session:
+
+```bash
+spinup oc --defer
+spinup <name>
+```
+
+To tear down: `scripts/remove-channel.sh <name>` (doesn't delete the Discord
+channel — do that manually if needed).
+
 ### Self-management constraints
 
 When running as the `#oc-tmux-session` Discord agent, you ARE running inside
