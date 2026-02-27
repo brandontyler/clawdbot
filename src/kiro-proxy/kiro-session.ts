@@ -87,6 +87,7 @@ export class KiroSession {
   lastTouchedAt = Date.now();
   sentMessageCount = 0;
   consecutiveErrors = 0;
+  lastContextPct = 0;
 
   private constructor(
     proc: ChildProcess,
@@ -260,6 +261,7 @@ export class KiroSession {
     if (method === "_kiro.dev/metadata") {
       const meta = params as KiroMetadata | undefined;
       if (meta?.contextUsagePercentage != null) {
+        this.lastContextPct = meta.contextUsagePercentage;
         this.events.onContextUsage?.(meta.contextUsagePercentage);
         this.events.onActivity?.();
       }

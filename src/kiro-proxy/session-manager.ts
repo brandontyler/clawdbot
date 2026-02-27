@@ -23,6 +23,9 @@ import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js"
 
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes
 
+const CONTEXT_WARN_PCT = 80;
+const CONTEXT_RESET_PCT = 95;
+
 /** Check if an error is the "invalid conversation history" crash. */
 export function isInvalidHistoryError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -220,6 +223,37 @@ export class SessionManager {
 
   // ─── Private ──────────────────────────────────────────────────────────────
 
+  /** Return diagnostic info for all active sessions. */
+  getSessionsInfo(): Array<{
+    key: string;
+    alive: boolean;
+    contextPct: number;
+    idleSecs: number;
+    consecutiveErrors: number;
+    sentMessages: number;
+  }> {
+    const now = Date.now();
+    const result: Array<{
+      key: string;
+      alive: boolean;
+      contextPct: number;
+      idleSecs: number;
+      consecutiveErrors: number;
+      sentMessages: number;
+    }> = [];
+    for (const [key, { session, handle }] of this.sessions) {
+      result.push({
+        key,
+        alive: session.alive,
+        contextPct: session.lastContextPct,
+        idleSecs: Math.round((now - handle.lastTouchedAt) / 1000),
+        consecutiveErrors: session.consecutiveErrors,
+        sentMessages: handle.sentMessageCount,
+      });
+    }
+    return result;
+  }
+
   /**
    * Convert an array of OpenAI messages into a single text block to send
    * to Kiro.  Only user messages are forwarded — system messages from the
@@ -241,6 +275,16 @@ export class SessionManager {
     return {
       onContextUsage: (pct) => {
         this.log(`context: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 8)}…)`);
+        if (pct >= CONTEXT_RESET_PCT) {
+          this.log(
+            `context critical (${pct.toFixed(1)}% >= ${CONTEXT_RESET_PCT}%) — auto-resetting session=${sessionKey.slice(0, 12)}…`,
+          );
+          this.resetSession(sessionKey, `context-critical-${Math.round(pct)}pct`);
+        } else if (pct >= CONTEXT_WARN_PCT) {
+          this.log(
+            `context warning: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 12)}…) — approaching limit`,
+          );
+        }
       },
       onActivity: () => {
         const managed = this.sessions.get(sessionKey);

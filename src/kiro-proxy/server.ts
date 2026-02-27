@@ -198,6 +198,17 @@ async function handleCompletions(
         sseChunk(res, buildChunk(completionId, text));
       });
       session.consecutiveErrors = 0;
+
+      // Surface context usage warning so the user sees it in Discord.
+      if (session.lastContextPct >= 80) {
+        sseChunk(
+          res,
+          buildChunk(
+            completionId,
+            `\n\n⚠️ Context window at ${Math.round(session.lastContextPct)}%. Send \`/new\` soon to reset before it fills up.`,
+          ),
+        );
+      }
     } catch (err) {
       log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
       session.consecutiveErrors++;
@@ -462,6 +473,12 @@ export function createKiroProxyServer(
 
     if (method === "GET" && url === "/v1/models") {
       handleModels(res);
+      return;
+    }
+
+    if (method === "GET" && url === "/sessions") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ sessions: manager.getSessionsInfo() }));
       return;
     }
 
