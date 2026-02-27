@@ -53,11 +53,12 @@ export class PromptTimeoutError extends Error {
 }
 
 /**
- * Default prompt timeout in ms.  Set below the gateway's agent timeout
- * (currently 1200s in openclaw.json) so the proxy can return a clear error
- * message instead of the gateway firing a generic "request aborted".
+ * Default prompt *idle* timeout in ms.  The timer resets on every ACP
+ * notification (tool_call, agent_message_chunk, metadata).  Only fires
+ * when kiro-cli goes completely silent — meaning it's truly hung, not
+ * just running a long build/compile.
  */
-const DEFAULT_PROMPT_TIMEOUT_MS = 540_000; // 9 minutes
+const DEFAULT_PROMPT_TIMEOUT_MS = 300_000; // 5 minutes of silence
 
 export type KiroSessionOptions = {
   kiroBin: string;
@@ -184,9 +185,22 @@ export class KiroSession {
     return session;
   }
 
+  /**
+   * Timestamp of the last ACP notification received during the current
+   * prompt.  Reset by handleSessionUpdate / handleExtNotification via
+   * bumpPromptActivity().  The idle-timeout check compares against this.
+   */
+  private lastPromptActivityAt = 0;
+
+  /** Called internally whenever ACP sends any notification during a prompt. */
+  bumpPromptActivity(): void {
+    this.lastPromptActivityAt = Date.now();
+  }
+
   /** Send a text prompt and stream chunks to the provided callback. */
   async prompt(text: string, onChunk: ChunkCallback): Promise<string> {
     this.lastTouchedAt = Date.now();
+    this.lastPromptActivityAt = Date.now();
     this.chunkCallback = onChunk;
 
     // Keep-alive: bump lastTouchedAt periodically while the prompt is in-flight
@@ -211,15 +225,20 @@ export class KiroSession {
         promptPromise.finally(() => this.proc.removeListener("exit", onExit)).catch(() => {});
       });
 
-      // Race against a timeout so a hung kiro-cli doesn't block the proxy
-      // forever.  The timeout is set below the gateway's agent timeout so
-      // the user gets a clear error instead of a generic gateway abort.
+      // Activity-aware idle timeout: instead of a fixed wall-clock timer,
+      // poll every 30s and only fire if there has been NO ACP activity
+      // (tool_call, chunk, metadata) for promptTimeoutMs.  This lets
+      // long-running tool sessions (builds, compiles) run indefinitely
+      // while still catching truly hung/dead sessions.
       const timeoutPromise = new Promise<never>((_, reject) => {
-        const timer = setTimeout(
-          () => reject(new PromptTimeoutError(this.promptTimeoutMs)),
-          this.promptTimeoutMs,
-        );
-        promptPromise.finally(() => clearTimeout(timer)).catch(() => {});
+        const check = setInterval(() => {
+          const idleMs = Date.now() - this.lastPromptActivityAt;
+          if (idleMs >= this.promptTimeoutMs) {
+            clearInterval(check);
+            reject(new PromptTimeoutError(this.promptTimeoutMs));
+          }
+        }, 30_000);
+        promptPromise.finally(() => clearInterval(check)).catch(() => {});
       });
 
       const response = await Promise.race([promptPromise, deathPromise, timeoutPromise]);
@@ -239,6 +258,7 @@ export class KiroSession {
 
     // Any session update means the session is alive — bump idle timer.
     this.events.onActivity?.();
+    this.bumpPromptActivity();
 
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
@@ -264,6 +284,7 @@ export class KiroSession {
         this.lastContextPct = meta.contextUsagePercentage;
         this.events.onContextUsage?.(meta.contextUsagePercentage);
         this.events.onActivity?.();
+        this.bumpPromptActivity();
       }
       return;
     }
