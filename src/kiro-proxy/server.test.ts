@@ -19,6 +19,8 @@ function makeSession(reply: string, alive = true): KiroSession {
     acpSessionId: "test-acp-session",
     lastTouchedAt: Date.now(),
     sentMessageCount: 0,
+    consecutiveErrors: 0,
+    lastContextPct: 0,
     alive,
     async prompt(_text: string, onChunk: (t: string) => void): Promise<string> {
       onChunk(reply);
@@ -33,10 +35,15 @@ function makeManager(
   opts: { alive?: boolean; throwOnGetOrCreate?: boolean } = {},
 ): SessionManager {
   const session = makeSession(reply, opts.alive ?? true);
+  const managed = {
+    session,
+    handle: session,
+    promptLock: Promise.resolve(),
+  };
   return {
     getOrCreate: opts.throwOnGetOrCreate
       ? vi.fn().mockRejectedValue(new Error("kiro startup failure"))
-      : vi.fn().mockResolvedValue({ session, promptText: "latest user message" }),
+      : vi.fn().mockResolvedValue({ session, promptText: "latest user message", managed }),
     shutdown: vi.fn(),
     resolveSessionKey: vi.fn().mockReturnValue("test-session-key"),
   } as unknown as SessionManager;
