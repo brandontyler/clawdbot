@@ -29,7 +29,7 @@ const CONTEXT_RESET_PCT = 95;
 
 /** Check if an error is the "invalid conversation history" crash. */
 export function isInvalidHistoryError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = err instanceof Error ? err.message : JSON.stringify(err);
   return msg.includes("invalid conversation history");
 }
 
