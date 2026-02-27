@@ -275,19 +275,24 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        // Auto-recovery: kill corrupted session, spawn fresh one, retry with just the latest message.
-        log(`invalid history detected — auto-resetting session and retrying`);
+        // Auto-recovery: kill corrupted session, spawn fresh one with ONLY
+        // the latest user message.  Passing the full body.messages would
+        // replay the corrupted history into the new session (the original bug).
+        log(`invalid history detected — auto-resetting session and retrying with clean slate`);
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
         if (recoveryText) {
           try {
+            // Pass a single-message array so buildPromptFromMessages only
+            // sees the clean latest user message — no corrupted history.
+            const cleanMessages = [{ role: "user" as const, content: recoveryText }];
             const recovery = await manager.getOrCreate(
               sessionKey,
-              body.messages,
+              cleanMessages,
               openclawSessionKey,
             );
-            // Override sentMessageCount so future turns don't resend old messages
+            // Mark as caught up so future turns don't resend old messages
             recovery.managed.handle.sentMessageCount = body.messages.length;
 
             let recoveryResolve: () => void;
@@ -392,15 +397,16 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        log(`invalid history detected — auto-resetting session and retrying`);
+        log(`invalid history detected — auto-resetting session and retrying with clean slate`);
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
         if (recoveryText) {
           try {
+            const cleanMessages = [{ role: "user" as const, content: recoveryText }];
             const recovery = await manager.getOrCreate(
               sessionKey,
-              body.messages,
+              cleanMessages,
               openclawSessionKey,
             );
             recovery.managed.handle.sentMessageCount = body.messages.length;
