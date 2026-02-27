@@ -44,11 +44,28 @@ function autoApprovePermission(params: RequestPermissionRequest): RequestPermiss
 
 type ChunkCallback = (text: string) => void;
 
+/** Prompt exceeded the proxy-side timeout (should be under the gateway timeout). */
+export class PromptTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`kiro-cli prompt timed out after ${Math.round(timeoutMs / 1000)}s`);
+    this.name = "PromptTimeoutError";
+  }
+}
+
+/**
+ * Default prompt timeout in ms.  Set below the gateway's agent timeout
+ * (currently 1200s in openclaw.json) so the proxy can return a clear error
+ * message instead of the gateway firing a generic "request aborted".
+ */
+const DEFAULT_PROMPT_TIMEOUT_MS = 540_000; // 9 minutes
+
 export type KiroSessionOptions = {
   kiroBin: string;
   kiroArgs: string[];
   cwd: string;
   verbose: boolean;
+  /** Per-prompt timeout in ms.  Default: 540 000 (9 min). */
+  promptTimeoutMs?: number;
 };
 
 export type KiroSessionEvents = {
@@ -61,6 +78,7 @@ export class KiroSession {
   private readonly proc: ChildProcess;
   private readonly client: ClientSideConnection;
   private readonly events: KiroSessionEvents;
+  private readonly promptTimeoutMs: number;
 
   /** Set during an active prompt() call; null otherwise. */
   private chunkCallback: ChunkCallback | null = null;
@@ -75,11 +93,13 @@ export class KiroSession {
     client: ClientSideConnection,
     log: (msg: string) => void,
     events: KiroSessionEvents,
+    promptTimeoutMs: number,
   ) {
     this.proc = proc;
     this.client = client;
     this.log = log;
     this.events = events;
+    this.promptTimeoutMs = promptTimeoutMs;
   }
 
   /** Spawn kiro, perform ACP handshake, and return a ready-to-use session. */
@@ -132,7 +152,13 @@ export class KiroSession {
       stream,
     );
 
-    const session = new KiroSession(proc, client, log, events);
+    const session = new KiroSession(
+      proc,
+      client,
+      log,
+      events,
+      opts.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+    );
     holder.session = session;
 
     // ACP handshake
@@ -184,7 +210,18 @@ export class KiroSession {
         promptPromise.finally(() => this.proc.removeListener("exit", onExit)).catch(() => {});
       });
 
-      const response = await Promise.race([promptPromise, deathPromise]);
+      // Race against a timeout so a hung kiro-cli doesn't block the proxy
+      // forever.  The timeout is set below the gateway's agent timeout so
+      // the user gets a clear error instead of a generic gateway abort.
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new PromptTimeoutError(this.promptTimeoutMs)),
+          this.promptTimeoutMs,
+        );
+        promptPromise.finally(() => clearTimeout(timer)).catch(() => {});
+      });
+
+      const response = await Promise.race([promptPromise, deathPromise, timeoutPromise]);
       return response.stopReason ?? "end_turn";
     } finally {
       clearInterval(keepAlive);
@@ -233,7 +270,9 @@ export class KiroSession {
 
   /** Kill the underlying kiro process. */
   kill(reason?: string): void {
-    this.log(`killing process (pid ${this.proc.pid ?? "?"}) reason=${reason ?? "unknown"}`);
+    this.log(
+      `killing process (pid ${this.proc.pid ?? "?"}) reason=${reason ?? "unknown"} exitCode=${this.proc.exitCode} signal=${this.proc.signalCode}`,
+    );
     this.proc.kill("SIGTERM");
     setTimeout(() => {
       if (!this.proc.killed) {

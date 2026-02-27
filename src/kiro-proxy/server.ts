@@ -14,6 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { PromptTimeoutError } from "./kiro-session.js";
 import { SessionManager, isInvalidHistoryError } from "./session-manager.js";
 import type {
   KiroProxyOptions,
@@ -23,6 +24,9 @@ import type {
 } from "./types.js";
 
 const KIRO_MODEL_ID = "kiro-default";
+
+/** Auto-reset a session after this many consecutive prompt failures. */
+const MAX_CONSECUTIVE_ERRORS = 3;
 
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
 
@@ -198,6 +202,40 @@ async function handleCompletions(
       log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
       session.consecutiveErrors++;
 
+      // Timeout: kill the hung session so the next message spawns a fresh one.
+      if (err instanceof PromptTimeoutError) {
+        log(`prompt timeout — killing session (consecutive=${session.consecutiveErrors})`);
+        manager.resetSession(sessionKey, "prompt-timeout");
+        sseChunk(
+          res,
+          buildChunk(
+            completionId,
+            "⚠️ The request timed out. The session has been reset — please resend your message.",
+          ),
+        );
+        sseChunk(res, buildFinalChunk(completionId));
+        sseDone(res);
+        return;
+      }
+
+      // Too many consecutive errors: the session is likely broken beyond repair.
+      if (session.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        log(
+          `consecutive error threshold reached (${session.consecutiveErrors}) — auto-resetting session`,
+        );
+        manager.resetSession(sessionKey, `consecutive-errors-${session.consecutiveErrors}`);
+        sseChunk(
+          res,
+          buildChunk(
+            completionId,
+            "⚠️ Multiple consecutive errors detected. The session has been reset — please resend your message.",
+          ),
+        );
+        sseChunk(res, buildFinalChunk(completionId));
+        sseDone(res);
+        return;
+      }
+
       if (isInvalidHistoryError(err)) {
         // Auto-recovery: kill corrupted session, spawn fresh one, retry with just the latest message.
         log(`invalid history detected — auto-resetting session and retrying`);
@@ -275,6 +313,42 @@ async function handleCompletions(
     } catch (err) {
       log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
       session.consecutiveErrors++;
+
+      // Timeout: kill the hung session so the next message spawns a fresh one.
+      if (err instanceof PromptTimeoutError) {
+        log(`prompt timeout — killing session (consecutive=${session.consecutiveErrors})`);
+        manager.resetSession(sessionKey, "prompt-timeout");
+        res.writeHead(504, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                "The request timed out. The session has been reset — please resend your message.",
+              type: "timeout",
+            },
+          }),
+        );
+        return;
+      }
+
+      // Too many consecutive errors: the session is likely broken beyond repair.
+      if (session.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        log(
+          `consecutive error threshold reached (${session.consecutiveErrors}) — auto-resetting session`,
+        );
+        manager.resetSession(sessionKey, `consecutive-errors-${session.consecutiveErrors}`);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                "Multiple consecutive errors detected. The session has been reset — please resend your message.",
+              type: "server_error",
+            },
+          }),
+        );
+        return;
+      }
 
       if (isInvalidHistoryError(err)) {
         log(`invalid history detected — auto-resetting session and retrying`);
