@@ -215,13 +215,13 @@ async function handleCompletions(
 
       // Timeout: kill the hung session so the next message spawns a fresh one.
       if (err instanceof PromptTimeoutError) {
-        log(`prompt timeout — killing session (consecutive=${session.consecutiveErrors})`);
-        manager.resetSession(sessionKey, "prompt-timeout");
+        log(`prompt idle timeout — killing session (consecutive=${session.consecutiveErrors})`);
+        manager.resetSession(sessionKey, "prompt-idle-timeout");
         sseChunk(
           res,
           buildChunk(
             completionId,
-            "⚠️ The request timed out. The session has been reset — please resend your message.",
+            "⚠️ The session went silent for too long (no tool activity). It has been reset — please resend your message.",
           ),
         );
         sseChunk(res, buildFinalChunk(completionId));
@@ -327,14 +327,14 @@ async function handleCompletions(
 
       // Timeout: kill the hung session so the next message spawns a fresh one.
       if (err instanceof PromptTimeoutError) {
-        log(`prompt timeout — killing session (consecutive=${session.consecutiveErrors})`);
-        manager.resetSession(sessionKey, "prompt-timeout");
+        log(`prompt idle timeout — killing session (consecutive=${session.consecutiveErrors})`);
+        manager.resetSession(sessionKey, "prompt-idle-timeout");
         res.writeHead(504, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
             error: {
               message:
-                "The request timed out. The session has been reset — please resend your message.",
+                "The session went silent for too long (no tool activity). It has been reset — please resend your message.",
               type: "timeout",
             },
           }),
