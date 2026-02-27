@@ -68,6 +68,7 @@ export class KiroSession {
   acpSessionId = "";
   lastTouchedAt = Date.now();
   sentMessageCount = 0;
+  consecutiveErrors = 0;
 
   private constructor(
     proc: ChildProcess,
