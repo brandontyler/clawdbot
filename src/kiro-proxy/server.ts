@@ -132,6 +132,25 @@ async function handleCompletions(
 
   log(`${wantStream ? "stream" : "sync"} session=${sessionTag}… msgs=${body.messages.length}`);
 
+  // Pre-flight context size check: estimate the incoming payload size from
+  // OpenClaw's message history.  If it's very large, the gateway may not have
+  // compacted yet (or compaction failed).  Log a warning so we have visibility
+  // — the kiro-proxy can't trigger OpenClaw compaction, but the diagnostic
+  // helps explain slow turns or timeouts.
+  const incomingChars = body.messages.reduce(
+    (sum, m) =>
+      sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length),
+    0,
+  );
+  if (incomingChars > 500_000) {
+    log(
+      `pre-flight WARNING: incoming payload very large (${Math.round(incomingChars / 1000)}K chars, ${body.messages.length} msgs) session=${sessionTag}… — gateway may need compaction`,
+    );
+  } else if (incomingChars > 200_000) {
+    log(
+      `pre-flight: large payload (${Math.round(incomingChars / 1000)}K chars, ${body.messages.length} msgs) session=${sessionTag}…`,
+    );
+  }
   // Get or create Kiro ACP session
   let sessionResult: Awaited<ReturnType<SessionManager["getOrCreate"]>>;
   try {
@@ -200,7 +219,15 @@ async function handleCompletions(
       session.consecutiveErrors = 0;
 
       // Surface context usage warning so the user sees it in Discord.
-      if (session.lastContextPct >= 80) {
+      if (session.lastContextPct >= 90) {
+        sseChunk(
+          res,
+          buildChunk(
+            completionId,
+            `\n\n🚨 Context window at ${Math.round(session.lastContextPct)}% — approaching auto-reset threshold (95%). Send \`/new\` now to avoid losing your session mid-task.`,
+          ),
+        );
+      } else if (session.lastContextPct >= 80) {
         sseChunk(
           res,
           buildChunk(

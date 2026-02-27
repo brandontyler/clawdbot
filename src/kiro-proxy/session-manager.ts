@@ -24,6 +24,7 @@ import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js"
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes
 
 const CONTEXT_WARN_PCT = 80;
+const CONTEXT_CRITICAL_PCT = 90;
 const CONTEXT_RESET_PCT = 95;
 
 /** Check if an error is the "invalid conversation history" crash. */
@@ -287,6 +288,10 @@ export class SessionManager {
             `context critical (${pct.toFixed(1)}% >= ${CONTEXT_RESET_PCT}%) — auto-resetting session=${sessionKey.slice(0, 12)}…`,
           );
           this.resetSession(sessionKey, `context-critical-${Math.round(pct)}pct`);
+        } else if (pct >= CONTEXT_CRITICAL_PCT) {
+          this.log(
+            `context CRITICAL: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 12)}…) — will auto-reset at ${CONTEXT_RESET_PCT}%, send /new soon`,
+          );
         } else if (pct >= CONTEXT_WARN_PCT) {
           this.log(
             `context warning: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 12)}…) — approaching limit`,
