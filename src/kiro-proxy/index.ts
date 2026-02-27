@@ -58,6 +58,19 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
 
   const addr = `http://${host}:${port}`;
   process.stderr.write(`[kiro-proxy] listening on ${addr}\n`);
+
+  // Startup summary for diagnostics
+  const routeCount = Object.keys(opts.channelRoutes ?? {}).length;
+  const routeList = Object.entries(opts.channelRoutes ?? {})
+    .map(([chId, r]) => `  ${chId} → ${r.cwd}`)
+    .join("\n");
+  process.stderr.write(
+    `[kiro-proxy] config: kiro=${kiroBin} idle=${idleSecs}s routes=${routeCount}\n`,
+  );
+  if (routeList) {
+    process.stderr.write(`[kiro-proxy] routes:\n${routeList}\n`);
+  }
+
   process.stderr.write(`[kiro-proxy] add to ~/.openclaw/openclaw.json:\n`);
   process.stderr.write(
     [
