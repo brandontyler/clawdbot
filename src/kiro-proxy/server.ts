@@ -332,6 +332,9 @@ async function handleCompletions(
       log(
         `timing: session=${sessionTag}… ttfc=${tFirstChunk ? Math.round(tFirstChunk - tSession) : "none"}ms total=${Math.round(tDone - t0)}ms`,
       );
+      log(
+        `done: session=${sessionTag}… ctx=${session.lastContextPct.toFixed(0)}% errors=${session.consecutiveErrors} msgs=${body.messages.length}`,
+      );
       resolvePromptLock!();
     }
 

@@ -74,6 +74,7 @@ export class SessionManager {
   private readonly idleMs: number;
   private readonly log: (msg: string) => void;
   private gcTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(
     sessionOpts: KiroSessionOptions,
@@ -88,6 +89,7 @@ export class SessionManager {
     this.idleMs = (opts.idleSecs ?? DEFAULT_IDLE_SECS) * 1000;
     this.log = opts.log ?? (() => {});
     this.scheduleGc();
+    this.scheduleHeartbeat();
   }
 
   /**
@@ -140,6 +142,10 @@ export class SessionManager {
         existing.handle.sentMessageCount = messages.length;
         existing.handle.lastTouchedAt = Date.now();
         existing.session.lastTouchedAt = Date.now();
+        const rssKb = existing.session.getRssKb();
+        this.log(
+          `session reuse: session=${sessionKey.slice(0, 12)}… pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
+        );
         return { session: existing.session, promptText, managed: existing };
       }
     }
@@ -167,6 +173,10 @@ export class SessionManager {
 
     const session = await KiroSession.create(sessionOpts, this.buildSessionEvents(sessionKey));
 
+    this.log(
+      `session create: session=${sessionKey.slice(0, 12)}… pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
+    );
+
     // For the very first turn, send system prompt (if any) prepended to the
     // first user message so Kiro can establish context.
     const promptText = this.buildPromptFromMessages(messages);
@@ -187,6 +197,10 @@ export class SessionManager {
     if (this.gcTimer) {
       clearInterval(this.gcTimer);
       this.gcTimer = null;
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
     for (const { session } of this.sessions.values()) {
       session.kill("shutdown");
@@ -317,8 +331,31 @@ export class SessionManager {
     this.gcTimer.unref();
   }
 
+  private scheduleHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      return;
+    }
+    // Log pool health every 5 minutes for passive diagnostics.
+    this.heartbeatTimer = setInterval(() => {
+      const sessions = this.getSessionsInfo();
+      const totalRss = sessions.reduce((sum, s) => sum + (s.rssMb ?? 0), 0);
+      const summary = sessions
+        .map(
+          (s) =>
+            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors})`,
+        )
+        .join(" ");
+      this.log(
+        `heartbeat: sessions=${sessions.length} totalRss=${totalRss}MB${summary ? ` [${summary}]` : ""}`,
+      );
+    }, 300_000);
+    this.heartbeatTimer.unref();
+  }
+
   private gc(): void {
     const now = Date.now();
+    const before = this.sessions.size;
+    let reaped = 0;
     for (const [key, { session, handle }] of this.sessions) {
       const idleFor = now - handle.lastTouchedAt;
       const rssKb = session.getRssKb();
@@ -329,12 +366,27 @@ export class SessionManager {
           `gc-already-dead (${keyTag}, idle=${Math.round(idleFor / 1000)}s, rss=${rssMb}MB)`,
         );
         this.sessions.delete(key);
+        reaped++;
       } else if (idleFor > this.idleMs) {
         session.kill(
           `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s, rss=${rssMb}MB)`,
         );
         this.sessions.delete(key);
+        reaped++;
       }
+    }
+    // Log GC summary so we have visibility even when nothing is reaped.
+    if (before > 0 || reaped > 0) {
+      const survivors = this.getSessionsInfo();
+      const summary = survivors
+        .map(
+          (s) =>
+            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB)`,
+        )
+        .join(" ");
+      this.log(
+        `gc: checked=${before} reaped=${reaped} alive=${this.sessions.size}${summary ? ` [${summary}]` : ""}`,
+      );
     }
     // GC timer stays alive even when empty — avoids edge case where
     // orphaned sessions survive because the timer was cleared and never
