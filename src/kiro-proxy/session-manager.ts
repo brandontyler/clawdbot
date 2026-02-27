@@ -227,6 +227,8 @@ export class SessionManager {
   getSessionsInfo(): Array<{
     key: string;
     alive: boolean;
+    pid: number | undefined;
+    rssMb: number | undefined;
     contextPct: number;
     idleSecs: number;
     consecutiveErrors: number;
@@ -236,15 +238,20 @@ export class SessionManager {
     const result: Array<{
       key: string;
       alive: boolean;
+      pid: number | undefined;
+      rssMb: number | undefined;
       contextPct: number;
       idleSecs: number;
       consecutiveErrors: number;
       sentMessages: number;
     }> = [];
     for (const [key, { session, handle }] of this.sessions) {
+      const rssKb = session.getRssKb();
       result.push({
         key,
         alive: session.alive,
+        pid: session.pid,
+        rssMb: rssKb != null ? Math.round(rssKb / 1024) : undefined,
         contextPct: session.lastContextPct,
         idleSecs: Math.round((now - handle.lastTouchedAt) / 1000),
         consecutiveErrors: session.consecutiveErrors,
@@ -309,13 +316,17 @@ export class SessionManager {
     const now = Date.now();
     for (const [key, { session, handle }] of this.sessions) {
       const idleFor = now - handle.lastTouchedAt;
+      const rssKb = session.getRssKb();
+      const rssMb = rssKb != null ? Math.round(rssKb / 1024) : "?";
       const keyTag = `session=${key.slice(0, 12)}…`;
       if (!session.alive) {
-        session.kill(`gc-already-dead (${keyTag}, idle=${Math.round(idleFor / 1000)}s)`);
+        session.kill(
+          `gc-already-dead (${keyTag}, idle=${Math.round(idleFor / 1000)}s, rss=${rssMb}MB)`,
+        );
         this.sessions.delete(key);
       } else if (idleFor > this.idleMs) {
         session.kill(
-          `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s)`,
+          `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s, rss=${rssMb}MB)`,
         );
         this.sessions.delete(key);
       }
