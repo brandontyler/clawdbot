@@ -23,6 +23,12 @@ import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js"
 
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes
 
+/** Check if an error is the "invalid conversation history" crash. */
+export function isInvalidHistoryError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("invalid conversation history");
+}
+
 /** Extract text from OpenAI content (string or array of content parts). */
 function extractText(content: unknown): string {
   if (typeof content === "string") {
@@ -182,6 +188,34 @@ export class SessionManager {
       session.kill("shutdown");
     }
     this.sessions.clear();
+  }
+
+  /**
+   * Reset a session after an unrecoverable error (e.g. invalid history).
+   * Kills the ACP process and removes it from the pool so the next
+   * getOrCreate() spawns a fresh one.
+   */
+  resetSession(sessionKey: string, reason: string): void {
+    const existing = this.sessions.get(sessionKey);
+    if (existing) {
+      this.log(`session auto-reset: reason=${reason} (session=${sessionKey.slice(0, 12)}…)`);
+      existing.session.kill(`auto-reset: ${reason}`);
+      this.sessions.delete(sessionKey);
+    }
+  }
+
+  /**
+   * Get the latest user message text from an OpenAI message array.
+   * Used for recovery: send only the last message to a fresh session.
+   */
+  getLatestUserMessage(messages: OpenAIMessage[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === "user") {
+        return extractText(msg.content);
+      }
+    }
+    return "";
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, isInvalidHistoryError } from "./session-manager.js";
 import type {
   KiroProxyOptions,
   OpenAIChatRequest,
@@ -193,8 +193,61 @@ async function handleCompletions(
         }
         sseChunk(res, buildChunk(completionId, text));
       });
+      session.consecutiveErrors = 0;
     } catch (err) {
       log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
+      session.consecutiveErrors++;
+
+      if (isInvalidHistoryError(err)) {
+        // Auto-recovery: kill corrupted session, spawn fresh one, retry with just the latest message.
+        log(`invalid history detected — auto-resetting session and retrying`);
+        manager.resetSession(sessionKey, "invalid-conversation-history");
+
+        const recoveryText = manager.getLatestUserMessage(body.messages);
+        if (recoveryText) {
+          try {
+            const recovery = await manager.getOrCreate(
+              sessionKey,
+              body.messages,
+              openclawSessionKey,
+            );
+            // Override sentMessageCount so future turns don't resend old messages
+            recovery.managed.handle.sentMessageCount = body.messages.length;
+
+            let recoveryResolve: () => void;
+            recovery.managed.promptLock = new Promise((r) => {
+              recoveryResolve = r;
+            });
+
+            await recovery.session.prompt(recoveryText, (text) => {
+              if (!tFirstChunk) {
+                tFirstChunk = performance.now();
+              }
+              sseChunk(res, buildChunk(completionId, text));
+            });
+            recovery.session.consecutiveErrors = 0;
+            recoveryResolve!();
+
+            sseChunk(res, buildFinalChunk(completionId));
+            sseDone(res);
+            return;
+          } catch (retryErr) {
+            log(
+              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            );
+          }
+        }
+
+        // Recovery failed — tell the user clearly
+        sseChunk(
+          res,
+          buildChunk(
+            completionId,
+            "⚠️ Session history became corrupted and auto-recovery failed. Please send `/new` to reset this conversation.",
+          ),
+        );
+      }
+
       sseChunk(res, buildFinalChunk(completionId));
       sseDone(res);
       return;
@@ -218,12 +271,63 @@ async function handleCompletions(
 
     try {
       await session.prompt(promptText, (text) => parts.push(text));
+      session.consecutiveErrors = 0;
     } catch (err) {
       log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
+      session.consecutiveErrors++;
+
+      if (isInvalidHistoryError(err)) {
+        log(`invalid history detected — auto-resetting session and retrying`);
+        manager.resetSession(sessionKey, "invalid-conversation-history");
+
+        const recoveryText = manager.getLatestUserMessage(body.messages);
+        if (recoveryText) {
+          try {
+            const recovery = await manager.getOrCreate(
+              sessionKey,
+              body.messages,
+              openclawSessionKey,
+            );
+            recovery.managed.handle.sentMessageCount = body.messages.length;
+            const retryParts: string[] = [];
+            await recovery.session.prompt(recoveryText, (text) => retryParts.push(text));
+            recovery.session.consecutiveErrors = 0;
+
+            const fullText = retryParts.join("");
+            const completion: OpenAICompletion = {
+              id: completionId,
+              object: "chat.completion",
+              created: Math.floor(Date.now() / 1000),
+              model: KIRO_MODEL_ID,
+              choices: [
+                {
+                  index: 0,
+                  message: { role: "assistant", content: fullText },
+                  finish_reason: "stop",
+                },
+              ],
+              usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            };
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(completion));
+            return;
+          } catch (retryErr) {
+            log(
+              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            );
+          }
+        }
+      }
+
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          error: { message: String(err), type: "server_error" },
+          error: {
+            message: isInvalidHistoryError(err)
+              ? "Session history corrupted. Please send /new to reset."
+              : String(err),
+            type: "server_error",
+          },
         }),
       );
       return;
