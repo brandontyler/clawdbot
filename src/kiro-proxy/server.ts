@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { PromptTimeoutError } from "./kiro-session.js";
 import { SessionManager, isInvalidHistoryError } from "./session-manager.js";
@@ -29,7 +30,7 @@ const KIRO_MODEL_ID = "kiro-default";
 const MAX_CONSECUTIVE_ERRORS = 3;
 
 /** Delay (ms) between recovery attempt 1 and 2 to let resources settle. */
-const RECOVERY_BACKOFF_MS = 2000;
+const RECOVERY_BACKOFF_MS = 5000;
 
 /**
  * Prefixed to the user's message during auto-recovery so the fresh session
@@ -62,6 +63,40 @@ function formatErrorVerbose(err: unknown, label: string): string {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ─── Persistent corruption log ────────────────────────────────────────────────
+
+const CORRUPTION_LOG_DIR = `${process.env.HOME}/code/personal/clawdbot/logs`;
+const CORRUPTION_LOG_PATH = `${CORRUPTION_LOG_DIR}/corruption-events.jsonl`;
+
+/** Append a structured corruption event to a persistent log that survives proxy restarts. */
+function logCorruptionEvent(event: {
+  sessionKey: string;
+  phase: string;
+  error: unknown;
+  messageCount: number;
+  incomingChars: number;
+  latestUserMessage?: string;
+}): void {
+  try {
+    mkdirSync(CORRUPTION_LOG_DIR, { recursive: true });
+    const entry = {
+      ts: new Date().toISOString(),
+      session: event.sessionKey.slice(0, 24),
+      phase: event.phase,
+      error:
+        event.error instanceof Error
+          ? { name: event.error.name, message: event.error.message, stack: event.error.stack }
+          : String(event.error),
+      msgs: event.messageCount,
+      chars: event.incomingChars,
+      lastMsg: event.latestUserMessage?.slice(0, 500),
+    };
+    appendFileSync(CORRUPTION_LOG_PATH, JSON.stringify(entry) + "\n");
+  } catch {
+    // Best-effort — don't crash the proxy over logging.
+  }
+}
 
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
 
@@ -311,9 +346,20 @@ async function handleCompletions(
 
       if (isInvalidHistoryError(err)) {
         log(formatErrorVerbose(err, "invalid history detected"));
+        const recoveryText = manager.getLatestUserMessage(body.messages);
+        logCorruptionEvent({
+          sessionKey,
+          phase: "initial",
+          error: err,
+          messageCount: body.messages.length,
+          incomingChars,
+          latestUserMessage: recoveryText,
+        });
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
-        const recoveryText = manager.getLatestUserMessage(body.messages);
+        // Brief delay to let the killed kiro-cli process fully exit before respawning.
+        await sleep(1000);
+
         // Attempt 1: replay user message with safety preamble
         if (recoveryText) {
           const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
@@ -346,6 +392,14 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(formatErrorVerbose(retryErr, "recovery attempt 1 failed"));
+            logCorruptionEvent({
+              sessionKey,
+              phase: "recovery-1",
+              error: retryErr,
+              messageCount: body.messages.length,
+              incomingChars,
+              latestUserMessage: recoveryText,
+            });
             manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
@@ -384,6 +438,13 @@ async function handleCompletions(
           return;
         } catch (fallbackErr) {
           log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed"));
+          logCorruptionEvent({
+            sessionKey,
+            phase: "recovery-2",
+            error: fallbackErr,
+            messageCount: body.messages.length,
+            incomingChars,
+          });
           manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
 
@@ -473,9 +534,20 @@ async function handleCompletions(
 
       if (isInvalidHistoryError(err)) {
         log(formatErrorVerbose(err, "invalid history detected (blocking)"));
+        const recoveryText = manager.getLatestUserMessage(body.messages);
+        logCorruptionEvent({
+          sessionKey,
+          phase: "initial-blocking",
+          error: err,
+          messageCount: body.messages.length,
+          incomingChars,
+          latestUserMessage: recoveryText,
+        });
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
-        const recoveryText = manager.getLatestUserMessage(body.messages);
+        // Brief delay to let the killed kiro-cli process fully exit before respawning.
+        await sleep(1000);
+
         // Attempt 1: replay user message with safety preamble
         if (recoveryText) {
           const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
@@ -512,6 +584,14 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(formatErrorVerbose(retryErr, "recovery attempt 1 failed (blocking)"));
+            logCorruptionEvent({
+              sessionKey,
+              phase: "recovery-1-blocking",
+              error: retryErr,
+              messageCount: body.messages.length,
+              incomingChars,
+              latestUserMessage: recoveryText,
+            });
             manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
@@ -556,6 +636,13 @@ async function handleCompletions(
           return;
         } catch (fallbackErr) {
           log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed (blocking)"));
+          logCorruptionEvent({
+            sessionKey,
+            phase: "recovery-2-blocking",
+            error: fallbackErr,
+            messageCount: body.messages.length,
+            incomingChars,
+          });
           manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
       }
