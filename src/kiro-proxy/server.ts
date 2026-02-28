@@ -28,6 +28,16 @@ const KIRO_MODEL_ID = "kiro-default";
 /** Auto-reset a session after this many consecutive prompt failures. */
 const MAX_CONSECUTIVE_ERRORS = 3;
 
+/**
+ * Prefixed to the user's message during auto-recovery so the fresh session
+ * doesn't immediately repeat the heavy tool use that caused the corruption.
+ */
+const RECOVERY_PREAMBLE =
+  "[System: This is an auto-recovered session. The previous attempt crashed " +
+  "mid-tool-execution. Do NOT write large files in this response. Instead, " +
+  "summarize what you were doing and ask the user to confirm before retrying " +
+  "any file writes.]\n\n";
+
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
 
 function sseChunk(res: ServerResponse, data: object): void {
@@ -278,15 +288,18 @@ async function handleCompletions(
         // Auto-recovery: kill corrupted session, spawn fresh one with ONLY
         // the latest user message.  Passing the full body.messages would
         // replay the corrupted history into the new session (the original bug).
+        //
+        // To avoid a doom loop (recovery triggers the same heavy tool use
+        // that caused the corruption), prefix the prompt with a constraint
+        // that steers the model toward a lighter response.
         log(`invalid history detected — auto-resetting session and retrying with clean slate`);
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
         if (recoveryText) {
           try {
-            // Pass a single-message array so buildPromptFromMessages only
-            // sees the clean latest user message — no corrupted history.
-            const cleanMessages = [{ role: "user" as const, content: recoveryText }];
+            const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
+            const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
             const recovery = await manager.getOrCreate(
               sessionKey,
               cleanMessages,
@@ -300,7 +313,7 @@ async function handleCompletions(
               recoveryResolve = r;
             });
 
-            await recovery.session.prompt(recoveryText, (text) => {
+            await recovery.session.prompt(safeRecoveryText, (text) => {
               if (!tFirstChunk) {
                 tFirstChunk = performance.now();
               }
@@ -314,7 +327,7 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(
-              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : JSON.stringify(retryErr)}`,
             );
           }
         }
@@ -403,7 +416,8 @@ async function handleCompletions(
         const recoveryText = manager.getLatestUserMessage(body.messages);
         if (recoveryText) {
           try {
-            const cleanMessages = [{ role: "user" as const, content: recoveryText }];
+            const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
+            const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
             const recovery = await manager.getOrCreate(
               sessionKey,
               cleanMessages,
@@ -411,7 +425,7 @@ async function handleCompletions(
             );
             recovery.managed.handle.sentMessageCount = body.messages.length;
             const retryParts: string[] = [];
-            await recovery.session.prompt(recoveryText, (text) => retryParts.push(text));
+            await recovery.session.prompt(safeRecoveryText, (text) => retryParts.push(text));
             recovery.session.consecutiveErrors = 0;
 
             const fullText = retryParts.join("");
@@ -434,7 +448,7 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(
-              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : JSON.stringify(retryErr)}`,
             );
           }
         }
