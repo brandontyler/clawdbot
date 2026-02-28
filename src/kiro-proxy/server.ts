@@ -113,7 +113,9 @@ function logCorruptionEvent(event: CorruptionEvent): void {
       error:
         event.error instanceof Error
           ? { name: event.error.name, message: event.error.message, stack: event.error.stack }
-          : String(event.error),
+          : typeof event.error === "object" && event.error !== null
+            ? event.error
+            : String(event.error),
       msgs: event.messageCount,
       chars: event.incomingChars,
       lastMsg: event.latestUserMessage?.slice(0, 500),
@@ -160,11 +162,16 @@ function buildCorruptionDiagnostics(
     error: opts.error,
     messageCount: opts.messages.length,
     incomingChars: opts.incomingChars,
-    latestUserMessage: opts.messages
-      .filter((m) => m.role === "user")
-      .pop()
-      ?.content?.toString()
-      .slice(0, 500),
+    latestUserMessage: (() => {
+      const c = opts.messages.filter((m) => m.role === "user").pop()?.content;
+      if (typeof c === "string") {
+        return c.slice(0, 500);
+      }
+      if (Array.isArray(c)) {
+        return JSON.stringify(c).slice(0, 500);
+      }
+      return c != null ? String(c) : undefined;
+    })(),
     responseText: opts.responseText,
     acpSessionId: session.acpSessionId,
     pid: session.pid,
