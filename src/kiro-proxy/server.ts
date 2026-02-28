@@ -22,6 +22,7 @@ import type {
   OpenAIChatRequest,
   OpenAIChunk,
   OpenAICompletion,
+  OpenAIMessage,
 } from "./types.js";
 
 const KIRO_MODEL_ID = "kiro-default";
@@ -69,15 +70,40 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const CORRUPTION_LOG_DIR = `${process.env.HOME}/code/personal/clawdbot/logs`;
 const CORRUPTION_LOG_PATH = `${CORRUPTION_LOG_DIR}/corruption-events.jsonl`;
 
-/** Append a structured corruption event to a persistent log that survives proxy restarts. */
-function logCorruptionEvent(event: {
+/** Kiro-cli emits this message inline in the response stream when its internal session corrupts. */
+const KIRO_CLI_CORRUPTION_MARKER = "Session history became corrupted";
+
+type CorruptionEvent = {
   sessionKey: string;
   phase: string;
   error: unknown;
   messageCount: number;
   incomingChars: number;
   latestUserMessage?: string;
-}): void {
+  /** Full response text accumulated before corruption was detected. */
+  responseText?: string;
+  /** ACP session ID from kiro-cli. */
+  acpSessionId?: string;
+  /** kiro-cli process PID. */
+  pid?: number;
+  /** RSS in MB at time of corruption. */
+  rssMb?: number;
+  /** Context usage % reported by kiro-cli. */
+  contextPct?: number;
+  /** How many messages the proxy had sent to this ACP session. */
+  sentMessageCount?: number;
+  /** How many consecutive errors this session had before this event. */
+  consecutiveErrors?: number;
+  /** Wall-clock ms from prompt start to corruption detection. */
+  elapsedMs?: number;
+  /** The prompt text that was sent to kiro-cli. */
+  promptText?: string;
+  /** Per-role message counts from the incoming OpenAI payload. */
+  roleCounts?: Record<string, number>;
+};
+
+/** Append a structured corruption event to a persistent log that survives proxy restarts. */
+function logCorruptionEvent(event: CorruptionEvent): void {
   try {
     mkdirSync(CORRUPTION_LOG_DIR, { recursive: true });
     const entry = {
@@ -91,11 +117,65 @@ function logCorruptionEvent(event: {
       msgs: event.messageCount,
       chars: event.incomingChars,
       lastMsg: event.latestUserMessage?.slice(0, 500),
+      responseText: event.responseText?.slice(-2000),
+      acpSessionId: event.acpSessionId,
+      pid: event.pid,
+      rssMb: event.rssMb,
+      contextPct: event.contextPct,
+      sentMessageCount: event.sentMessageCount,
+      consecutiveErrors: event.consecutiveErrors,
+      elapsedMs: event.elapsedMs,
+      promptText: event.promptText?.slice(0, 1000),
+      roleCounts: event.roleCounts,
     };
     appendFileSync(CORRUPTION_LOG_PATH, JSON.stringify(entry) + "\n");
   } catch {
     // Best-effort — don't crash the proxy over logging.
   }
+}
+
+/** Build a full diagnostic snapshot for a corruption event. */
+function buildCorruptionDiagnostics(
+  session: import("./kiro-session.js").KiroSession,
+  managed: { handle: { sentMessageCount: number } },
+  opts: {
+    sessionKey: string;
+    phase: string;
+    error: unknown;
+    messages: OpenAIMessage[];
+    incomingChars: number;
+    promptText: string;
+    responseText: string;
+    elapsedMs: number;
+  },
+): CorruptionEvent {
+  const rssKb = session.getRssKb();
+  const roleCounts: Record<string, number> = {};
+  for (const m of opts.messages) {
+    roleCounts[m.role] = (roleCounts[m.role] ?? 0) + 1;
+  }
+  return {
+    sessionKey: opts.sessionKey,
+    phase: opts.phase,
+    error: opts.error,
+    messageCount: opts.messages.length,
+    incomingChars: opts.incomingChars,
+    latestUserMessage: opts.messages
+      .filter((m) => m.role === "user")
+      .pop()
+      ?.content?.toString()
+      .slice(0, 500),
+    responseText: opts.responseText,
+    acpSessionId: session.acpSessionId,
+    pid: session.pid,
+    rssMb: rssKb != null ? Math.round(rssKb / 1024) : undefined,
+    contextPct: session.lastContextPct,
+    sentMessageCount: managed.handle.sentMessageCount,
+    consecutiveErrors: session.consecutiveErrors,
+    elapsedMs: opts.elapsedMs,
+    promptText: opts.promptText,
+    roleCounts,
+  };
 }
 
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
@@ -279,14 +359,37 @@ async function handleCompletions(
     });
 
     let tFirstChunk = 0;
+    const responseChunks: string[] = [];
     try {
       await session.prompt(promptText, (text) => {
         if (!tFirstChunk) {
           tFirstChunk = performance.now();
         }
+        responseChunks.push(text);
         sseChunk(res, buildChunk(completionId, text));
       });
       session.consecutiveErrors = 0;
+
+      // Detect kiro-cli inline corruption message in the completed response.
+      const fullResponse = responseChunks.join("");
+      if (fullResponse.includes(KIRO_CLI_CORRUPTION_MARKER)) {
+        const elapsed = performance.now() - t0;
+        log(
+          `🔴 KIRO-CLI CORRUPTION DETECTED IN STREAM: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms responseLen=${fullResponse.length} ctx=${session.lastContextPct.toFixed(1)}%`,
+        );
+        const diag = buildCorruptionDiagnostics(session, managed, {
+          sessionKey,
+          phase: "stream-inline-corruption",
+          error: "kiro-cli emitted corruption marker in response stream",
+          messages: body.messages,
+          incomingChars,
+          promptText,
+          responseText: fullResponse,
+          elapsedMs: Math.round(elapsed),
+        });
+        logCorruptionEvent(diag);
+        log(`🔴 CORRUPTION DIAG: ${JSON.stringify(diag, null, 2)}`);
+      }
 
       // Surface context usage warning so the user sees it in Discord.
       if (session.lastContextPct >= 90) {
@@ -347,14 +450,19 @@ async function handleCompletions(
       if (isInvalidHistoryError(err)) {
         log(formatErrorVerbose(err, "invalid history detected"));
         const recoveryText = manager.getLatestUserMessage(body.messages);
-        logCorruptionEvent({
+        const elapsed = performance.now() - t0;
+        const diag = buildCorruptionDiagnostics(session, managed, {
           sessionKey,
           phase: "initial",
           error: err,
-          messageCount: body.messages.length,
+          messages: body.messages,
           incomingChars,
-          latestUserMessage: recoveryText,
+          promptText,
+          responseText: responseChunks.join(""),
+          elapsedMs: Math.round(elapsed),
         });
+        logCorruptionEvent(diag);
+        log(`🔴 CORRUPTION DIAG (ACP error): ${JSON.stringify(diag, null, 2)}`);
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         // Brief delay to let the killed kiro-cli process fully exit before respawning.
@@ -392,14 +500,18 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(formatErrorVerbose(retryErr, "recovery attempt 1 failed"));
-            logCorruptionEvent({
-              sessionKey,
-              phase: "recovery-1",
-              error: retryErr,
-              messageCount: body.messages.length,
-              incomingChars,
-              latestUserMessage: recoveryText,
-            });
+            logCorruptionEvent(
+              buildCorruptionDiagnostics(session, managed, {
+                sessionKey,
+                phase: "recovery-1",
+                error: retryErr,
+                messages: body.messages,
+                incomingChars,
+                promptText,
+                responseText: responseChunks.join(""),
+                elapsedMs: Math.round(performance.now() - t0),
+              }),
+            );
             manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
@@ -438,13 +550,18 @@ async function handleCompletions(
           return;
         } catch (fallbackErr) {
           log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed"));
-          logCorruptionEvent({
-            sessionKey,
-            phase: "recovery-2",
-            error: fallbackErr,
-            messageCount: body.messages.length,
-            incomingChars,
-          });
+          logCorruptionEvent(
+            buildCorruptionDiagnostics(session, managed, {
+              sessionKey,
+              phase: "recovery-2",
+              error: fallbackErr,
+              messages: body.messages,
+              incomingChars,
+              promptText,
+              responseText: responseChunks.join(""),
+              elapsedMs: Math.round(performance.now() - t0),
+            }),
+          );
           manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
 
@@ -492,6 +609,27 @@ async function handleCompletions(
     try {
       await session.prompt(promptText, (text) => parts.push(text));
       session.consecutiveErrors = 0;
+
+      // Detect kiro-cli inline corruption in blocking response.
+      const blockingResponse = parts.join("");
+      if (blockingResponse.includes(KIRO_CLI_CORRUPTION_MARKER)) {
+        const elapsed = performance.now() - t0;
+        log(
+          `🔴 KIRO-CLI CORRUPTION DETECTED (blocking): session=${sessionTag}… elapsed=${Math.round(elapsed)}ms responseLen=${blockingResponse.length}`,
+        );
+        const diag = buildCorruptionDiagnostics(session, managed, {
+          sessionKey,
+          phase: "blocking-inline-corruption",
+          error: "kiro-cli emitted corruption marker in response",
+          messages: body.messages,
+          incomingChars,
+          promptText,
+          responseText: blockingResponse,
+          elapsedMs: Math.round(elapsed),
+        });
+        logCorruptionEvent(diag);
+        log(`🔴 CORRUPTION DIAG: ${JSON.stringify(diag, null, 2)}`);
+      }
     } catch (err) {
       log(formatErrorVerbose(err, "prompt error (blocking)"));
       session.consecutiveErrors++;
@@ -535,14 +673,19 @@ async function handleCompletions(
       if (isInvalidHistoryError(err)) {
         log(formatErrorVerbose(err, "invalid history detected (blocking)"));
         const recoveryText = manager.getLatestUserMessage(body.messages);
-        logCorruptionEvent({
+        const elapsed = performance.now() - t0;
+        const diag = buildCorruptionDiagnostics(session, managed, {
           sessionKey,
           phase: "initial-blocking",
           error: err,
-          messageCount: body.messages.length,
+          messages: body.messages,
           incomingChars,
-          latestUserMessage: recoveryText,
+          promptText,
+          responseText: parts.join(""),
+          elapsedMs: Math.round(elapsed),
         });
+        logCorruptionEvent(diag);
+        log(`🔴 CORRUPTION DIAG (ACP error, blocking): ${JSON.stringify(diag, null, 2)}`);
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         // Brief delay to let the killed kiro-cli process fully exit before respawning.
@@ -584,14 +727,18 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(formatErrorVerbose(retryErr, "recovery attempt 1 failed (blocking)"));
-            logCorruptionEvent({
-              sessionKey,
-              phase: "recovery-1-blocking",
-              error: retryErr,
-              messageCount: body.messages.length,
-              incomingChars,
-              latestUserMessage: recoveryText,
-            });
+            logCorruptionEvent(
+              buildCorruptionDiagnostics(session, managed, {
+                sessionKey,
+                phase: "recovery-1-blocking",
+                error: retryErr,
+                messages: body.messages,
+                incomingChars,
+                promptText,
+                responseText: parts.join(""),
+                elapsedMs: Math.round(performance.now() - t0),
+              }),
+            );
             manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
@@ -636,13 +783,18 @@ async function handleCompletions(
           return;
         } catch (fallbackErr) {
           log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed (blocking)"));
-          logCorruptionEvent({
-            sessionKey,
-            phase: "recovery-2-blocking",
-            error: fallbackErr,
-            messageCount: body.messages.length,
-            incomingChars,
-          });
+          logCorruptionEvent(
+            buildCorruptionDiagnostics(session, managed, {
+              sessionKey,
+              phase: "recovery-2-blocking",
+              error: fallbackErr,
+              messages: body.messages,
+              incomingChars,
+              promptText,
+              responseText: parts.join(""),
+              elapsedMs: Math.round(performance.now() - t0),
+            }),
+          );
           manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
       }
