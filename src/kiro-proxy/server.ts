@@ -38,6 +38,17 @@ const RECOVERY_PREAMBLE =
   "summarize what you were doing and ask the user to confirm before retrying " +
   "any file writes.]\n\n";
 
+/**
+ * Last-resort prompt when the first recovery also crashes.  Contains NO
+ * user content — just a harmless greeting that cannot trigger heavy tool use.
+ * This breaks the doom loop: the session comes up clean, and the *next*
+ * user message proceeds normally.
+ */
+const FALLBACK_RECOVERY_PROMPT =
+  "[System: The previous session crashed and recovery also failed. " +
+  "Start fresh. Do NOT use any tools. Just greet the user and let them " +
+  "know the session was reset — they should resend their request.]";
+
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
 
 function sseChunk(res: ServerResponse, data: object): void {
@@ -285,27 +296,21 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        // Auto-recovery: kill corrupted session, spawn fresh one with ONLY
-        // the latest user message.  Passing the full body.messages would
-        // replay the corrupted history into the new session (the original bug).
-        //
-        // To avoid a doom loop (recovery triggers the same heavy tool use
-        // that caused the corruption), prefix the prompt with a constraint
-        // that steers the model toward a lighter response.
         log(`invalid history detected — auto-resetting session and retrying with clean slate`);
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
+        // Attempt 1: replay user message with safety preamble
         if (recoveryText) {
+          const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
+          log(`recovery attempt 1: preamble + user message (${recoveryText.length} chars)`);
           try {
-            const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
             const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
             const recovery = await manager.getOrCreate(
               sessionKey,
               cleanMessages,
               openclawSessionKey,
             );
-            // Mark as caught up so future turns don't resend old messages
             recovery.managed.handle.sentMessageCount = body.messages.length;
 
             let recoveryResolve: () => void;
@@ -327,12 +332,48 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(
-              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : JSON.stringify(retryErr)}`,
+              `recovery attempt 1 failed: ${retryErr instanceof Error ? `${retryErr.name}: ${retryErr.message}` : JSON.stringify(retryErr)}`,
             );
+            manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
 
-        // Recovery failed — tell the user clearly
+        // Attempt 2: minimal no-tool prompt to break the doom loop
+        log("recovery attempt 2: fallback no-tool prompt");
+        try {
+          const fallbackMessages = [{ role: "user" as const, content: FALLBACK_RECOVERY_PROMPT }];
+          const fallback = await manager.getOrCreate(
+            sessionKey,
+            fallbackMessages,
+            openclawSessionKey,
+          );
+          fallback.managed.handle.sentMessageCount = body.messages.length;
+
+          let fallbackResolve: () => void;
+          fallback.managed.promptLock = new Promise((r) => {
+            fallbackResolve = r;
+          });
+
+          await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
+            if (!tFirstChunk) {
+              tFirstChunk = performance.now();
+            }
+            sseChunk(res, buildChunk(completionId, text));
+          });
+          fallback.session.consecutiveErrors = 0;
+          fallbackResolve!();
+
+          sseChunk(res, buildFinalChunk(completionId));
+          sseDone(res);
+          return;
+        } catch (fallbackErr) {
+          log(
+            `recovery attempt 2 failed: ${fallbackErr instanceof Error ? `${fallbackErr.name}: ${fallbackErr.message}` : JSON.stringify(fallbackErr)}`,
+          );
+          manager.resetSession(sessionKey, "recovery-attempt-2-failed");
+        }
+
+        // Both recovery attempts failed
         sseChunk(
           res,
           buildChunk(
@@ -414,9 +455,11 @@ async function handleCompletions(
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
+        // Attempt 1: replay user message with safety preamble
         if (recoveryText) {
+          const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
+          log(`recovery attempt 1: preamble + user message (${recoveryText.length} chars)`);
           try {
-            const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
             const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
             const recovery = await manager.getOrCreate(
               sessionKey,
@@ -448,9 +491,51 @@ async function handleCompletions(
             return;
           } catch (retryErr) {
             log(
-              `recovery retry also failed: ${retryErr instanceof Error ? retryErr.message : JSON.stringify(retryErr)}`,
+              `recovery attempt 1 failed: ${retryErr instanceof Error ? `${retryErr.name}: ${retryErr.message}` : JSON.stringify(retryErr)}`,
             );
+            manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
+        }
+
+        // Attempt 2: minimal no-tool prompt to break the doom loop
+        log("recovery attempt 2: fallback no-tool prompt");
+        try {
+          const fallbackMessages = [{ role: "user" as const, content: FALLBACK_RECOVERY_PROMPT }];
+          const fallback = await manager.getOrCreate(
+            sessionKey,
+            fallbackMessages,
+            openclawSessionKey,
+          );
+          fallback.managed.handle.sentMessageCount = body.messages.length;
+          const fallbackParts: string[] = [];
+          await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) =>
+            fallbackParts.push(text),
+          );
+          fallback.session.consecutiveErrors = 0;
+
+          const fullText = fallbackParts.join("");
+          const completion: OpenAICompletion = {
+            id: completionId,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: KIRO_MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: fullText },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(completion));
+          return;
+        } catch (fallbackErr) {
+          log(
+            `recovery attempt 2 failed: ${fallbackErr instanceof Error ? `${fallbackErr.name}: ${fallbackErr.message}` : JSON.stringify(fallbackErr)}`,
+          );
+          manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
       }
 
