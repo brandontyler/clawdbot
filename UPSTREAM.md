@@ -28,6 +28,7 @@ These files don't exist upstream. They'll never cause merge conflicts.
 | `kiro-proxy-routes.json`                     | Discord channel ID → project cwd mapping for per-channel routing                              |
 | `src/discord/monitor/gateway-plugin-kiro.ts` | Flap detection, exponential backoff, resume logging — subclasses our `ResilientGatewayPlugin` |
 | `docs/kiro-proxy-plan.md`                    | Kiro proxy design doc                                                                         |
+| `docs/kiro-known-issues.md`                  | Known kiro-cli bugs and workarounds (session corruption, etc.)                                |
 | `.kiro/`                                     | Kiro agent config (gitignored)                                                                |
 | `UPSTREAM.md`                                | This file                                                                                     |
 
