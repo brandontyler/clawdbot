@@ -30,7 +30,12 @@ const CONTEXT_RESET_PCT = 95;
 /** Check if an error is the "invalid conversation history" crash. */
 export function isInvalidHistoryError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : JSON.stringify(err);
-  return msg.includes("invalid conversation history");
+  return (
+    msg.includes("invalid conversation history") ||
+    msg.includes("conversation history is invalid") ||
+    msg.includes("session state") ||
+    msg.includes("corrupt")
+  );
 }
 
 /** Extract text from OpenAI content (string or array of content parts). */
