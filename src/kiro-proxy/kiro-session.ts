@@ -89,6 +89,8 @@ export class KiroSession {
   sentMessageCount = 0;
   consecutiveErrors = 0;
   lastContextPct = 0;
+  /** True while a prompt() call is in-flight (GC must never kill). */
+  isPrompting = false;
 
   private constructor(
     proc: ChildProcess,
@@ -201,6 +203,7 @@ export class KiroSession {
   async prompt(text: string, onChunk: ChunkCallback): Promise<string> {
     this.lastTouchedAt = Date.now();
     this.lastPromptActivityAt = Date.now();
+    this.isPrompting = true;
     this.chunkCallback = onChunk;
 
     // Keep-alive: bump lastTouchedAt periodically while the prompt is in-flight
@@ -245,6 +248,7 @@ export class KiroSession {
       return response.stopReason ?? "end_turn";
     } finally {
       clearInterval(keepAlive);
+      this.isPrompting = false;
       this.chunkCallback = null;
     }
   }
