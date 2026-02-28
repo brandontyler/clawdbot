@@ -28,6 +28,9 @@ const KIRO_MODEL_ID = "kiro-default";
 /** Auto-reset a session after this many consecutive prompt failures. */
 const MAX_CONSECUTIVE_ERRORS = 3;
 
+/** Delay (ms) between recovery attempt 1 and 2 to let resources settle. */
+const RECOVERY_BACKOFF_MS = 2000;
+
 /**
  * Prefixed to the user's message during auto-recovery so the fresh session
  * doesn't immediately repeat the heavy tool use that caused the corruption.
@@ -48,6 +51,17 @@ const FALLBACK_RECOVERY_PROMPT =
   "[System: The previous session crashed and recovery also failed. " +
   "Start fresh. Do NOT use any tools. Just greet the user and let them " +
   "know the session was reset — they should resend their request.]";
+
+/** Format an error with full stack for diagnostic logging. */
+function formatErrorVerbose(err: unknown, label: string): string {
+  if (err instanceof Error) {
+    const stack = err.stack ?? `${err.name}: ${err.message}`;
+    return `${label}: ${stack}`;
+  }
+  return `${label}: ${JSON.stringify(err)}`;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
 
@@ -258,7 +272,7 @@ async function handleCompletions(
         );
       }
     } catch (err) {
-      log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
+      log(formatErrorVerbose(err, "prompt error (stream)"));
       session.consecutiveErrors++;
 
       // Timeout: kill the hung session so the next message spawns a fresh one.
@@ -296,7 +310,7 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        log(`invalid history detected — auto-resetting session and retrying with clean slate`);
+        log(formatErrorVerbose(err, "invalid history detected"));
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
@@ -331,12 +345,14 @@ async function handleCompletions(
             sseDone(res);
             return;
           } catch (retryErr) {
-            log(
-              `recovery attempt 1 failed: ${retryErr instanceof Error ? `${retryErr.name}: ${retryErr.message}` : JSON.stringify(retryErr)}`,
-            );
+            log(formatErrorVerbose(retryErr, "recovery attempt 1 failed"));
             manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
+
+        // Backoff before attempt 2 to let resources settle
+        log(`recovery backoff: waiting ${RECOVERY_BACKOFF_MS}ms before attempt 2`);
+        await sleep(RECOVERY_BACKOFF_MS);
 
         // Attempt 2: minimal no-tool prompt to break the doom loop
         log("recovery attempt 2: fallback no-tool prompt");
@@ -367,18 +383,23 @@ async function handleCompletions(
           sseDone(res);
           return;
         } catch (fallbackErr) {
-          log(
-            `recovery attempt 2 failed: ${fallbackErr instanceof Error ? `${fallbackErr.name}: ${fallbackErr.message}` : JSON.stringify(fallbackErr)}`,
-          );
+          log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed"));
           manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
 
-        // Both recovery attempts failed
+        // Both recovery attempts failed — return a synthetic response and
+        // leave the session cleared so the NEXT message starts fresh.
+        // This avoids the doom loop: no third session spawn, just a clean
+        // message telling the user what happened.
+        log("recovery exhausted — returning synthetic reset notice");
         sseChunk(
           res,
           buildChunk(
             completionId,
-            "⚠️ Session history became corrupted and auto-recovery failed. Please send `/new` to reset this conversation.",
+            "⚠️ The session crashed and both auto-recovery attempts failed. " +
+              "The session has been reset — your next message will start a fresh session. " +
+              "If this keeps happening, try breaking your request into smaller pieces " +
+              "(e.g., one diagram at a time).",
           ),
         );
       }
@@ -411,7 +432,7 @@ async function handleCompletions(
       await session.prompt(promptText, (text) => parts.push(text));
       session.consecutiveErrors = 0;
     } catch (err) {
-      log(`prompt error: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
+      log(formatErrorVerbose(err, "prompt error (blocking)"));
       session.consecutiveErrors++;
 
       // Timeout: kill the hung session so the next message spawns a fresh one.
@@ -451,7 +472,7 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        log(`invalid history detected — auto-resetting session and retrying with clean slate`);
+        log(formatErrorVerbose(err, "invalid history detected (blocking)"));
         manager.resetSession(sessionKey, "invalid-conversation-history");
 
         const recoveryText = manager.getLatestUserMessage(body.messages);
@@ -490,15 +511,17 @@ async function handleCompletions(
             res.end(JSON.stringify(completion));
             return;
           } catch (retryErr) {
-            log(
-              `recovery attempt 1 failed: ${retryErr instanceof Error ? `${retryErr.name}: ${retryErr.message}` : JSON.stringify(retryErr)}`,
-            );
+            log(formatErrorVerbose(retryErr, "recovery attempt 1 failed (blocking)"));
             manager.resetSession(sessionKey, "recovery-attempt-1-failed");
           }
         }
 
+        // Backoff before attempt 2
+        log(`recovery backoff: waiting ${RECOVERY_BACKOFF_MS}ms before attempt 2`);
+        await sleep(RECOVERY_BACKOFF_MS);
+
         // Attempt 2: minimal no-tool prompt to break the doom loop
-        log("recovery attempt 2: fallback no-tool prompt");
+        log("recovery attempt 2: fallback no-tool prompt (blocking)");
         try {
           const fallbackMessages = [{ role: "user" as const, content: FALLBACK_RECOVERY_PROMPT }];
           const fallback = await manager.getOrCreate(
@@ -532,9 +555,7 @@ async function handleCompletions(
           res.end(JSON.stringify(completion));
           return;
         } catch (fallbackErr) {
-          log(
-            `recovery attempt 2 failed: ${fallbackErr instanceof Error ? `${fallbackErr.name}: ${fallbackErr.message}` : JSON.stringify(fallbackErr)}`,
-          );
+          log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed (blocking)"));
           manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
       }
