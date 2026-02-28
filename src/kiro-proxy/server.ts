@@ -398,6 +398,26 @@ async function handleCompletions(
         log(`🔴 CORRUPTION DIAG: ${JSON.stringify(diag, null, 2)}`);
       }
 
+      // Detect silent empty response — ACP returned 0 tokens without throwing.
+      if (!fullResponse.trim() && promptText.trim()) {
+        const elapsed = performance.now() - t0;
+        log(
+          `🟡 EMPTY ACP RESPONSE: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}%`,
+        );
+        const diag = buildCorruptionDiagnostics(session, managed, {
+          sessionKey,
+          phase: "silent-empty-response",
+          error: "ACP returned 0 tokens without error",
+          messages: body.messages,
+          incomingChars,
+          promptText,
+          responseText: "",
+          elapsedMs: Math.round(elapsed),
+        });
+        logCorruptionEvent(diag);
+        log(`🟡 EMPTY RESPONSE DIAG: ${JSON.stringify(diag, null, 2)}`);
+      }
+
       // Surface context usage warning so the user sees it in Discord.
       if (session.lastContextPct >= 90) {
         sseChunk(
@@ -636,6 +656,26 @@ async function handleCompletions(
         });
         logCorruptionEvent(diag);
         log(`🔴 CORRUPTION DIAG: ${JSON.stringify(diag, null, 2)}`);
+      }
+
+      // Detect silent empty response in blocking path.
+      if (!blockingResponse.trim() && promptText.trim()) {
+        const elapsed = performance.now() - t0;
+        log(
+          `🟡 EMPTY ACP RESPONSE (blocking): session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}%`,
+        );
+        const diag = buildCorruptionDiagnostics(session, managed, {
+          sessionKey,
+          phase: "silent-empty-response-blocking",
+          error: "ACP returned 0 tokens without error (blocking)",
+          messages: body.messages,
+          incomingChars,
+          promptText,
+          responseText: "",
+          elapsedMs: Math.round(elapsed),
+        });
+        logCorruptionEvent(diag);
+        log(`🟡 EMPTY RESPONSE DIAG: ${JSON.stringify(diag, null, 2)}`);
       }
     } catch (err) {
       log(formatErrorVerbose(err, "prompt error (blocking)"));
