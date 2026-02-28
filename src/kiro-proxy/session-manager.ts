@@ -248,6 +248,7 @@ export class SessionManager {
     idleSecs: number;
     consecutiveErrors: number;
     sentMessages: number;
+    isPrompting: boolean;
   }> {
     const now = Date.now();
     const result: Array<{
@@ -259,6 +260,7 @@ export class SessionManager {
       idleSecs: number;
       consecutiveErrors: number;
       sentMessages: number;
+      isPrompting: boolean;
     }> = [];
     for (const [key, { session, handle }] of this.sessions) {
       const rssKb = session.getRssKb();
@@ -271,6 +273,7 @@ export class SessionManager {
         idleSecs: Math.round((now - handle.lastTouchedAt) / 1000),
         consecutiveErrors: session.consecutiveErrors,
         sentMessages: handle.sentMessageCount,
+        isPrompting: session.isPrompting,
       });
     }
     return result;
@@ -342,7 +345,7 @@ export class SessionManager {
       const summary = sessions
         .map(
           (s) =>
-            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors})`,
+            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? ",PROMPTING" : ""})`,
         )
         .join(" ");
       this.log(
@@ -367,6 +370,9 @@ export class SessionManager {
         );
         this.sessions.delete(key);
         reaped++;
+      } else if (session.isPrompting) {
+        // Never kill a session with an active prompt — the agent is working.
+        continue;
       } else if (idleFor > this.idleMs) {
         session.kill(
           `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s, rss=${rssMb}MB)`,
@@ -381,7 +387,7 @@ export class SessionManager {
       const summary = survivors
         .map(
           (s) =>
-            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB)`,
+            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? ",PROMPTING" : ""})`,
         )
         .join(" ");
       this.log(
