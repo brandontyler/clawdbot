@@ -44,6 +44,82 @@ function autoApprovePermission(params: RequestPermissionRequest): RequestPermiss
 
 type ChunkCallback = (text: string) => void;
 
+// ─── Child process cleanup ────────────────────────────────────────────────────
+
+import { readFileSync } from "node:fs";
+
+const EXPECTED_CHILD_COMM = "kiro-cli-chat";
+
+/** Read /proc/<pid>/comm and return the trimmed process name, or null. */
+function readProcComm(pid: number): string | null {
+  try {
+    return readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return child PIDs of `parentPid` that are verified `kiro-cli-chat` processes.
+ * Reads from /proc — returns [] on non-Linux or if the parent already exited.
+ */
+function getVerifiedChildPids(parentPid: number, log: (msg: string) => void): number[] {
+  let raw: string;
+  try {
+    raw = readFileSync(`/proc/${parentPid}/task/${parentPid}/children`, "utf8").trim();
+  } catch {
+    return [];
+  }
+  if (!raw) {
+    return [];
+  }
+
+  const verified: number[] = [];
+  for (const token of raw.split(/\s+/)) {
+    const childPid = Number(token);
+    if (!childPid) {
+      continue;
+    }
+    const comm = readProcComm(childPid);
+    if (comm === EXPECTED_CHILD_COMM) {
+      verified.push(childPid);
+    } else {
+      log(`child pid ${childPid} comm="${comm}" — skipping (expected ${EXPECTED_CHILD_COMM})`);
+    }
+  }
+  return verified;
+}
+
+/** Send SIGTERM to a child PID after re-verifying its identity, with SIGKILL fallback. */
+function killVerifiedChild(childPid: number, log: (msg: string) => void): void {
+  // Re-check identity right before signaling (guards against PID recycling).
+  const comm = readProcComm(childPid);
+  if (comm !== EXPECTED_CHILD_COMM) {
+    log(`child pid ${childPid} identity changed to "${comm}" before kill — skipping`);
+    return;
+  }
+  try {
+    log(`killing child kiro-cli-chat (pid ${childPid})`);
+    process.kill(childPid, "SIGTERM");
+  } catch {
+    return; // already dead
+  }
+  setTimeout(() => {
+    // Final identity check before SIGKILL — PID could have been recycled during the 5s wait.
+    const commNow = readProcComm(childPid);
+    if (commNow !== EXPECTED_CHILD_COMM) {
+      return;
+    }
+    try {
+      process.kill(childPid, "SIGKILL");
+    } catch {
+      // already dead
+    }
+  }, 5_000);
+}
+
+// ─── Errors ───────────────────────────────────────────────────────────────────
+
 /** Prompt exceeded the proxy-side timeout (should be under the gateway timeout). */
 export class PromptTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -295,18 +371,31 @@ export class KiroSession {
     // Silently ignore other _kiro.dev/* notifications (e.g. commands/available)
   }
 
-  /** Kill the underlying kiro process. */
+  /** Kill the underlying kiro process and any verified kiro-cli-chat children. */
   kill(reason?: string): void {
+    const pid = this.proc.pid;
     const rssKb = this.getRssKb();
     this.log(
-      `killing process (pid ${this.proc.pid ?? "?"}) reason=${reason ?? "unknown"} exitCode=${this.proc.exitCode} signal=${this.proc.signalCode} rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"}`,
+      `killing process (pid ${pid ?? "?"}) reason=${reason ?? "unknown"} exitCode=${this.proc.exitCode} signal=${this.proc.signalCode} rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"}`,
     );
+
+    // Snapshot verified child PIDs BEFORE killing the wrapper, because once
+    // the wrapper dies the children get reparented to init and we lose the
+    // parent→child link in /proc.
+    const childPids = pid != null ? getVerifiedChildPids(pid, this.log) : [];
+
     this.proc.kill("SIGTERM");
     setTimeout(() => {
       if (!this.proc.killed) {
         this.proc.kill("SIGKILL");
       }
     }, 5_000);
+
+    // Kill each verified child.  Re-check identity at signal time to guard
+    // against PID recycling between the snapshot and the kill.
+    for (const childPid of childPids) {
+      killVerifiedChild(childPid, this.log);
+    }
   }
 
   get alive(): boolean {
@@ -324,8 +413,7 @@ export class KiroSession {
       return undefined;
     }
     try {
-      const fs = require("node:fs") as typeof import("node:fs");
-      const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const match = /VmRSS:\s+(\d+)\s+kB/.exec(status);
       return match ? Number(match[1]) : undefined;
     } catch {
