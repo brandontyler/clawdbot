@@ -29,7 +29,7 @@ export function registerKiroProxyCli(program: Command): void {
     .option("--kiro-bin <path>", "Path to kiro executable", "kiro-cli")
     .option("--kiro-args <args...>", "Extra arguments to pass after 'acp'")
     .option("--cwd <dir>", "Working directory for kiro sessions", process.cwd())
-    .option("--idle-secs <number>", "Seconds before an idle session is killed", "1800")
+    .option("--idle-secs <number>", "Seconds before an idle session is killed", "86400")
     .option("--routes <path>", "JSON file mapping Discord channel IDs to {cwd, kiroArgs?}")
     .option("-v, --verbose", "Enable verbose logging", false)
     .addHelpText(
