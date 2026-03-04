@@ -18,10 +18,11 @@
  */
 
 import { createHash } from "node:crypto";
+import { checkContextAlert, clearContextAlerts } from "./alerts.js";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
-const DEFAULT_IDLE_SECS = 1800; // 30 minutes
+const DEFAULT_IDLE_SECS = 86400; // 24 hours — sessions are bounded by channel count, no need to aggressively GC
 
 const CONTEXT_WARN_PCT = 80;
 const CONTEXT_CRITICAL_PCT = 90;
@@ -139,6 +140,7 @@ export class SessionManager {
         );
         existing.session.kill("session-reset");
         this.sessions.delete(sessionKey);
+        clearContextAlerts(sessionKey);
       } else {
         // Wait for any in-flight prompt to finish before sending the next one.
         await existing.promptLock;
@@ -159,6 +161,7 @@ export class SessionManager {
     if (existing) {
       existing.session.kill("replaced-dead-session");
       this.sessions.delete(sessionKey);
+      clearContextAlerts(sessionKey);
     }
 
     // Resolve per-channel cwd/args overrides.
@@ -224,6 +227,7 @@ export class SessionManager {
       this.log(`session auto-reset: reason=${reason} (session=${sessionKey.slice(0, 12)}…)`);
       existing.session.kill(`auto-reset: ${reason}`);
       this.sessions.delete(sessionKey);
+      clearContextAlerts(sessionKey);
     }
   }
 
@@ -305,6 +309,7 @@ export class SessionManager {
     return {
       onContextUsage: (pct) => {
         this.log(`context: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 8)}…)`);
+        checkContextAlert(sessionKey, pct, this.log);
         if (pct >= CONTEXT_RESET_PCT) {
           this.log(
             `context critical (${pct.toFixed(1)}% >= ${CONTEXT_RESET_PCT}%) — auto-resetting session=${sessionKey.slice(0, 12)}…`,
@@ -374,6 +379,7 @@ export class SessionManager {
           `gc-already-dead (${keyTag}, idle=${Math.round(idleFor / 1000)}s, rss=${rssMb}MB)`,
         );
         this.sessions.delete(key);
+        clearContextAlerts(key);
         reaped++;
       } else if (session.isPrompting) {
         // Never kill a session with an active prompt — the agent is working.
@@ -383,6 +389,7 @@ export class SessionManager {
           `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s, rss=${rssMb}MB)`,
         );
         this.sessions.delete(key);
+        clearContextAlerts(key);
         reaped++;
       }
     }
