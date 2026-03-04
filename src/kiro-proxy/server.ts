@@ -920,7 +920,12 @@ export function createKiroProxyServer(
 
     if (method === "GET" && url === "/sessions") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ sessions: manager.getSessionsInfo() }));
+      res.end(
+        JSON.stringify({
+          sessions: manager.getSessionsInfo(),
+          hibernated: manager.getHibernatedInfo(),
+        }),
+      );
       return;
     }
 
