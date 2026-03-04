@@ -18,11 +18,14 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { checkContextAlert, clearContextAlerts } from "./alerts.js";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
 const DEFAULT_IDLE_SECS = 86400; // 24 hours — sessions are bounded by channel count, no need to aggressively GC
+
+const HIBERNATE_PATH = `${process.env.HOME}/.openclaw/kiro-proxy-hibernated.json`;
 
 const CONTEXT_WARN_PCT = 80;
 const CONTEXT_CRITICAL_PCT = 90;
@@ -67,14 +70,45 @@ export function detectChannelId(sessionKey: string | undefined): string | undefi
   return match ? match[1] : undefined;
 }
 
+type HibernatedSession = {
+  acpSessionId: string;
+  cwd: string;
+  contextPct: number;
+  hibernatedAt: number;
+};
+
 type ManagedSession = {
   session: KiroSession;
   handle: KiroSessionHandle;
   promptLock: Promise<void>;
 };
 
+/** Load hibernated sessions from disk. */
+function loadHibernated(): Map<string, HibernatedSession> {
+  try {
+    const data = JSON.parse(readFileSync(HIBERNATE_PATH, "utf8")) as Record<
+      string,
+      HibernatedSession
+    >;
+    return new Map(Object.entries(data));
+  } catch {
+    return new Map();
+  }
+}
+
+/** Persist hibernated sessions to disk. */
+function saveHibernated(map: Map<string, HibernatedSession>): void {
+  try {
+    mkdirSync(`${process.env.HOME}/.openclaw`, { recursive: true });
+    writeFileSync(HIBERNATE_PATH, JSON.stringify(Object.fromEntries(map), null, 2) + "\n");
+  } catch {
+    // Best-effort.
+  }
+}
+
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly hibernated: Map<string, HibernatedSession>;
   private readonly sessionOpts: KiroSessionOptions;
   private readonly channelRoutes: Record<string, ChannelRoute>;
   private readonly idleMs: number;
@@ -94,6 +128,10 @@ export class SessionManager {
     this.channelRoutes = opts.channelRoutes ?? {};
     this.idleMs = (opts.idleSecs ?? DEFAULT_IDLE_SECS) * 1000;
     this.log = opts.log ?? (() => {});
+    this.hibernated = loadHibernated();
+    if (this.hibernated.size > 0) {
+      this.log(`loaded ${this.hibernated.size} hibernated session(s) from disk`);
+    }
     this.scheduleGc();
     this.scheduleHeartbeat();
   }
@@ -179,10 +217,10 @@ export class SessionManager {
       this.log(`channel route: channel=${channelId} cwd=${route.cwd}`);
     }
 
-    const session = await KiroSession.create(sessionOpts, this.buildSessionEvents(sessionKey));
+    const session = await this.createOrLoadSession(sessionKey, sessionOpts);
 
     this.log(
-      `session create: session=${sessionKey.slice(0, 12)}… pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
+      `session ready: session=${sessionKey.slice(0, 12)}… pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
     );
 
     // For the very first turn, send system prompt (if any) prepended to the
@@ -210,8 +248,12 @@ export class SessionManager {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    for (const { session } of this.sessions.values()) {
-      session.kill("shutdown");
+    for (const [key, { session }] of this.sessions) {
+      if (session.alive && session.acpSessionId) {
+        this.hibernateSession(key, session, "shutdown");
+      } else {
+        session.kill("shutdown");
+      }
     }
     this.sessions.clear();
   }
@@ -246,6 +288,53 @@ export class SessionManager {
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
+
+  /**
+   * Try to load a hibernated session; fall back to creating a fresh one.
+   * Removes the hibernation entry regardless of outcome.
+   */
+  private async createOrLoadSession(
+    sessionKey: string,
+    sessionOpts: KiroSessionOptions,
+  ): Promise<KiroSession> {
+    const hibernated = this.hibernated.get(sessionKey);
+    if (hibernated) {
+      this.hibernated.delete(sessionKey);
+      saveHibernated(this.hibernated);
+      this.log(
+        `resuming hibernated session: acp=${hibernated.acpSessionId} ctx=${hibernated.contextPct.toFixed(0)}% age=${Math.round((Date.now() - hibernated.hibernatedAt) / 60_000)}min`,
+      );
+      const session = await KiroSession.load(
+        hibernated.acpSessionId,
+        sessionOpts,
+        this.buildSessionEvents(sessionKey),
+      );
+      return session;
+    }
+    return KiroSession.create(sessionOpts, this.buildSessionEvents(sessionKey));
+  }
+
+  /**
+   * Hibernate a session: kill the process but save the ACP session ID
+   * so it can be restored via loadSession later.
+   */
+  private hibernateSession(sessionKey: string, session: KiroSession, reason: string): void {
+    const channelId = detectChannelId(sessionKey);
+    const route = channelId ? this.channelRoutes[channelId] : undefined;
+    this.hibernated.set(sessionKey, {
+      acpSessionId: session.acpSessionId,
+      cwd: route?.cwd ?? this.sessionOpts.cwd,
+      contextPct: session.lastContextPct,
+      hibernatedAt: Date.now(),
+    });
+    saveHibernated(this.hibernated);
+    session.kill(`hibernate: ${reason}`);
+    this.sessions.delete(sessionKey);
+    clearContextAlerts(sessionKey);
+    this.log(
+      `session hibernated: session=${sessionKey.slice(0, 12)}… acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}% reason=${reason}`,
+    );
+  }
 
   /** Return diagnostic info for all active sessions. */
   getSessionsInfo(): Array<{
@@ -286,6 +375,24 @@ export class SessionManager {
       });
     }
     return result;
+  }
+
+  /** Return info about hibernated sessions for the /sessions endpoint. */
+  getHibernatedInfo(): Array<{
+    key: string;
+    acpSessionId: string;
+    contextPct: number;
+    hibernatedAt: number;
+    ageSecs: number;
+  }> {
+    const now = Date.now();
+    return [...this.hibernated.entries()].map(([key, h]) => ({
+      key,
+      acpSessionId: h.acpSessionId,
+      contextPct: h.contextPct,
+      hibernatedAt: h.hibernatedAt,
+      ageSecs: Math.round((now - h.hibernatedAt) / 1000),
+    }));
   }
 
   /**
@@ -385,11 +492,11 @@ export class SessionManager {
         // Never kill a session with an active prompt — the agent is working.
         continue;
       } else if (idleFor > this.idleMs) {
-        session.kill(
-          `gc-idle-timeout (${keyTag}, idle=${Math.round(idleFor / 1000)}s, limit=${Math.round(this.idleMs / 1000)}s, rss=${rssMb}MB)`,
+        this.hibernateSession(
+          key,
+          session,
+          `gc-idle-timeout (idle=${Math.round(idleFor / 1000)}s)`,
         );
-        this.sessions.delete(key);
-        clearContextAlerts(key);
         reaped++;
       }
     }

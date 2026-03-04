@@ -264,6 +264,98 @@ export class KiroSession {
   }
 
   /**
+   * Spawn kiro, perform ACP handshake, and LOAD an existing session by ID.
+   * Falls back to a fresh session if loadSession fails.
+   */
+  static async load(
+    acpSessionId: string,
+    opts: KiroSessionOptions,
+    events: KiroSessionEvents = {},
+  ): Promise<KiroSession> {
+    const log = opts.verbose
+      ? (msg: string) => process.stderr.write(`[kiro-session] ${msg}\n`)
+      : () => {};
+
+    const args = ["acp", ...opts.kiroArgs];
+    log(`spawning (load): ${opts.kiroBin} ${args.join(" ")}`);
+
+    const proc = spawn(opts.kiroBin, args, {
+      stdio: ["pipe", "pipe", "inherit"],
+      cwd: opts.cwd,
+    });
+
+    if (!proc.stdin || !proc.stdout) {
+      throw new Error("[kiro-proxy] Failed to open stdio pipes to kiro process");
+    }
+
+    proc.on("error", (err) => {
+      log(`process error: ${err.message}`);
+    });
+
+    const input = Writable.toWeb(proc.stdin);
+    const output = Readable.toWeb(proc.stdout) as unknown as ReadableStream<Uint8Array>;
+    const stream = ndJsonStream(input, output);
+
+    const holder: { session: KiroSession | null } = { session: null };
+
+    const client = new ClientSideConnection(
+      () => ({
+        sessionUpdate: async (notification: SessionNotification) => {
+          holder.session?.handleSessionUpdate(notification);
+        },
+        requestPermission: async (params: RequestPermissionRequest) => {
+          log(`permission requested: ${params.toolCall?.title ?? "unknown"}`);
+          return autoApprovePermission(params);
+        },
+        extNotification: async (method: string, params: Record<string, unknown>) => {
+          holder.session?.handleExtNotification(method, params);
+        },
+      }),
+      stream,
+    );
+
+    const session = new KiroSession(
+      proc,
+      client,
+      log,
+      events,
+      opts.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+    );
+    holder.session = session;
+
+    log("initializing ACP");
+    await client.initialize({
+      protocolVersion: PROTOCOL_VERSION,
+      clientCapabilities: {
+        fs: { readTextFile: true, writeTextFile: true },
+        terminal: true,
+      },
+      clientInfo: { name: "openclaw-kiro-proxy", version: "1.0.0" },
+    });
+
+    log(`loading ACP session: ${acpSessionId}`);
+    try {
+      await client.loadSession({
+        sessionId: acpSessionId,
+        cwd: opts.cwd,
+        mcpServers: [],
+      });
+      session.acpSessionId = acpSessionId;
+      log(`session loaded: ${acpSessionId}`);
+    } catch (err) {
+      log(`loadSession failed (${String(err)}), falling back to newSession`);
+      const acpSession = await client.newSession({
+        cwd: opts.cwd,
+        mcpServers: [],
+      });
+      session.acpSessionId = acpSession.sessionId;
+      log(`fallback session ready: ${acpSession.sessionId}`);
+    }
+
+    return session;
+  }
+
+  /**
    * Timestamp of the last ACP notification received during the current
    * prompt.  Reset by handleSessionUpdate / handleExtNotification via
    * bumpPromptActivity().  The idle-timeout check compares against this.
