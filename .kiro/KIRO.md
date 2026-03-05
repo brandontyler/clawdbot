@@ -38,13 +38,14 @@ Each Discord channel is mapped to a project directory via `kiro-proxy-routes.jso
 The proxy parses the channel ID from the `x-openclaw-session-key` header
 (injected by a small patch in `attempt.ts`) and spawns kiro-cli in the matched cwd.
 
-| Discord Channel   | Channel ID          | Project Directory          |
-| ----------------- | ------------------- | -------------------------- |
-| `#openclaw`       | 1475513267433767014 | `~/code/personal/clawdbot` |
-| `#accode-agent`   | 1475211350291779594 | `~/code/work/accode-agent` |
-| `#pwc`            | 1475210716632973494 | `~/code/work/PwC`          |
-| `#sermon-metrics` | 1475216992956059698 | `~/code/personal/sermon`   |
-| `#main`           | —                   | (general / unrouted)       |
+| Discord Channel   | Channel ID          | Project Directory            |
+| ----------------- | ------------------- | ---------------------------- |
+| `#openclaw`       | 1475513267433767014 | `~/code/personal/clawdbot`   |
+| `#accode-agent`   | 1475211350291779594 | `~/code/work/accode-agent`   |
+| `#pwc`            | 1475210716632973494 | `~/code/work/PwC`            |
+| `#sermon-metrics` | 1475216992956059698 | `~/code/personal/sermon`     |
+| `#main`           | —                   | (general / unrouted)         |
+| `#real-estate`    | 1478840488944468191 | `~/code/personal/realestate` |
 
 ### Adding a new project channel
 
@@ -243,11 +244,11 @@ A pane showing `dead=1` means the process crashed but the pane was preserved. Re
 
 `spinup logs [name] [lines]` tails logs without needing to remember paths. Direct paths if needed:
 
-| Service     | Log file                    |
-| ----------- | --------------------------- |
-| kiro-proxy  | `/tmp/kiro-proxy.log`       |
-| gateway     | `/tmp/openclaw-gateway.log` |
-| dev-browser | `/tmp/dev-browser.log`      |
+| Service     | Log file                               |
+| ----------- | -------------------------------------- |
+| kiro-proxy  | `/tmp/kiro-proxy-YYYY-MM-DD.log`       |
+| gateway     | `/tmp/openclaw-gateway-YYYY-MM-DD.log` |
+| dev-browser | `/tmp/dev-browser-YYYY-MM-DD.log`      |
 
 ## Operational Diagnostics
 
@@ -286,8 +287,10 @@ grep 'context-diag' /tmp/openclaw-gateway.log | awk -F'sessionKey=' '{print $2}'
 
 ### GC idle timeout behavior
 
-The proxy kills idle ACP sessions after 1800s (30 min) of inactivity. When
-this happens, the log shows:
+The proxy kills idle ACP sessions after 24 hours of inactivity (previously
+30 min — raised because sessions are bounded by channel count and aggressive
+GC was destroying valuable context between messages). When this happens, the
+log shows:
 
 ```
 [kiro-session] killing process (pid XXXXX) reason=gc-idle-timeout (session=..., idle=XXXXs, limit=1800s)
@@ -305,13 +308,46 @@ This is normal and expected — it keeps memory usage bounded.
 - dev-browser + Chromium: ~170MB combined
 - Swap usage of 1-1.5GB is normal; watch for >3GB
 
-### ACP session architecture (not tmux)
+### ACP session architecture (critical path)
 
 The kiro-proxy spawns `kiro-cli acp` as direct child processes with
-stdin/stdout ACP protocol pipes. These are NOT the tmux kiro-cli sessions.
-The tmux sessions (`oc-cli`, `mcp:main`, `pwc:main`, `sermon:main`) are
-separate interactive sessions for manual laptop use. The proxy doesn't
-interact with tmux at all.
+stdin/stdout ACP protocol pipes. **These are the processes that matter.**
+They drive the entire Discord → kiro-cli pipeline. If these orphan or
+accumulate, the system degrades (memory pressure, port exhaustion, stale
+sessions).
+
+The tmux `kiro-cli` sessions (`oc-cli`, `mcp:main`, `pwc:main`,
+`sermon:main`) are separate interactive sessions for manual laptop use —
+they are NOT part of the Discord pipeline and are low priority for monitoring.
+
+#### Identifying ACP processes
+
+ACP processes show as `kiro-cli acp` (parent) + `kiro-cli-chat acp` (child)
+in `ps` output. Each Discord channel conversation spawns one pair. To audit:
+
+```bash
+# List all ACP processes (the ones that matter)
+ps aux | grep -E 'kiro-cli.*acp|kiro-cli-chat.*acp' | grep -v grep
+
+# Cross-reference with proxy's known sessions
+grep -E 'spawned|killing|gc-idle-timeout' /tmp/kiro-proxy.log | tail -20
+```
+
+Every `kiro-cli acp` process should trace back to a kiro-proxy child spawn.
+If a process exists but the proxy has no record of it (or logged a kill for
+it), it's orphaned and safe to clean up.
+
+#### Orphan prevention
+
+The proxy's GC idle timeout (1800s) is the primary defense. But if the proxy
+itself crashes or restarts, its children may survive as orphans. After any
+proxy restart, audit ACP processes against the new proxy's session list.
+
+#### Conservative cleanup rule
+
+Never kill an ACP process unless you can confirm with 100% certainty it is
+orphaned (no matching proxy session, no recent activity). Long-running jobs
+are expected — a process being old is not sufficient reason to kill it.
 
 ### Cross-session communication
 
