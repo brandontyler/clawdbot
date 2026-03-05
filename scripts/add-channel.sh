@@ -30,7 +30,12 @@ DIR="${2:-}"
 # Expand ~ and resolve
 DIR="${DIR/#\~/$HOME}"
 DIR="$(realpath -m "$DIR")"
-[[ -d "$DIR" ]] || die "Directory does not exist: $DIR"
+if [[ ! -d "$DIR" ]]; then
+  read -rp "Directory $DIR does not exist. Create it? [Y/n] " ans
+  [[ "${ans:-Y}" =~ ^[Yy]?$ ]] || die "Aborted."
+  mkdir -p "$DIR"
+  echo "  Created $DIR"
+fi
 
 # --- Discord bot token ---
 TOKEN="${DISCORD_BOT_TOKEN:-}"
