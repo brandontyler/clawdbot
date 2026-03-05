@@ -1,6 +1,6 @@
 # Upstream Sync Guide
 
-**Last synced:** v2026.2.24 (`b12216af9`) — 2026-02-25
+**Last synced:** v2026.3.2 (`da0e245db`) — 2026-03-05
 
 This repo is a fork of [OpenClaw](https://github.com/openclaw/openclaw) customized
 to work with `kiro-cli`. The goal is to keep the delta against upstream as small
@@ -49,7 +49,6 @@ These files have small, intentional edits. Check them after every rebase.
 | `src/agents/pi-embedded-runner/run/attempt.ts` | Inject `x-openclaw-session-key` header for kiro provider (~5 lines after `applyExtraParamsToAgent`)                              | Lets kiro-proxy route sessions to per-channel cwd                   |
 | `package.json`                                 | Added `kiro-proxy` and `kiro-proxy:dev` scripts (2 lines)                                                                        | Dev convenience scripts                                             |
 | `.gitignore`                                   | Added `.beads/` (3 lines appended)                                                                                               | Local issue tracker data                                            |
-| `src/discord/monitor/listeners.ts`             | `DISCORD_SLOW_LISTENER_THRESHOLD_MS` 30s → 120s (1 line)                                                                         | 30s too aggressive for long-running Discord ACP sessions            |
 | `src/logging/console.ts`                       | Suppress `[EventQueue] Listener…timed out` for DiscordMessageListener (1 line widened)                                           | Carbon 30s timeout is cosmetic noise for long-running ACP sessions  |
 
 ## Generated Files
