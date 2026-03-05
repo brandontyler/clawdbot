@@ -15,7 +15,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { PromptTimeoutError } from "./kiro-session.js";
 import { SessionManager, isInvalidHistoryError } from "./session-manager.js";
 import type {
   KiroProxyOptions,
@@ -440,22 +439,6 @@ async function handleCompletions(
       log(formatErrorVerbose(err, "prompt error (stream)"));
       session.consecutiveErrors++;
 
-      // Timeout: kill the hung session so the next message spawns a fresh one.
-      if (err instanceof PromptTimeoutError) {
-        log(`prompt idle timeout — killing session (consecutive=${session.consecutiveErrors})`);
-        manager.resetSession(sessionKey, "prompt-idle-timeout");
-        sseChunk(
-          res,
-          buildChunk(
-            completionId,
-            "⚠️ The session went silent for too long (no tool activity). It has been reset — please resend your message.",
-          ),
-        );
-        sseChunk(res, buildFinalChunk(completionId));
-        sseDone(res);
-        return;
-      }
-
       // Too many consecutive errors: the session is likely broken beyond repair.
       if (session.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
         log(
@@ -680,23 +663,6 @@ async function handleCompletions(
     } catch (err) {
       log(formatErrorVerbose(err, "prompt error (blocking)"));
       session.consecutiveErrors++;
-
-      // Timeout: kill the hung session so the next message spawns a fresh one.
-      if (err instanceof PromptTimeoutError) {
-        log(`prompt idle timeout — killing session (consecutive=${session.consecutiveErrors})`);
-        manager.resetSession(sessionKey, "prompt-idle-timeout");
-        res.writeHead(504, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: {
-              message:
-                "The session went silent for too long (no tool activity). It has been reset — please resend your message.",
-              type: "timeout",
-            },
-          }),
-        );
-        return;
-      }
 
       // Too many consecutive errors: the session is likely broken beyond repair.
       if (session.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
