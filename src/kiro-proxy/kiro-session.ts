@@ -134,7 +134,7 @@ export class PromptTimeoutError extends Error {
  * when kiro-cli goes completely silent — meaning it's truly hung, not
  * just running a long build/compile.
  */
-const DEFAULT_PROMPT_TIMEOUT_MS = 300_000; // 5 minutes of silence
+const DEFAULT_PROMPT_TIMEOUT_MS = 900_000; // 15 minutes of silence
 
 export type KiroSessionOptions = {
   kiroBin: string;
