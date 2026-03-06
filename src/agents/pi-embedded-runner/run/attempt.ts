@@ -2486,21 +2486,9 @@ export async function runEmbeddedAttempt(
           messages: activeSession.messages,
         });
 
-        // Repair orphaned trailing user messages so new prompts don't violate role ordering.
-        const leafEntry = sessionManager.getLeafEntry();
-        if (leafEntry?.type === "message" && leafEntry.message.role === "user") {
-          if (leafEntry.parentId) {
-            sessionManager.branch(leafEntry.parentId);
-          } else {
-            sessionManager.resetLeaf();
-          }
-          const sessionContext = sessionManager.buildSessionContext();
-          activeSession.agent.replaceMessages(sessionContext.messages);
-          log.warn(
-            `Removed orphaned user message to prevent consecutive user turns. ` +
-              `runId=${params.runId} sessionId=${params.sessionId}`,
-          );
-        }
+        // NOTE(kiro): Orphan removal block removed — consecutive user messages are now
+        // merged by validateAnthropicTurns() → mergeConsecutiveUserTurns() at prompt time
+        // instead of being dropped here. See UPSTREAM.md for context.
         const transcriptLeafId =
           (sessionManager.getLeafEntry() as { id?: string } | null | undefined)?.id ?? null;
 
