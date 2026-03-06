@@ -128,6 +128,9 @@ export function startChannelHealthMonitor(deps: ChannelHealthMonitorDeps): Chann
             channelConnectGraceMs: timing.channelConnectGraceMs,
           };
           const health = evaluateChannelHealth(status, healthPolicy);
+          log.info?.(
+            `[${channelId}:${accountId}] health-check: ${health.reason} running=${status.running} connected=${status.connected} busy=${status.busy} activeRuns=${status.activeRuns} lastRunActivityAt=${status.lastRunActivityAt} lastStartAt=${status.lastStartAt} lastEventAt=${status.lastEventAt}`,
+          );
           if (health.healthy) {
             continue;
           }
