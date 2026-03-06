@@ -143,6 +143,7 @@ export class KiroSession {
   lastTouchedAt = Date.now();
   sentMessageCount = 0;
   consecutiveErrors = 0;
+  consecutiveEmptyResponses = 0;
   lastContextPct = 0;
   /** True while a prompt() call is in-flight (GC must never kill). */
   isPrompting = false;
