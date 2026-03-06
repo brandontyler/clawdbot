@@ -136,3 +136,6 @@ docs/superpowers
 
 # Beads (local issue tracking)
 .beads/
+
+# Agent memory (personal, don't commit)
+.kiro/memory.md
