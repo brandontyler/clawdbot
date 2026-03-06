@@ -29,6 +29,9 @@ const KIRO_MODEL_ID = "kiro-default";
 /** Auto-reset a session after this many consecutive prompt failures. */
 const MAX_CONSECUTIVE_ERRORS = 3;
 
+/** Auto-reset after this many consecutive empty (0-token) responses. */
+const MAX_CONSECUTIVE_EMPTY_RESPONSES = 3;
+
 /** Delay (ms) between recovery attempt 1 and 2 to let resources settle. */
 const RECOVERY_BACKOFF_MS = 5000;
 
@@ -307,6 +310,19 @@ async function handleCompletions(
       `pre-flight: large payload (${Math.round(incomingChars / 1000)}K chars, ${body.messages.length} msgs) session=${sessionTag}…`,
     );
   }
+
+  // Pre-flight role-balance check: if user messages outnumber assistant messages
+  // by more than 2, the gateway history is poisoned (e.g. from prior empty
+  // responses that got pruned).  Reset proactively instead of letting kiro-cli
+  // reject the history later.
+  const userCount = body.messages.filter((m) => m.role === "user").length;
+  const assistantCount = body.messages.filter((m) => m.role === "assistant").length;
+  if (userCount - assistantCount > 2 && body.messages.length > 10) {
+    log(
+      `🟠 pre-flight: role imbalance detected (user=${userCount} assistant=${assistantCount}) session=${sessionTag}… — history likely poisoned`,
+    );
+  }
+
   // Get or create Kiro ACP session
   let sessionResult: Awaited<ReturnType<SessionManager["getOrCreate"]>>;
   try {
@@ -399,9 +415,10 @@ async function handleCompletions(
 
       // Detect silent empty response — ACP returned 0 tokens without throwing.
       if (!fullResponse.trim() && promptText.trim()) {
+        session.consecutiveEmptyResponses++;
         const elapsed = performance.now() - t0;
         log(
-          `🟡 EMPTY ACP RESPONSE: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}%`,
+          `🟡 EMPTY ACP RESPONSE: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}% streak=${session.consecutiveEmptyResponses}`,
         );
         const diag = buildCorruptionDiagnostics(session, managed, {
           sessionKey,
@@ -415,6 +432,25 @@ async function handleCompletions(
         });
         logCorruptionEvent(diag);
         log(`🟡 EMPTY RESPONSE DIAG: ${JSON.stringify(diag, null, 2)}`);
+
+        if (session.consecutiveEmptyResponses >= MAX_CONSECUTIVE_EMPTY_RESPONSES) {
+          log(
+            `🔴 ${session.consecutiveEmptyResponses} consecutive empty responses — session is brain-dead, resetting`,
+          );
+          manager.resetSession(
+            sessionKey,
+            `consecutive-empty-${session.consecutiveEmptyResponses}`,
+          );
+          sseChunk(
+            res,
+            buildChunk(
+              completionId,
+              "⚠️ Session stopped responding and has been reset. Please resend your message.",
+            ),
+          );
+        }
+      } else if (fullResponse.trim()) {
+        session.consecutiveEmptyResponses = 0;
       }
 
       // Surface context usage warning so the user sees it in Discord.
