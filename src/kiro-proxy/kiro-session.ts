@@ -403,6 +403,19 @@ export class KiroSession {
     // Silently ignore other _kiro.dev/* notifications (e.g. commands/available)
   }
 
+  /** Send ACP session/cancel to interrupt an in-flight prompt. */
+  async cancel(): Promise<void> {
+    if (!this.isPrompting || !this.acpSessionId) {
+      return;
+    }
+    this.log(`cancelling session ${this.acpSessionId}`);
+    try {
+      await this.client.cancel({ sessionId: this.acpSessionId });
+    } catch (err) {
+      this.log(`cancel failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Kill the underlying kiro process and any verified kiro-cli-chat children. */
   kill(reason?: string): void {
     const pid = this.proc.pid;

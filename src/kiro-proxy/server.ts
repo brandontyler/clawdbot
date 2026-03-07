@@ -375,6 +375,15 @@ async function handleCompletions(
       choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
     });
 
+    // Cancel the ACP prompt if the HTTP client disconnects mid-stream.
+    let clientDisconnected = false;
+    const onClose = () => {
+      clientDisconnected = true;
+      log(`client disconnected mid-stream: session=${sessionTag}… — sending ACP cancel`);
+      session.cancel().catch(() => {});
+    };
+    req.once("close", onClose);
+
     let resolvePromptLock: () => void;
     managed.promptLock = new Promise((r) => {
       resolvePromptLock = r;
@@ -632,12 +641,13 @@ async function handleCompletions(
       sseDone(res);
       return;
     } finally {
+      req.removeListener("close", onClose);
       const tDone = performance.now();
       log(
         `timing: session=${sessionTag}… ttfc=${tFirstChunk ? Math.round(tFirstChunk - tSession) : "none"}ms total=${Math.round(tDone - t0)}ms`,
       );
       log(
-        `done: session=${sessionTag}… ctx=${session.lastContextPct.toFixed(0)}% errors=${session.consecutiveErrors} msgs=${body.messages.length}`,
+        `done: session=${sessionTag}… ctx=${session.lastContextPct.toFixed(0)}% errors=${session.consecutiveErrors} msgs=${body.messages.length}${clientDisconnected ? " (client disconnected)" : ""}`,
       );
       resolvePromptLock!();
     }
@@ -928,6 +938,32 @@ export function createKiroProxyServer(
           hibernated: manager.getHibernatedInfo(),
         }),
       );
+      return;
+    }
+
+    // Cancel a specific session or all sessions.
+    // POST /cancel — cancel all active prompts
+    // POST /cancel/<sessionKey> — cancel a specific session
+    if (method === "POST" && url.startsWith("/cancel")) {
+      const targetKey =
+        url === "/cancel" ? undefined : decodeURIComponent(url.slice("/cancel/".length));
+      void (async () => {
+        try {
+          if (targetKey) {
+            const cancelled = await manager.cancelSession(targetKey);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ cancelled, sessionKey: targetKey }));
+          } else {
+            const count = await manager.cancelAll();
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ cancelled: count }));
+          }
+        } catch (err) {
+          log(`cancel error: ${String(err)}`);
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { message: String(err) } }));
+        }
+      })();
       return;
     }
 

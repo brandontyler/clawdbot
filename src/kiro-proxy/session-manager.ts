@@ -274,6 +274,36 @@ export class SessionManager {
   }
 
   /**
+   * Send ACP session/cancel to interrupt an in-flight prompt.
+   * Returns true if a cancel was sent, false if no active prompt was found.
+   */
+  async cancelSession(sessionKey: string): Promise<boolean> {
+    const managed = this.sessions.get(sessionKey);
+    if (!managed?.session.isPrompting) {
+      return false;
+    }
+    this.log(`cancel requested: session=${sessionKey.slice(0, 12)}…`);
+    await managed.session.cancel();
+    return true;
+  }
+
+  /**
+   * Cancel all sessions that are currently prompting.
+   * Returns the number of sessions cancelled.
+   */
+  async cancelAll(): Promise<number> {
+    let count = 0;
+    for (const [key, { session }] of this.sessions) {
+      if (session.isPrompting) {
+        this.log(`cancel-all: session=${key.slice(0, 12)}…`);
+        await session.cancel();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
    * Get the latest user message text from an OpenAI message array.
    * Used for recovery: send only the last message to a fresh session.
    */
