@@ -215,7 +215,7 @@ export class KiroSession {
 
     // ACP handshake
     log("initializing ACP");
-    await client.initialize({
+    const initResult = await client.initialize({
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: true, writeTextFile: true },
@@ -223,6 +223,9 @@ export class KiroSession {
       },
       clientInfo: { name: "openclaw-kiro-proxy", version: "1.0.0" },
     });
+    log(
+      `agent: ${initResult.agentInfo?.name ?? "unknown"} v${initResult.agentInfo?.version ?? "?"} capabilities=${JSON.stringify(initResult.agentCapabilities ?? {})}`,
+    );
 
     log("creating ACP session");
     const acpSession = await client.newSession({
@@ -290,7 +293,7 @@ export class KiroSession {
     holder.session = session;
 
     log("initializing ACP");
-    await client.initialize({
+    const initResult = await client.initialize({
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: {
         fs: { readTextFile: true, writeTextFile: true },
@@ -298,6 +301,9 @@ export class KiroSession {
       },
       clientInfo: { name: "openclaw-kiro-proxy", version: "1.0.0" },
     });
+    log(
+      `agent: ${initResult.agentInfo?.name ?? "unknown"} v${initResult.agentInfo?.version ?? "?"} capabilities=${JSON.stringify(initResult.agentCapabilities ?? {})}`,
+    );
 
     log(`loading ACP session: ${acpSessionId}`);
     try {
