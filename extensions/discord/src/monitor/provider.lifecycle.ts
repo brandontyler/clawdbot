@@ -172,6 +172,21 @@ export async function runDiscordGatewayLifecycle(params: {
       clearHelloWatch();
       return;
     }
+    // After a health-monitor restart the lifecycle listener may miss the
+    // "WebSocket connection opened" debug event (it fires during login,
+    // before the lifecycle registers). Catch the subsequent READY/RESUMED
+    // debug message emitted by KiroGatewayPlugin so connected: true still
+    // gets pushed and the health monitor doesn't restart in a loop.
+    if (message.includes("Resumed successfully") && gateway?.isConnected) {
+      resetHelloStallCounter();
+      reconnectStallWatchdog.disarm();
+      pushStatus({
+        ...createConnectedChannelStatusPatch(at),
+        lastDisconnect: null,
+      });
+      clearHelloWatch();
+      return;
+    }
     if (!message.includes("WebSocket connection opened")) {
       return;
     }
