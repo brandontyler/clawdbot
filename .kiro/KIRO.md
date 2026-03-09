@@ -31,8 +31,8 @@ file and every Kiro-only file.
 
 ## Discord → Proxy Architecture
 
-Discord messages flow: Discord → OpenClaw gateway (port 18789) → kiro-proxy
-(port 18790) → spawns kiro-cli in the correct project directory.
+Discord messages flow: Discord → OpenClaw gateway (port 18800) → kiro-proxy
+(port 18801) → spawns kiro-cli in the correct project directory.
 
 Each Discord channel is mapped to a project directory via `kiro-proxy-routes.json`.
 The proxy parses the channel ID from the `x-openclaw-session-key` header
@@ -197,7 +197,7 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-brows
 #### Internals
 
 - **ANSI stripping**: all service output is piped through `sed -u "s/\x1b\[[0-9;]*m//g"` before `tee` to keep logs clean.
-- **Port cleanup**: `kill_port` (`lsof -ti:<port> | xargs -r kill -9`) runs before starting services that bind ports (kiro-proxy on 18790, dev-browser on 9222/9223).
+- **Port cleanup**: `kill_port` (`lsof -ti:<port> | xargs -r kill -9`) runs before starting services that bind ports (kiro-proxy on 18801, dev-browser on 9222/9223).
 - **`remain-on-exit on`**: set on all sessions so crashed panes stay readable (enables `dead=1` detection in `spinup status`).
 
 #### Pane commands
@@ -205,7 +205,7 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-brows
 | Pane        | Actual command                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------------------ |
 | kiro-proxy  | `pnpm openclaw kiro-proxy --verbose --routes kiro-proxy-routes.json` (cwd: `~/code/personal/clawdbot`)       |
-| gateway     | `pnpm openclaw gateway run --verbose --force --port 18789 --bind loopback` (cwd: `~/code/personal/clawdbot`) |
+| gateway     | `pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback` (cwd: `~/code/personal/clawdbot`) |
 | kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                         |
 | dev-browser | kills ports 9222/9223, then `./server.sh --headless` (cwd: `~/code/work/dev-browser/skills/dev-browser`)     |
 
@@ -213,7 +213,7 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-brows
 
 | Session    | What runs             | Ports        | Panes/Windows |
 | ---------- | --------------------- | ------------ | ------------- |
-| **oc**     | kiro-proxy, gateway   | 18790, 18789 | 2 windows     |
+| **oc**     | kiro-proxy, gateway   | 18801, 18800 | 2 windows     |
 | **oc-cli** | kiro-cli              | —            | 1 window      |
 | **mcp**    | kiro-cli, dev-browser | 9222, 9223   | 2 windows     |
 | **pwc**    | kiro-cli              | —            | 1 pane        |
