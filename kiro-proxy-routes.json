@@ -18,5 +18,9 @@
   "1478840488944468191": {
     "cwd": "/home/tylerbtt/code/personal/realestate",
     "kiroArgs": ["--agent", "default", "--trust-all-tools"]
+  },
+  "1479885670741704704": {
+    "cwd": "/home/tylerbtt/code/personal/paris",
+    "kiroArgs": ["--agent", "default", "--trust-all-tools"]
   }
 }
