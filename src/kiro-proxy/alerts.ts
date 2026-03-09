@@ -2,33 +2,15 @@
  * Proactive Discord alerts for ACP session context usage.
  *
  * Sends a message to the Discord channel when context crosses thresholds.
- * Uses the Discord bot token from openclaw config to POST via REST API.
  */
 
-import { readFileSync } from "node:fs";
+import { postMessage } from "./discord-api.js";
 import { detectChannelId } from "./session-manager.js";
 
 const THRESHOLDS = [60, 80, 90] as const;
 
-const DISCORD_API = "https://discord.com/api/v10";
-
 /** Track which thresholds have already fired per session to avoid spam. */
 const firedAlerts = new Map<string, Set<number>>();
-
-/** Resolve the Discord bot token from openclaw config. Cached after first read. */
-let cachedToken: string | null = null;
-function getDiscordToken(): string | null {
-  if (cachedToken !== null) {
-    return cachedToken;
-  }
-  try {
-    const config = JSON.parse(readFileSync(`${process.env.HOME}/.openclaw/openclaw.json`, "utf8"));
-    cachedToken = config?.channels?.discord?.token ?? null;
-  } catch {
-    cachedToken = null;
-  }
-  return cachedToken;
-}
 
 function alertMessage(pct: number): string {
   if (pct >= 90) {
@@ -38,27 +20,6 @@ function alertMessage(pct: number): string {
     return `⚠️ **Context window at ${Math.round(pct)}%** — getting full. Consider sending \`/new\` soon.`;
   }
   return `📊 **Context window at ${Math.round(pct)}%** — over halfway. Keep an eye on it.`;
-}
-
-/** Post a message to a Discord channel. Fire-and-forget. */
-async function postToChannel(channelId: string, content: string): Promise<void> {
-  const token = getDiscordToken();
-  if (!token) {
-    return;
-  }
-
-  try {
-    await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bot ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ content }),
-    });
-  } catch {
-    // Best-effort — don't crash the proxy over an alert.
-  }
 }
 
 /**
@@ -87,7 +48,7 @@ export function checkContextAlert(
       log(
         `context alert: ${threshold}% threshold crossed (actual=${pct.toFixed(1)}%) channel=${channelId}`,
       );
-      void postToChannel(channelId, alertMessage(pct));
+      void postMessage(channelId, alertMessage(pct));
     }
   }
 }

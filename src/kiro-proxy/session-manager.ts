@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { checkContextAlert, clearContextAlerts } from "./alerts.js";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
+import { ProgressReporter } from "./progress.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
 const DEFAULT_IDLE_SECS = 86400; // 24 hours — sessions are bounded by channel count, no need to aggressively GC
@@ -70,6 +71,28 @@ export function detectChannelId(sessionKey: string | undefined): string | undefi
   return match ? match[1] : undefined;
 }
 
+/**
+ * Build a short human-readable tag for a session key.
+ * If the key contains a channel ID that maps to a known route, return the
+ * project directory basename (e.g. "clawdbot"); otherwise fall back to the
+ * first 16 chars of the key.
+ */
+export function resolveSessionTag(
+  sessionKey: string,
+  channelRoutes: Record<string, ChannelRoute>,
+): string {
+  const channelId = detectChannelId(sessionKey);
+  if (channelId) {
+    const route = channelRoutes[channelId];
+    if (route) {
+      const name = route.cwd.split("/").pop() ?? route.cwd;
+      return `${name}(${channelId.slice(-4)})`;
+    }
+    return `ch:${channelId.slice(-6)}`;
+  }
+  return `${sessionKey.slice(0, 16)}…`;
+}
+
 type HibernatedSession = {
   acpSessionId: string;
   cwd: string;
@@ -109,12 +132,28 @@ function saveHibernated(map: Map<string, HibernatedSession>): void {
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly hibernated: Map<string, HibernatedSession>;
+  private readonly reporters = new Map<string, ProgressReporter>();
   private readonly sessionOpts: KiroSessionOptions;
   private readonly channelRoutes: Record<string, ChannelRoute>;
   private readonly idleMs: number;
   private readonly log: (msg: string) => void;
   private gcTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+
+  /** Short human-readable label for a session key (e.g. "clawdbot(7014)"). */
+  private tag(key: string): string {
+    return resolveSessionTag(key, this.channelRoutes);
+  }
+
+  /** Clean up all per-session state (alerts, progress reporter). */
+  private cleanupSession(sessionKey: string): void {
+    clearContextAlerts(sessionKey);
+    const reporter = this.reporters.get(sessionKey);
+    if (reporter) {
+      reporter.stop();
+      this.reporters.delete(sessionKey);
+    }
+  }
 
   constructor(
     sessionOpts: KiroSessionOptions,
@@ -178,7 +217,7 @@ export class SessionManager {
         );
         existing.session.kill("session-reset");
         this.sessions.delete(sessionKey);
-        clearContextAlerts(sessionKey);
+        this.cleanupSession(sessionKey);
       } else {
         // Wait for any in-flight prompt to finish before sending the next one.
         await existing.promptLock;
@@ -189,7 +228,7 @@ export class SessionManager {
         existing.session.lastTouchedAt = Date.now();
         const rssKb = existing.session.getRssKb();
         this.log(
-          `session reuse: session=${sessionKey.slice(0, 12)}… pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
+          `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
         );
         return { session: existing.session, promptText, managed: existing };
       }
@@ -199,7 +238,7 @@ export class SessionManager {
     if (existing) {
       existing.session.kill("replaced-dead-session");
       this.sessions.delete(sessionKey);
-      clearContextAlerts(sessionKey);
+      this.cleanupSession(sessionKey);
     }
 
     // Resolve per-channel cwd/args overrides.
@@ -220,7 +259,7 @@ export class SessionManager {
     const session = await this.createOrLoadSession(sessionKey, sessionOpts);
 
     this.log(
-      `session ready: session=${sessionKey.slice(0, 12)}… pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
+      `session ready: session=${this.tag(sessionKey)} pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
     );
 
     // For the very first turn, send system prompt (if any) prepended to the
@@ -266,10 +305,10 @@ export class SessionManager {
   resetSession(sessionKey: string, reason: string): void {
     const existing = this.sessions.get(sessionKey);
     if (existing) {
-      this.log(`session auto-reset: reason=${reason} (session=${sessionKey.slice(0, 12)}…)`);
+      this.log(`session auto-reset: reason=${reason} (session=${this.tag(sessionKey)})`);
       existing.session.kill(`auto-reset: ${reason}`);
       this.sessions.delete(sessionKey);
-      clearContextAlerts(sessionKey);
+      this.cleanupSession(sessionKey);
     }
   }
 
@@ -282,7 +321,7 @@ export class SessionManager {
     if (!managed?.session.isPrompting) {
       return false;
     }
-    this.log(`cancel requested: session=${sessionKey.slice(0, 12)}…`);
+    this.log(`cancel requested: session=${this.tag(sessionKey)}`);
     await managed.session.cancel();
     return true;
   }
@@ -295,7 +334,7 @@ export class SessionManager {
     let count = 0;
     for (const [key, { session }] of this.sessions) {
       if (session.isPrompting) {
-        this.log(`cancel-all: session=${key.slice(0, 12)}…`);
+        this.log(`cancel-all: session=${this.tag(key)}`);
         await session.cancel();
         count++;
       }
@@ -360,9 +399,9 @@ export class SessionManager {
     saveHibernated(this.hibernated);
     session.kill(`hibernate: ${reason}`);
     this.sessions.delete(sessionKey);
-    clearContextAlerts(sessionKey);
+    this.cleanupSession(sessionKey);
     this.log(
-      `session hibernated: session=${sessionKey.slice(0, 12)}… acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}% reason=${reason}`,
+      `session hibernated: session=${this.tag(sessionKey)} acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}% reason=${reason}`,
     );
   }
 
@@ -445,20 +484,24 @@ export class SessionManager {
   private buildSessionEvents(sessionKey: string): KiroSessionEvents {
     return {
       onContextUsage: (pct) => {
-        this.log(`context: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 8)}…)`);
+        this.log(`context: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)})`);
         checkContextAlert(sessionKey, pct, this.log);
+        const reporter = this.reporters.get(sessionKey);
+        if (reporter) {
+          reporter.updateContext(pct);
+        }
         if (pct >= CONTEXT_RESET_PCT) {
           this.log(
-            `context critical (${pct.toFixed(1)}% >= ${CONTEXT_RESET_PCT}%) — auto-resetting session=${sessionKey.slice(0, 12)}…`,
+            `context critical (${pct.toFixed(1)}% >= ${CONTEXT_RESET_PCT}%) — auto-resetting session=${this.tag(sessionKey)}`,
           );
           this.resetSession(sessionKey, `context-critical-${Math.round(pct)}pct`);
         } else if (pct >= CONTEXT_CRITICAL_PCT) {
           this.log(
-            `context CRITICAL: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 12)}…) — will auto-reset at ${CONTEXT_RESET_PCT}%, send /new soon`,
+            `context CRITICAL: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)}) — will auto-reset at ${CONTEXT_RESET_PCT}%, send /new soon`,
           );
         } else if (pct >= CONTEXT_WARN_PCT) {
           this.log(
-            `context warning: ${pct.toFixed(1)}% (session=${sessionKey.slice(0, 12)}…) — approaching limit`,
+            `context warning: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)}) — approaching limit`,
           );
         }
       },
@@ -467,6 +510,31 @@ export class SessionManager {
         if (managed) {
           managed.handle.lastTouchedAt = Date.now();
           managed.session.lastTouchedAt = Date.now();
+        }
+      },
+      onToolCall: (title, kind, status) => {
+        const reporter = this.reporters.get(sessionKey);
+        if (reporter) {
+          reporter.onToolCall(title, kind, status);
+        }
+      },
+      onPromptStart: () => {
+        const channelId = detectChannelId(sessionKey);
+        if (!channelId) {
+          return;
+        }
+        let reporter = this.reporters.get(sessionKey);
+        if (!reporter) {
+          reporter = new ProgressReporter(this.log);
+          this.reporters.set(sessionKey, reporter);
+        }
+        const session = this.sessions.get(sessionKey)?.session;
+        reporter.start(channelId, session?.lastContextPct ?? 0);
+      },
+      onPromptEnd: () => {
+        const reporter = this.reporters.get(sessionKey);
+        if (reporter) {
+          void reporter.finish();
         }
       },
     };
@@ -492,7 +560,7 @@ export class SessionManager {
       const summary = sessions
         .map(
           (s) =>
-            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? ",PROMPTING" : ""})`,
+            `${this.tag(s.key)}(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? ",PROMPTING" : ""})`,
         )
         .join(" ");
       this.log(
@@ -510,13 +578,13 @@ export class SessionManager {
       const idleFor = now - handle.lastTouchedAt;
       const rssKb = session.getRssKb();
       const rssMb = rssKb != null ? Math.round(rssKb / 1024) : "?";
-      const keyTag = `session=${key.slice(0, 12)}…`;
+      const keyTag = `session=${this.tag(key)}`;
       if (!session.alive) {
         session.kill(
           `gc-already-dead (${keyTag}, idle=${Math.round(idleFor / 1000)}s, rss=${rssMb}MB)`,
         );
         this.sessions.delete(key);
-        clearContextAlerts(key);
+        this.cleanupSession(key);
         reaped++;
       } else if (session.isPrompting) {
         // Never kill a session with an active prompt — the agent is working.
@@ -536,7 +604,7 @@ export class SessionManager {
       const summary = survivors
         .map(
           (s) =>
-            `${s.key.slice(0, 12)}…(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? ",PROMPTING" : ""})`,
+            `${this.tag(s.key)}(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? ",PROMPTING" : ""})`,
         )
         .join(" ");
       this.log(

@@ -128,6 +128,9 @@ export type KiroSessionOptions = {
 export type KiroSessionEvents = {
   onContextUsage?: (pct: number) => void;
   onActivity?: () => void;
+  onToolCall?: (title: string, kind: string, status: string) => void;
+  onPromptStart?: () => void;
+  onPromptEnd?: () => void;
 };
 
 export class KiroSession {
@@ -332,6 +335,7 @@ export class KiroSession {
     this.lastTouchedAt = Date.now();
     this.isPrompting = true;
     this.chunkCallback = onChunk;
+    this.events.onPromptStart?.();
 
     // Keep-alive: bump lastTouchedAt periodically while the prompt is in-flight
     // so the GC doesn't kill sessions with long-running tools (e.g. sleep + tmux).
@@ -366,6 +370,7 @@ export class KiroSession {
       clearInterval(keepAlive);
       this.isPrompting = false;
       this.chunkCallback = null;
+      this.events.onPromptEnd?.();
     }
   }
 
@@ -387,7 +392,20 @@ export class KiroSession {
         break;
       }
       case "tool_call": {
-        this.log(`tool: ${update.title ?? "unknown"} (${update.status ?? ""})`);
+        const title = update.title ?? "unknown";
+        const kind = update.kind ?? "";
+        const status = update.status ?? "";
+        this.log(`tool: ${title} (${status || kind})`);
+        this.events.onToolCall?.(title, kind, status);
+        break;
+      }
+      case "tool_call_update": {
+        const title = update.title ?? "";
+        const kind = update.kind ?? "";
+        const status = update.status ?? "";
+        if (title || status) {
+          this.events.onToolCall?.(title, kind, status);
+        }
         break;
       }
       default:
