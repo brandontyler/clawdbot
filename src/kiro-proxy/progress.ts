@@ -8,9 +8,9 @@
 
 import { postMessage, editMessage } from "./discord-api.js";
 
-const FIRST_UPDATE_MS = 30_000;
+const FIRST_UPDATE_MS = 12_000;
 const UPDATE_INTERVAL_MS = 60_000;
-const MIN_TOOLS_BEFORE_REPORT = 2;
+const MIN_TOOLS_BEFORE_REPORT = 1;
 const MAX_HISTORY = 5;
 const MAX_TITLE_LEN = 60;
 
