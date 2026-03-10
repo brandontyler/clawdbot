@@ -560,7 +560,7 @@ export class SessionManager {
       const summary = sessions
         .map(
           (s) =>
-            `${this.tag(s.key)}(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? ",PROMPTING" : ""})`,
+            `${this.tag(s.key)}(ctx=${Math.round(s.contextPct)}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? ",PROMPTING" : ""})`,
         )
         .join(" ");
       this.log(
@@ -604,7 +604,7 @@ export class SessionManager {
       const summary = survivors
         .map(
           (s) =>
-            `${this.tag(s.key)}(ctx=${s.contextPct}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? ",PROMPTING" : ""})`,
+            `${this.tag(s.key)}(ctx=${Math.round(s.contextPct)}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? ",PROMPTING" : ""})`,
         )
         .join(" ");
       this.log(
