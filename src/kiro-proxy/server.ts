@@ -29,9 +29,6 @@ const KIRO_MODEL_ID = "kiro-default";
 /** Auto-reset a session after this many consecutive prompt failures. */
 const MAX_CONSECUTIVE_ERRORS = 3;
 
-/** Auto-reset after this many consecutive empty (0-token) responses. */
-const MAX_CONSECUTIVE_EMPTY_RESPONSES = 3;
-
 /** Delay (ms) between recovery attempt 1 and 2 to let resources settle. */
 const RECOVERY_BACKOFF_MS = 5000;
 
@@ -423,32 +420,71 @@ async function handleCompletions(
       }
 
       // Detect silent empty response — ACP returned 0 tokens without throwing.
+      // Retry once on the same session before counting it as a failure.
       if (!fullResponse.trim() && promptText.trim()) {
-        session.consecutiveEmptyResponses++;
         const elapsed = performance.now() - t0;
         log(
-          `🟡 EMPTY ACP RESPONSE: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}% streak=${session.consecutiveEmptyResponses}`,
+          `🟡 EMPTY ACP RESPONSE — retrying once: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}% streak=${session.consecutiveEmptyResponses}`,
         );
-        const diag = buildCorruptionDiagnostics(session, managed, {
-          sessionKey,
-          phase: "silent-empty-response",
-          error: "ACP returned 0 tokens without error",
-          messages: body.messages,
-          incomingChars,
-          promptText,
-          responseText: "",
-          elapsedMs: Math.round(elapsed),
-        });
-        logCorruptionEvent(diag);
-        log(`🟡 EMPTY RESPONSE DIAG: ${JSON.stringify(diag, null, 2)}`);
+        logCorruptionEvent(
+          buildCorruptionDiagnostics(session, managed, {
+            sessionKey,
+            phase: "silent-empty-response-pre-retry",
+            error: "ACP returned 0 tokens without error — will retry",
+            messages: body.messages,
+            incomingChars,
+            promptText,
+            responseText: "",
+            elapsedMs: Math.round(elapsed),
+          }),
+        );
 
-        if (session.consecutiveEmptyResponses >= MAX_CONSECUTIVE_EMPTY_RESPONSES) {
+        // Single retry on the same session — cheap (<100ms if still wedged).
+        let retrySucceeded = false;
+        try {
+          const retryChunks: string[] = [];
+          await session.prompt(promptText, (text) => {
+            if (!tFirstChunk) {
+              tFirstChunk = performance.now();
+            }
+            retryChunks.push(text);
+            sseChunk(res, buildChunk(completionId, text));
+          });
+          const retryResponse = retryChunks.join("");
+          if (retryResponse.trim()) {
+            retrySucceeded = true;
+            session.consecutiveEmptyResponses = 0;
+            session.consecutiveErrors = 0;
+            log(
+              `🟢 EMPTY RETRY SUCCEEDED: session=${sessionTag}… retryLen=${retryResponse.length} totalElapsed=${Math.round(performance.now() - t0)}ms`,
+            );
+          }
+        } catch (retryErr) {
+          log(formatErrorVerbose(retryErr, "empty retry threw"));
+        }
+
+        if (!retrySucceeded) {
+          // Retry also empty or failed — session is brain-dead, reset immediately.
+          session.consecutiveEmptyResponses++;
+          const totalElapsed = performance.now() - t0;
           log(
-            `🔴 ${session.consecutiveEmptyResponses} consecutive empty responses — session is brain-dead, resetting`,
+            `🔴 EMPTY RETRY ALSO FAILED — resetting: session=${sessionTag}… totalElapsed=${Math.round(totalElapsed)}ms streak=${session.consecutiveEmptyResponses}`,
+          );
+          logCorruptionEvent(
+            buildCorruptionDiagnostics(session, managed, {
+              sessionKey,
+              phase: "silent-empty-response-retry-failed",
+              error: "ACP returned 0 tokens on both initial and retry — session brain-dead",
+              messages: body.messages,
+              incomingChars,
+              promptText,
+              responseText: "",
+              elapsedMs: Math.round(totalElapsed),
+            }),
           );
           manager.resetSession(
             sessionKey,
-            `consecutive-empty-${session.consecutiveEmptyResponses}`,
+            `empty-retry-failed-streak-${session.consecutiveEmptyResponses}`,
           );
           sseChunk(
             res,
@@ -687,24 +723,108 @@ async function handleCompletions(
         log(`🔴 CORRUPTION DIAG: ${JSON.stringify(diag, null, 2)}`);
       }
 
-      // Detect silent empty response in blocking path.
+      // Detect silent empty response in blocking path — retry once before giving up.
       if (!blockingResponse.trim() && promptText.trim()) {
         const elapsed = performance.now() - t0;
         log(
-          `🟡 EMPTY ACP RESPONSE (blocking): session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}%`,
+          `🟡 EMPTY ACP RESPONSE (blocking) — retrying once: session=${sessionTag}… elapsed=${Math.round(elapsed)}ms promptLen=${promptText.length} ctx=${session.lastContextPct.toFixed(1)}%`,
         );
-        const diag = buildCorruptionDiagnostics(session, managed, {
+        logCorruptionEvent(
+          buildCorruptionDiagnostics(session, managed, {
+            sessionKey,
+            phase: "silent-empty-response-blocking-pre-retry",
+            error: "ACP returned 0 tokens without error (blocking) — will retry",
+            messages: body.messages,
+            incomingChars,
+            promptText,
+            responseText: "",
+            elapsedMs: Math.round(elapsed),
+          }),
+        );
+
+        // Single retry on the same session.
+        let retryText = "";
+        try {
+          const retryParts: string[] = [];
+          await session.prompt(promptText, (text) => retryParts.push(text));
+          retryText = retryParts.join("");
+        } catch (retryErr) {
+          log(formatErrorVerbose(retryErr, "empty retry threw (blocking)"));
+        }
+
+        if (retryText.trim()) {
+          session.consecutiveEmptyResponses = 0;
+          session.consecutiveErrors = 0;
+          log(
+            `🟢 EMPTY RETRY SUCCEEDED (blocking): session=${sessionTag}… retryLen=${retryText.length} totalElapsed=${Math.round(performance.now() - t0)}ms`,
+          );
+          // Return the retry response instead of falling through to the empty one.
+          resolveBlockLock!();
+          const completion: OpenAICompletion = {
+            id: completionId,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: KIRO_MODEL_ID,
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: retryText },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(completion));
+          return;
+        }
+
+        // Retry also empty — session is brain-dead, reset immediately.
+        session.consecutiveEmptyResponses++;
+        const totalElapsed = performance.now() - t0;
+        log(
+          `🔴 EMPTY RETRY ALSO FAILED (blocking) — resetting: session=${sessionTag}… totalElapsed=${Math.round(totalElapsed)}ms streak=${session.consecutiveEmptyResponses}`,
+        );
+        logCorruptionEvent(
+          buildCorruptionDiagnostics(session, managed, {
+            sessionKey,
+            phase: "silent-empty-response-blocking-retry-failed",
+            error:
+              "ACP returned 0 tokens on both initial and retry (blocking) — session brain-dead",
+            messages: body.messages,
+            incomingChars,
+            promptText,
+            responseText: "",
+            elapsedMs: Math.round(totalElapsed),
+          }),
+        );
+        manager.resetSession(
           sessionKey,
-          phase: "silent-empty-response-blocking",
-          error: "ACP returned 0 tokens without error (blocking)",
-          messages: body.messages,
-          incomingChars,
-          promptText,
-          responseText: "",
-          elapsedMs: Math.round(elapsed),
-        });
-        logCorruptionEvent(diag);
-        log(`🟡 EMPTY RESPONSE DIAG: ${JSON.stringify(diag, null, 2)}`);
+          `empty-retry-failed-blocking-streak-${session.consecutiveEmptyResponses}`,
+        );
+        // Return a reset notice so the caller knows the session was cleared.
+        resolveBlockLock!();
+        const completion: OpenAICompletion = {
+          id: completionId,
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: KIRO_MODEL_ID,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content:
+                  "⚠️ Session stopped responding and has been reset. Please resend your message.",
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(completion));
+        return;
       }
     } catch (err) {
       log(formatErrorVerbose(err, "prompt error (blocking)"));
