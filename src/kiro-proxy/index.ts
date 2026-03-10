@@ -94,7 +94,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
       `        input: ["text"],`,
       `        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },`,
       `        contextWindow: 1000000,`,
-      `        maxTokens: 16384,`,
+      `        maxTokens: 32768,`,
       `      }],`,
       `    }}},`,
       `    agents: { defaults: { model: { primary: "kiro/kiro-default" } } },`,
