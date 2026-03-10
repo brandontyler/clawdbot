@@ -19,6 +19,7 @@
  *   agents: { defaults: { model: { primary: "kiro/kiro-default" } } }
  */
 
+import { killOrphanAcpProcesses } from "./cleanup.js";
 import { createKiroProxyServer } from "./server.js";
 import { SessionManager } from "./session-manager.js";
 import type { KiroProxyOptions } from "./types.js";
@@ -43,6 +44,12 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
   const log = verbose ? (msg: string) => process.stderr.write(`[kiro-proxy] ${msg}\n`) : () => {};
 
   log(`starting (kiro=${kiroBin}, port=${port}, idle=${idleSecs}s)`);
+
+  // Kill orphaned ACP processes from previous proxy runs.
+  const orphansKilled = killOrphanAcpProcesses(log);
+  if (orphansKilled > 0) {
+    log(`cleaned up ${orphansKilled} orphan ACP process(es)`);
+  }
 
   const manager = new SessionManager(
     { kiroBin, kiroArgs, cwd, verbose },

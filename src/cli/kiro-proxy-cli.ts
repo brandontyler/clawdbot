@@ -102,6 +102,7 @@ Config (~/.openclaw/openclaw.json, JSON5):
 
       process.once("SIGINT", () => void cleanup());
       process.once("SIGTERM", () => void cleanup());
+      process.once("SIGHUP", () => void cleanup());
 
       try {
         shutdown = await startKiroProxy({

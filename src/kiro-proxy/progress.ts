@@ -160,6 +160,14 @@ export class ProgressReporter {
       }
       this.currentTool = { title, kind };
       this.toolCount++;
+    } else if (status === "execute" || status === "read" || status === "search") {
+      // Descriptive update for the current tool — replace the bare name in place.
+      if (this.currentTool) {
+        this.currentTool.title = title;
+        if (kind) {
+          this.currentTool.kind = kind;
+        }
+      }
     } else if (status === "completed" || status === "failed") {
       if (this.currentTool) {
         this.history.push(this.currentTool);

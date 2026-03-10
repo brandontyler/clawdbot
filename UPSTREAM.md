@@ -33,6 +33,7 @@ These files don't exist upstream. They'll never cause merge conflicts.
 | `docs/kiro-known-issues.md`                  | Known kiro-cli bugs and workarounds (session corruption, etc.)                                |
 | `src/kiro-proxy/discord-api.ts`              | Shared Discord REST helpers (post, edit, delete message)                                      |
 | `src/kiro-proxy/progress.ts`                 | ProgressReporter — incremental Discord updates during long ACP tool runs                      |
+| `src/kiro-proxy/cleanup.ts`                  | Startup sweep: kills orphaned `kiro-cli acp` processes from previous proxy runs               |
 | `.kiro/`                                     | Kiro agent config (gitignored)                                                                |
 | `UPSTREAM.md`                                | This file                                                                                     |
 
