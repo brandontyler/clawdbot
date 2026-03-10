@@ -759,7 +759,6 @@ async function handleCompletions(
             `🟢 EMPTY RETRY SUCCEEDED (blocking): session=${sessionTag}… retryLen=${retryText.length} totalElapsed=${Math.round(performance.now() - t0)}ms`,
           );
           // Return the retry response instead of falling through to the empty one.
-          resolveBlockLock!();
           const completion: OpenAICompletion = {
             id: completionId,
             object: "chat.completion",
@@ -803,7 +802,6 @@ async function handleCompletions(
           `empty-retry-failed-blocking-streak-${session.consecutiveEmptyResponses}`,
         );
         // Return a reset notice so the caller knows the session was cleared.
-        resolveBlockLock!();
         const completion: OpenAICompletion = {
           id: completionId,
           object: "chat.completion",
