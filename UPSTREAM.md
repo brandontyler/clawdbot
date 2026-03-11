@@ -21,32 +21,32 @@ painless.
 
 These files don't exist upstream. They'll never cause merge conflicts.
 
-| File                                         | Purpose                                                                                       |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `src/kiro-proxy/`                            | Kiro proxy session management, context usage events, ACP bridge                               |
-| `src/kiro-proxy/index.ts`                    | Proxy entry point — wires server, session manager, and cleanup                                |
-| `src/kiro-proxy/server.ts`                   | HTTP server (OpenAI-compatible /v1/chat/completions, /sessions, /hibernate, /cancel)          |
-| `src/kiro-proxy/session-manager.ts`          | Session lifecycle: create, reuse, hibernate, GC, and diagnostics                              |
-| `src/kiro-proxy/kiro-session.ts`             | Single ACP session wrapper — spawn, load, prompt, cancel                                      |
-| `src/kiro-proxy/types.ts`                    | Shared TypeScript types for proxy internals                                                   |
-| `src/kiro-proxy/alerts.ts`                   | Context threshold alerts (60%/80%/90%) posted to Discord                                      |
-| `src/kiro-proxy/discord-api.ts`              | Shared Discord REST helpers (post, edit, delete) with retry-after handling                    |
-| `src/kiro-proxy/progress.ts`                 | ProgressReporter — incremental Discord updates during long ACP tool runs                      |
-| `src/kiro-proxy/cleanup.ts`                  | Startup sweep: kills orphaned `kiro-cli acp` processes from previous proxy runs               |
-| `src/kiro-proxy/diag-command.ts`             | `/diag` command handler — ACP session diagnostics and system health                           |
-| `src/kiro-proxy/server.test.ts`              | Tests for proxy server                                                                        |
-| `src/kiro-proxy/session-manager.test.ts`     | Tests for session manager                                                                     |
-| `src/cli/kiro-proxy-cli.ts`                  | CLI wiring for the `openclaw kiro-proxy` subcommand                                           |
-| `src/discord/monitor/gateway-plugin-kiro.ts` | Flap detection, exponential backoff, resume logging — subclasses our `ResilientGatewayPlugin` |
-| `scripts/spinup`                             | tmux session manager for dev environment (symlinked from `~/bin/spinup`)                      |
-| `scripts/add-channel.sh`                     | Create Discord channel + proxy route + tmux session for a new project                         |
-| `scripts/remove-channel.sh`                  | Tear down a project channel (route + tmux session, not the Discord channel)                   |
-| `scripts/upstream-sync-check.sh`             | Daily cron: posts upstream sync reminder to #openclaw if behind                               |
-| `kiro-proxy-routes.json`                     | Discord channel ID → project cwd mapping for per-channel routing                              |
-| `docs/kiro-proxy-plan.md`                    | Kiro proxy design doc                                                                         |
-| `docs/kiro-known-issues.md`                  | Known kiro-cli bugs and workarounds (session corruption, etc.)                                |
-| `.kiro/`                                     | Kiro agent config (gitignored)                                                                |
-| `UPSTREAM.md`                                | This file                                                                                     |
+| File                                         | Purpose                                                                                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `src/kiro-proxy/`                            | Kiro proxy session management, context usage events, ACP bridge                                                                     |
+| `src/kiro-proxy/index.ts`                    | Proxy entry point — wires server, session manager, and cleanup                                                                      |
+| `src/kiro-proxy/server.ts`                   | HTTP server (OpenAI-compatible /v1/chat/completions, /sessions, /hibernate, /cancel)                                                |
+| `src/kiro-proxy/session-manager.ts`          | Session lifecycle: create, reuse, hibernate, GC, and diagnostics                                                                    |
+| `src/kiro-proxy/kiro-session.ts`             | Single ACP session wrapper — spawn, load, prompt, cancel                                                                            |
+| `src/kiro-proxy/types.ts`                    | Shared TypeScript types for proxy internals                                                                                         |
+| `src/kiro-proxy/alerts.ts`                   | Context threshold alerts (60%/80%/90%) posted to Discord                                                                            |
+| `src/kiro-proxy/discord-api.ts`              | Shared Discord REST helpers (post, edit, delete) with retry-after handling                                                          |
+| `src/kiro-proxy/progress.ts`                 | ProgressReporter — incremental Discord updates during long ACP tool runs                                                            |
+| `src/kiro-proxy/cleanup.ts`                  | Startup sweep: kills orphaned `kiro-cli acp` processes from previous proxy runs                                                     |
+| `src/kiro-proxy/diag-command.ts`             | `/diag` command handler — ACP session diagnostics and system health                                                                 |
+| `src/kiro-proxy/server.test.ts`              | Tests for proxy server                                                                                                              |
+| `src/kiro-proxy/session-manager.test.ts`     | Tests for session manager                                                                                                           |
+| `src/cli/kiro-proxy-cli.ts`                  | CLI wiring for the `openclaw kiro-proxy` subcommand                                                                                 |
+| `src/discord/monitor/gateway-plugin-kiro.ts` | Flap detection, exponential backoff, resume logging — subclasses our `ResilientGatewayPlugin`                                       |
+| `scripts/spinup`                             | tmux session manager: start/reset sessions, hibernate/wake ACP sessions, status, logs, restart-pane (symlinked from `~/bin/spinup`) |
+| `scripts/add-channel.sh`                     | Create Discord channel + proxy route + tmux session for a new project                                                               |
+| `scripts/remove-channel.sh`                  | Tear down a project channel (route + tmux session, not the Discord channel)                                                         |
+| `scripts/upstream-sync-check.sh`             | Daily cron: posts upstream sync reminder to #openclaw if behind                                                                     |
+| `kiro-proxy-routes.json`                     | Discord channel ID → project cwd mapping for per-channel routing                                                                    |
+| `docs/kiro-proxy-plan.md`                    | Kiro proxy design doc                                                                                                               |
+| `docs/kiro-known-issues.md`                  | Known kiro-cli bugs and workarounds (session corruption, etc.)                                                                      |
+| `.kiro/`                                     | Kiro agent config (gitignored)                                                                                                      |
+| `UPSTREAM.md`                                | This file                                                                                                                           |
 
 ## Upstream Files We Patch (review on every sync)
 
