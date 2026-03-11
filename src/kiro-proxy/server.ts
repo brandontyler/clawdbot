@@ -1085,6 +1085,25 @@ export function createKiroProxyServer(
       return;
     }
 
+    // POST /hibernate/<sessionKey> — hibernate a specific session for testing.
+    if (method === "POST" && url.startsWith("/hibernate/")) {
+      const targetKey = decodeURIComponent(url.slice("/hibernate/".length));
+      const entry = manager.getSessionEntry(targetKey);
+      if (!entry) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "session not found" }));
+      } else if (entry.session.isPrompting) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "session is prompting" }));
+      } else {
+        manager.hibernateSession(targetKey, entry.session, "manual-test");
+        log(`manual hibernate: ${targetKey}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ hibernated: true, sessionKey: targetKey }));
+      }
+      return;
+    }
+
     if (method === "POST" && url === "/v1/chat/completions") {
       handleCompletions(req, res, manager, log).catch((err) => {
         log(`unhandled error: ${String(err)}`);

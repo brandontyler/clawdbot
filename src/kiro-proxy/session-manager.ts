@@ -387,7 +387,7 @@ export class SessionManager {
    * Hibernate a session: kill the process but save the ACP session ID
    * so it can be restored via loadSession later.
    */
-  private hibernateSession(sessionKey: string, session: KiroSession, reason: string): void {
+  hibernateSession(sessionKey: string, session: KiroSession, reason: string): void {
     const channelId = detectChannelId(sessionKey);
     const route = channelId ? this.channelRoutes[channelId] : undefined;
     this.hibernated.set(sessionKey, {
@@ -403,6 +403,15 @@ export class SessionManager {
     this.log(
       `session hibernated: session=${this.tag(sessionKey)} acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}% reason=${reason}`,
     );
+  }
+
+  /** Look up a live session by key (for manual hibernate endpoint). */
+  getSessionEntry(sessionKey: string): { session: KiroSession } | undefined {
+    const managed = this.sessions.get(sessionKey);
+    if (!managed) {
+      return undefined;
+    }
+    return { session: managed.session };
   }
 
   /** Return diagnostic info for all active sessions. */
