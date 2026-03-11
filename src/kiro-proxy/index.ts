@@ -104,6 +104,20 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
     ].join("\n"),
   );
 
+  // Graceful shutdown: hibernate all sessions on SIGTERM/SIGINT
+  const gracefulShutdown = (signal: string) => {
+    log(`received ${signal}, hibernating sessions…`);
+    manager.shutdown();
+    server.close(() => {
+      log("server closed");
+      process.exit(0);
+    });
+    // Force exit after 5s if server.close hangs
+    setTimeout(() => process.exit(1), 5000).unref();
+  };
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
   // Return a shutdown function
   return () =>
     new Promise((resolve, reject) => {
