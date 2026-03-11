@@ -24,7 +24,7 @@ import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./
 import { ProgressReporter } from "./progress.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
-const DEFAULT_IDLE_SECS = 86400; // 24 hours — sessions are bounded by channel count, no need to aggressively GC
+const DEFAULT_IDLE_SECS = 14400; // 4 hours — idle sessions hibernate (not killed), so context is preserved
 
 const HIBERNATE_PATH = `${process.env.HOME}/.openclaw/kiro-proxy-hibernated.json`;
 

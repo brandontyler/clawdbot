@@ -38,7 +38,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
   const kiroBin = opts.kiroBin ?? "kiro-cli";
   const kiroArgs = opts.kiroArgs ?? [];
   const cwd = opts.cwd ?? process.cwd();
-  const idleSecs = opts.sessionIdleSecs ?? 86400;
+  const idleSecs = opts.sessionIdleSecs ?? 14400;
   const verbose = opts.verbose ?? false;
 
   const log = verbose ? (msg: string) => process.stderr.write(`[kiro-proxy] ${msg}\n`) : () => {};

@@ -86,7 +86,7 @@ export type KiroProxyOptions = {
   channelRoutes?: Record<string, ChannelRoute>;
   /**
    * Seconds of inactivity before an idle Kiro session is killed.
-   * Default: 86400 (24 hours)
+   * Default: 14400 (4 hours)
    */
   sessionIdleSecs?: number;
   /** Emit debug logs to stderr. */
