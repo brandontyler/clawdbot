@@ -168,7 +168,18 @@ function buildDisplayGroups(history: CompletedTool[]): DisplayGroup[] {
       const files = items.map((t) => extractFile(t.title)).filter(Boolean) as string[];
       const uniqueFiles = [...new Set(files)];
       const emoji = kindEmoji(items[0]?.kind ?? "");
-      const verb = phase === "exploring" ? "Read" : phase === "editing" ? "Edited" : "Ran";
+      let noun: string;
+      let verb: string;
+      if (phase === "exploring") {
+        verb = "Read";
+        noun = items.length === 1 ? "file" : "files";
+      } else if (phase === "editing") {
+        verb = "Edited";
+        noun = items.length === 1 ? "file" : "files";
+      } else {
+        verb = "Ran";
+        noun = items.length === 1 ? "command" : "commands";
+      }
       let detail = "";
       if (uniqueFiles.length > 0) {
         const shown = uniqueFiles.slice(0, 3).map((f) => f.split("/").pop() ?? f);
@@ -178,20 +189,17 @@ function buildDisplayGroups(history: CompletedTool[]): DisplayGroup[] {
       groups.push({
         kind: items[0]?.kind ?? "",
         items,
-        label: `${emoji} ${verb} ${items.length} file${items.length !== 1 ? "s" : ""}${detail}`,
+        label: `${emoji} ${verb} ${items.length} ${noun}${detail}`,
       });
     }
   }
   return groups;
 }
 
-/** Build a visual context bar: [████████░░░░░░░░░░░░] 23% */
+/** Compact context indicator for Discord (block chars render too wide). */
 function contextBar(pct: number): string {
-  const width = 15;
-  const filled = Math.round((pct / 100) * width);
-  const bar = "█".repeat(filled) + "░".repeat(width - filled);
   const warn = pct >= 60 ? " ⚠️" : "";
-  return `[${bar}] ${pct.toFixed(0)}%${warn}`;
+  return `${pct.toFixed(0)}% ctx${warn}`;
 }
 
 export class ProgressReporter {
