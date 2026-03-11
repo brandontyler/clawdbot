@@ -516,6 +516,12 @@ async function handleCompletions(
           ),
         );
       }
+
+      // Append context usage footer to every response.
+      if (session.lastContextPct > 0 && fullResponse.trim()) {
+        const pct = Math.round(session.lastContextPct);
+        sseChunk(res, buildChunk(completionId, `\n\n-# 📊 ${pct}% context used`));
+      }
     } catch (err) {
       log(formatErrorVerbose(err, "prompt error (stream)"));
       session.consecutiveErrors++;
