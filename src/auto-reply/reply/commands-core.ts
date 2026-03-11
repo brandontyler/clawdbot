@@ -185,6 +185,14 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
       handleHelpCommand,
       handleCommandsListCommand,
       handleStatusCommand,
+      // /diag — Kiro-only: lazy-loaded to avoid plugin-sdk build chain issues.
+      async (params, allowTextCommands) => {
+        if (!/^\/diag\b/i.test(params.command.commandBodyNormalized)) {
+          return null;
+        }
+        const { handleDiagCommand } = await import("../../kiro-proxy/diag-command.js");
+        return handleDiagCommand(params, allowTextCommands);
+      },
       handleAllowlistCommand,
       handleApproveCommand,
       handleContextCommand,
