@@ -40,7 +40,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate paris; do
+  for sess in oc oc-cli mcp pwc sermon realestate; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -172,10 +172,44 @@ if not sessions and not hibernated and not names:
 "
 }
 
+do_hibernate() {
+  echo "=== Hibernating all ACP sessions ==="
+  local data
+  data=$(curl -sf http://127.0.0.1:18801/sessions 2>/dev/null) || { echo "Proxy not reachable"; return 1; }
+  local keys
+  keys=$(echo "$data" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for s in d['sessions']:
+    if not s['isPrompting']:
+        print(s['key'])
+" 2>/dev/null)
+  local count=0
+  for key in $keys; do
+    local encoded="${key//:/%3A}"
+    local result
+    result=$(curl -sf -X POST "http://127.0.0.1:18801/hibernate/$encoded" 2>/dev/null) || true
+    echo "  hibernated: $key"
+    ((count++)) || true
+  done
+  echo "Hibernated $count session(s). Safe to shut down."
+}
+
+do_wake() {
+  echo "=== Waking hibernated sessions ==="
+  local data
+  data=$(curl -sf http://127.0.0.1:18801/sessions 2>/dev/null) || { echo "Proxy not reachable"; return 1; }
+  local count
+  count=$(echo "$data" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('hibernated',[])))" 2>/dev/null)
+  echo "$count hibernated session(s) waiting. They will restore on next Discord message."
+}
+
 case "$TARGET" in
   status) do_status; exit 0 ;;
   context) do_context; exit 0 ;;
   logs)   do_logs "${ARGS[1]:-all}" "${ARGS[2]:-30}"; exit 0 ;;
+  hibernate) do_hibernate; exit 0 ;;
+  wake) do_wake; exit 0 ;;
   restart-pane)
     if [[ -z "${ARGS[1]:-}" ]]; then
       echo "Usage: spinup restart-pane <pane-title>"
@@ -209,6 +243,13 @@ GATEWAY_CMD="pnpm openclaw gateway run --verbose --force --port 18800 --bind loo
 KIRO_CLI_CMD="kiro-cli"
 
 if [[ "$TARGET" == "all" || "$TARGET" == "oc" ]]; then
+  # Gracefully hibernate sessions before killing the proxy
+  if curl -sf http://127.0.0.1:18801/sessions >/dev/null 2>&1; then
+    do_hibernate 2>/dev/null || true
+    # Give proxy SIGTERM so it persists hibernation state
+    lsof -ti:18801 2>/dev/null | xargs -r kill -TERM 2>/dev/null || true
+    sleep 1
+  fi
   kill_port 18801
   new_session oc -n kiro-proxy -c "$OC_DIR" "$PROXY_CMD"
   tag_pane oc oc:kiro-proxy.0 kiro-proxy "$PROXY_CMD"
@@ -272,12 +313,12 @@ if [[ "$TARGET" == "all" || "$TARGET" == "realestate" ]]; then
 fi
 
 
-# --- paris session ---
-PARIS_DIR=/home/tylerbtt/code/personal/paris
-
-if [[ "$TARGET" == "all" || "$TARGET" == "paris" ]]; then
-  new_session paris -n main -c "$PARIS_DIR" "$KIRO_CLI_CMD"
-  tag_pane paris paris:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t paris"
-fi
+# --- paris session (disabled — ACP sessions still work via proxy route) ---
+# PARIS_DIR=/home/tylerbtt/code/personal/paris
+#
+# if [[ "$TARGET" == "all" || "$TARGET" == "paris" ]]; then
+#   new_session paris -n main -c "$PARIS_DIR" "$KIRO_CLI_CMD"
+#   tag_pane paris paris:main.0 kiro-cli "$KIRO_CLI_CMD"
+#   echo "  tmux attach -t paris"
+# fi
 echo "Done."
