@@ -8,13 +8,14 @@
 
 import { postMessage, editMessage } from "./discord-api.js";
 
-const FIRST_UPDATE_MS = 12_000;
+const FIRST_UPDATE_MS = 6_000;
 const UPDATE_INTERVAL_MS = 60_000;
 const MIN_TOOLS_BEFORE_REPORT = 1;
-const MAX_HISTORY = 5;
+const MAX_HISTORY = 6;
 const MAX_TITLE_LEN = 60;
+const MAX_FILES_IN_SUMMARY = 5;
 
-type CompletedTool = { title: string; kind: string };
+type CompletedTool = { title: string; kind: string; durationMs?: number };
 
 /** Emoji for a tool kind. */
 function kindEmoji(kind: string): string {
@@ -78,7 +79,8 @@ function groupHistory(history: CompletedTool[]): string[] {
     }
     const emoji = kindEmoji(tool.kind);
     const title = formatTitle(tool.title);
-    lines.push(count > 1 ? `  ✅ ${emoji} ${title} (×${count})` : `  ✅ ${emoji} ${title}`);
+    const dur = tool.durationMs != null ? ` ${elapsed(tool.durationMs)}` : "";
+    lines.push(count > 1 ? `  ✅ ${emoji} ${title} (×${count})` : `  ✅ ${emoji} ${title}${dur}`);
     i += count;
   }
   return lines;
@@ -94,6 +96,21 @@ function elapsed(ms: number): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
+/** Extract file paths from tool titles for the final summary. */
+function extractFilesFromHistory(history: CompletedTool[]): string[] {
+  const files = new Set<string>();
+  for (const tool of history) {
+    if (tool.kind === "edit" || tool.kind === "delete") {
+      // Title is usually the file path for edits.
+      const cleaned = tool.title.replace(/\/home\/[^/]+\/code\/[^/]+\/[^/]+\//, "");
+      if (cleaned && !cleaned.includes(" ")) {
+        files.add(cleaned);
+      }
+    }
+  }
+  return [...files];
+}
+
 export class ProgressReporter {
   private channelId: string | null = null;
   private messageId: string | null = null;
@@ -102,9 +119,11 @@ export class ProgressReporter {
   private started = false;
   private promptStartedAt = 0;
   private toolCount = 0;
-  private currentTool: { title: string; kind: string } | null = null;
+  private currentTool: { title: string; kind: string; startedAt: number } | null = null;
   private history: CompletedTool[] = [];
+  private allHistory: CompletedTool[] = [];
   private contextPct = 0;
+  private lastToolEndAt = 0;
   private readonly log: (msg: string) => void;
 
   constructor(log: (msg: string) => void) {
@@ -118,7 +137,9 @@ export class ProgressReporter {
     this.toolCount = 0;
     this.currentTool = null;
     this.history = [];
+    this.allHistory = [];
     this.contextPct = contextPct;
+    this.lastToolEndAt = 0;
     this.started = true;
 
     // First update after FIRST_UPDATE_MS, only if enough tools have fired.
@@ -153,13 +174,21 @@ export class ProgressReporter {
     if (status === "in_progress" || status === "pending") {
       // A new tool started — push the previous one to history.
       if (this.currentTool) {
-        this.history.push(this.currentTool);
+        const dur = Date.now() - this.currentTool.startedAt;
+        const completed = {
+          title: this.currentTool.title,
+          kind: this.currentTool.kind,
+          durationMs: dur,
+        };
+        this.history.push(completed);
+        this.allHistory.push(completed);
         if (this.history.length > MAX_HISTORY) {
           this.history.shift();
         }
       }
-      this.currentTool = { title, kind };
+      this.currentTool = { title, kind, startedAt: Date.now() };
       this.toolCount++;
+      this.lastToolEndAt = 0;
     } else if (status === "execute" || status === "read" || status === "search") {
       // Descriptive update for the current tool — replace the bare name in place.
       if (this.currentTool) {
@@ -170,11 +199,19 @@ export class ProgressReporter {
       }
     } else if (status === "completed" || status === "failed") {
       if (this.currentTool) {
-        this.history.push(this.currentTool);
+        const dur = Date.now() - this.currentTool.startedAt;
+        const completed = {
+          title: this.currentTool.title,
+          kind: this.currentTool.kind,
+          durationMs: dur,
+        };
+        this.history.push(completed);
+        this.allHistory.push(completed);
         if (this.history.length > MAX_HISTORY) {
           this.history.shift();
         }
         this.currentTool = null;
+        this.lastToolEndAt = Date.now();
       }
     }
   }
@@ -194,10 +231,20 @@ export class ProgressReporter {
       return;
     }
 
-    // Edit to final summary if we posted a progress message.
+    // Build a richer final summary.
     const dt = elapsed(Date.now() - this.promptStartedAt);
-    const summary = `✅ **Done** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""})`;
-    await editMessage(this.channelId, this.messageId, summary);
+    const parts: string[] = [];
+    parts.push(`✅ **Done** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""})`);
+
+    const files = extractFilesFromHistory(this.allHistory);
+    if (files.length > 0) {
+      const shown = files.slice(0, MAX_FILES_IN_SUMMARY);
+      const extra =
+        files.length > MAX_FILES_IN_SUMMARY ? ` +${files.length - MAX_FILES_IN_SUMMARY} more` : "";
+      parts.push(`  📁 ${shown.join(", ")}${extra}`);
+    }
+
+    await editMessage(this.channelId, this.messageId, parts.join("\n"));
     this.messageId = null;
   }
 
@@ -246,10 +293,14 @@ export class ProgressReporter {
       lines.push(line);
     }
 
-    // Current active tool.
+    // Current active tool or thinking indicator.
     if (this.currentTool) {
       const emoji = kindEmoji(this.currentTool.kind);
-      lines.push(`  ⏳ ${emoji} ${formatTitle(this.currentTool.title)}`);
+      const toolDur = elapsed(Date.now() - this.currentTool.startedAt);
+      lines.push(`  ⏳ ${emoji} ${formatTitle(this.currentTool.title)} (${toolDur})`);
+    } else if (this.lastToolEndAt > 0) {
+      const thinkDur = elapsed(Date.now() - this.lastToolEndAt);
+      lines.push(`  💭 Thinking... (${thinkDur})`);
     }
 
     // Context usage.
