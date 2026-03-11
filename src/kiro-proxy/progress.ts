@@ -1,9 +1,18 @@
 /**
  * ProgressReporter — sends incremental Discord updates during long ACP tool runs.
  *
- * Posts a single message after FIRST_UPDATE_MS of tool execution, then edits
- * it in-place every UPDATE_INTERVAL_MS. When the turn completes, edits to a
- * final summary or deletes the message.
+ * Design informed by best practices from Claude Code, Codex CLI, Cursor, and Kiro:
+ *
+ * 1. **Phase-based display** (Cursor/Codex): Show what phase the agent is in
+ *    (reading → planning → editing → verifying) not just raw tool names.
+ * 2. **Smart grouping** (Claude Code): Collapse consecutive reads/edits into
+ *    summaries like "📖 Read 4 files" instead of listing each one.
+ * 3. **Progressive disclosure** (Bench/Intent): Keep the live view compact,
+ *    expand detail in the final summary.
+ * 4. **Thinking indicator** (all tools): Show when the agent is reasoning
+ *    between tool calls — the "dead air" gap is the worst UX.
+ * 5. **Context bar** (Claude Code status line): Visual progress bar for
+ *    context window usage.
  */
 
 import { postMessage, editMessage } from "./discord-api.js";
@@ -11,11 +20,44 @@ import { postMessage, editMessage } from "./discord-api.js";
 const FIRST_UPDATE_MS = 6_000;
 const UPDATE_INTERVAL_MS = 60_000;
 const MIN_TOOLS_BEFORE_REPORT = 1;
-const MAX_HISTORY = 6;
-const MAX_TITLE_LEN = 60;
-const MAX_FILES_IN_SUMMARY = 5;
+const MAX_DISPLAY_GROUPS = 5;
+const MAX_TITLE_LEN = 55;
+const MAX_FILES_IN_SUMMARY = 6;
 
 type CompletedTool = { title: string; kind: string; durationMs?: number };
+
+// --- Phase detection ---
+
+type Phase = "exploring" | "planning" | "editing" | "running" | "verifying" | "working";
+
+function detectPhase(kind: string): Phase {
+  switch (kind) {
+    case "read":
+    case "search":
+    case "web_search":
+    case "fetch":
+      return "exploring";
+    case "think":
+      return "planning";
+    case "edit":
+    case "delete":
+      return "editing";
+    case "execute":
+    case "shell":
+      return "running";
+    default:
+      return "working";
+  }
+}
+
+const PHASE_LABELS: Record<Phase, string> = {
+  exploring: "🔍 Exploring",
+  planning: "🧠 Planning",
+  editing: "📝 Editing",
+  running: "▶️ Running",
+  verifying: "✅ Verifying",
+  working: "🔧 Working",
+};
 
 /** Emoji for a tool kind. */
 function kindEmoji(kind: string): string {
@@ -42,48 +84,21 @@ function kindEmoji(kind: string): string {
 
 /** Shorten a tool title for display. */
 function formatTitle(title: string): string {
-  // Strip "Running: " prefix for shell commands.
   let t = title.replace(/^Running:\s*/i, "");
-  // Strip absolute cwd prefixes.
   t = t.replace(/\/home\/[^/]+\/code\/[^/]+\/[^/]+\//g, "");
-  // Collapse long curl commands to just the path.
   const curlMatch = /curl\s.*?(https?:\/\/[^\s]+)/.exec(t);
   if (curlMatch?.[1]) {
     try {
       const url = new URL(curlMatch[1]);
       t = `curl ${url.pathname.slice(0, 40)}`;
     } catch {
-      // keep original
+      /* keep original */
     }
   }
   if (t.length > MAX_TITLE_LEN) {
-    t = t.slice(0, MAX_TITLE_LEN - 1) + "…";
+    t = `${t.slice(0, MAX_TITLE_LEN - 1)}…`;
   }
   return t;
-}
-
-/** Group consecutive edits to the same file. */
-function groupHistory(history: CompletedTool[]): string[] {
-  const lines: string[] = [];
-  let i = 0;
-  while (i < history.length) {
-    const tool = history[i];
-    if (!tool) {
-      i++;
-      continue;
-    }
-    // Count consecutive same-title entries.
-    let count = 1;
-    while (i + count < history.length && history[i + count]?.title === tool.title) {
-      count++;
-    }
-    const emoji = kindEmoji(tool.kind);
-    const title = formatTitle(tool.title);
-    const dur = tool.durationMs != null ? ` ${elapsed(tool.durationMs)}` : "";
-    lines.push(count > 1 ? `  ✅ ${emoji} ${title} (×${count})` : `  ✅ ${emoji} ${title}${dur}`);
-    i += count;
-  }
-  return lines;
 }
 
 function elapsed(ms: number): string {
@@ -96,19 +111,87 @@ function elapsed(ms: number): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
-/** Extract file paths from tool titles for the final summary. */
-function extractFilesFromHistory(history: CompletedTool[]): string[] {
-  const files = new Set<string>();
-  for (const tool of history) {
-    if (tool.kind === "edit" || tool.kind === "delete") {
-      // Title is usually the file path for edits.
-      const cleaned = tool.title.replace(/\/home\/[^/]+\/code\/[^/]+\/[^/]+\//, "");
-      if (cleaned && !cleaned.includes(" ")) {
-        files.add(cleaned);
+/** Extract a short filename from a tool title. */
+function extractFile(title: string): string | null {
+  const cleaned = title.replace(/\/home\/[^/]+\/code\/[^/]+\/[^/]+\//, "");
+  // Must look like a file path (no spaces, has extension or slash).
+  if (cleaned && !cleaned.includes(" ") && (cleaned.includes("/") || cleaned.includes("."))) {
+    return cleaned;
+  }
+  return null;
+}
+
+// --- Smart grouping (Claude Code style) ---
+
+type DisplayGroup = { kind: string; items: CompletedTool[]; label: string };
+
+/**
+ * Group completed tools by kind for compact display.
+ * Consecutive tools of the same kind get collapsed:
+ *   📖 Read 4 files (src/foo.ts, src/bar.ts, +2)
+ *   📝 Edited 2 files (progress.ts, server.ts)
+ *   ▶️ pnpm build (45s)
+ */
+function buildDisplayGroups(history: CompletedTool[]): DisplayGroup[] {
+  const groups: DisplayGroup[] = [];
+  let i = 0;
+  while (i < history.length) {
+    const tool = history[i];
+    if (!tool) {
+      i++;
+      continue;
+    }
+    const phase = detectPhase(tool.kind);
+    // Collect consecutive tools in the same phase.
+    const items: CompletedTool[] = [tool];
+    while (i + items.length < history.length) {
+      const next = history[i + items.length];
+      if (!next || detectPhase(next.kind) !== phase) {
+        break;
       }
+      items.push(next);
+    }
+    i += items.length;
+
+    // Build the label.
+    if (items.length === 1) {
+      // Single tool — show its title directly.
+      const dur =
+        tool.durationMs != null && tool.durationMs >= 2000 ? ` ${elapsed(tool.durationMs)}` : "";
+      groups.push({
+        kind: tool.kind,
+        items,
+        label: `${kindEmoji(tool.kind)} ${formatTitle(tool.title)}${dur}`,
+      });
+    } else {
+      // Multiple tools — collapse into a summary.
+      const files = items.map((t) => extractFile(t.title)).filter(Boolean) as string[];
+      const uniqueFiles = [...new Set(files)];
+      const emoji = kindEmoji(items[0]?.kind ?? "");
+      const verb = phase === "exploring" ? "Read" : phase === "editing" ? "Edited" : "Ran";
+      let detail = "";
+      if (uniqueFiles.length > 0) {
+        const shown = uniqueFiles.slice(0, 3).map((f) => f.split("/").pop() ?? f);
+        const extra = uniqueFiles.length > 3 ? `, +${uniqueFiles.length - 3}` : "";
+        detail = ` (${shown.join(", ")}${extra})`;
+      }
+      groups.push({
+        kind: items[0]?.kind ?? "",
+        items,
+        label: `${emoji} ${verb} ${items.length} file${items.length !== 1 ? "s" : ""}${detail}`,
+      });
     }
   }
-  return [...files];
+  return groups;
+}
+
+/** Build a visual context bar: [████████░░░░░░░░░░░░] 23% */
+function contextBar(pct: number): string {
+  const width = 15;
+  const filled = Math.round((pct / 100) * width);
+  const bar = "█".repeat(filled) + "░".repeat(width - filled);
+  const warn = pct >= 60 ? " ⚠️" : "";
+  return `[${bar}] ${pct.toFixed(0)}%${warn}`;
 }
 
 export class ProgressReporter {
@@ -142,11 +225,9 @@ export class ProgressReporter {
     this.lastToolEndAt = 0;
     this.started = true;
 
-    // First update after FIRST_UPDATE_MS, only if enough tools have fired.
     this.firstTimer = setTimeout(() => {
       this.firstTimer = null;
       if (!this.started || this.toolCount < MIN_TOOLS_BEFORE_REPORT) {
-        // Not enough activity yet — check again at the next interval.
         this.scheduleInterval();
         return;
       }
@@ -172,7 +253,6 @@ export class ProgressReporter {
       return;
     }
     if (status === "in_progress" || status === "pending") {
-      // A new tool started — push the previous one to history.
       if (this.currentTool) {
         const dur = Date.now() - this.currentTool.startedAt;
         const completed = {
@@ -182,15 +262,11 @@ export class ProgressReporter {
         };
         this.history.push(completed);
         this.allHistory.push(completed);
-        if (this.history.length > MAX_HISTORY) {
-          this.history.shift();
-        }
       }
       this.currentTool = { title, kind, startedAt: Date.now() };
       this.toolCount++;
       this.lastToolEndAt = 0;
     } else if (status === "execute" || status === "read" || status === "search") {
-      // Descriptive update for the current tool — replace the bare name in place.
       if (this.currentTool) {
         this.currentTool.title = title;
         if (kind) {
@@ -207,9 +283,6 @@ export class ProgressReporter {
         };
         this.history.push(completed);
         this.allHistory.push(completed);
-        if (this.history.length > MAX_HISTORY) {
-          this.history.shift();
-        }
         this.currentTool = null;
         this.lastToolEndAt = Date.now();
       }
@@ -231,16 +304,43 @@ export class ProgressReporter {
       return;
     }
 
-    // Build a richer final summary.
     const dt = elapsed(Date.now() - this.promptStartedAt);
     const parts: string[] = [];
     parts.push(`✅ **Done** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""})`);
 
-    const files = extractFilesFromHistory(this.allHistory);
-    if (files.length > 0) {
-      const shown = files.slice(0, MAX_FILES_IN_SUMMARY);
+    // Summarize by category.
+    const reads = this.allHistory.filter((t) => detectPhase(t.kind) === "exploring").length;
+    const edits = this.allHistory.filter((t) => detectPhase(t.kind) === "editing").length;
+    const runs = this.allHistory.filter((t) => detectPhase(t.kind) === "running").length;
+    const counts: string[] = [];
+    if (reads > 0) {
+      counts.push(`📖 ${reads} read`);
+    }
+    if (edits > 0) {
+      counts.push(`📝 ${edits} edit`);
+    }
+    if (runs > 0) {
+      counts.push(`▶️ ${runs} cmd`);
+    }
+    if (counts.length > 0) {
+      parts.push(`  ${counts.join("  ·  ")}`);
+    }
+
+    // List files touched.
+    const files = new Set<string>();
+    for (const tool of this.allHistory) {
+      const f = extractFile(tool.title);
+      if (f) {
+        files.add(f);
+      }
+    }
+    const editedFiles = [...files];
+    if (editedFiles.length > 0) {
+      const shown = editedFiles.slice(0, MAX_FILES_IN_SUMMARY).map((f) => f.split("/").pop() ?? f);
       const extra =
-        files.length > MAX_FILES_IN_SUMMARY ? ` +${files.length - MAX_FILES_IN_SUMMARY} more` : "";
+        editedFiles.length > MAX_FILES_IN_SUMMARY
+          ? ` +${editedFiles.length - MAX_FILES_IN_SUMMARY} more`
+          : "";
       parts.push(`  📁 ${shown.join(", ")}${extra}`);
     }
 
@@ -251,7 +351,6 @@ export class ProgressReporter {
   stop(): void {
     this.started = false;
     this.clearTimers();
-    // Don't clean up messageId here — finish() handles the final edit.
   }
 
   private clearTimers(): void {
@@ -283,29 +382,43 @@ export class ProgressReporter {
   private buildMessage(): string {
     const dt = elapsed(Date.now() - this.promptStartedAt);
     const lines: string[] = [];
+
+    // Phase-aware header (like Cursor's "Planning Next Moves" / "Applying Changes").
+    const currentPhase = this.currentTool ? detectPhase(this.currentTool.kind) : "working";
+    const phaseLabel = this.currentTool
+      ? PHASE_LABELS[currentPhase]
+      : this.lastToolEndAt > 0
+        ? "💭 Thinking"
+        : "🔧 Working";
     lines.push(
-      `🔧 **Working...** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""})`,
+      `${phaseLabel}**...** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""})`,
     );
 
-    // Recent completed tools.
-    const grouped = groupHistory(this.history);
-    for (const line of grouped) {
-      lines.push(line);
+    // Smart-grouped completed tools (Claude Code style).
+    const groups = buildDisplayGroups(this.history);
+    // Show only the last N groups to keep it compact.
+    const displayGroups = groups.slice(-MAX_DISPLAY_GROUPS);
+    if (groups.length > MAX_DISPLAY_GROUPS) {
+      const hidden = groups.length - MAX_DISPLAY_GROUPS;
+      lines.push(`  ··· ${hidden} earlier step${hidden !== 1 ? "s" : ""}`);
+    }
+    for (const group of displayGroups) {
+      lines.push(`  ✅ ${group.label}`);
     }
 
-    // Current active tool or thinking indicator.
+    // Current active tool with live duration.
     if (this.currentTool) {
       const emoji = kindEmoji(this.currentTool.kind);
       const toolDur = elapsed(Date.now() - this.currentTool.startedAt);
       lines.push(`  ⏳ ${emoji} ${formatTitle(this.currentTool.title)} (${toolDur})`);
     } else if (this.lastToolEndAt > 0) {
       const thinkDur = elapsed(Date.now() - this.lastToolEndAt);
-      lines.push(`  💭 Thinking... (${thinkDur})`);
+      lines.push(`  💭 Reasoning... (${thinkDur})`);
     }
 
-    // Context usage.
+    // Context bar (Claude Code status line style).
     if (this.contextPct > 0) {
-      lines.push(`  📊 ${this.contextPct.toFixed(1)}% context`);
+      lines.push(`  📊 ${contextBar(this.contextPct)}`);
     }
 
     return lines.join("\n");
