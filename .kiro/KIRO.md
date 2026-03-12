@@ -101,43 +101,32 @@ delay: `spinup oc --defer=5`.
 ## Context Management
 
 - You're loaded with `AGENTS.md` (upstream codebase rules) and this file.
+- Build/test commands, project structure, and coding style are in `AGENTS.md` — don't duplicate here.
+- Beads issue tracker commands are in `memory.md` — don't duplicate here.
 - Load docs lazily via the doc map below — don't stuff everything upfront.
 
 ## On-Demand Doc Map
 
-| Area                    | Load                                                           |
-| ----------------------- | -------------------------------------------------------------- |
-| Upstream fork / sync    | `UPSTREAM.md`                                                  |
-| Gateway / WS protocol   | `docs/architecture.md`, `docs/gateway/protocol.md`             |
-| Agent loop / auto-reply | `docs/concepts/agent-loop.md`                                  |
-| Sessions / compaction   | `docs/concepts/session.md`                                     |
-| System prompt           | `docs/concepts/system-prompt.md`                               |
-| Context window          | `docs/concepts/context.md`                                     |
-| Skills system           | `docs/tools/skills.md`                                         |
-| Tool execution          | `docs/tools/exec.md`                                           |
-| Testing                 | `docs/help/testing.md`                                         |
-| Debugging               | `docs/help/debugging.md`                                       |
-| Environment / config    | `docs/help/environment.md`                                     |
-| Gateway config ref      | `docs/gateway/configuration-reference.md` (large — grep first) |
-| Channel-specific        | `docs/channels/<channel>.md`                                   |
-| Provider-specific       | `docs/providers/<provider>.md`                                 |
-| Plugin dev              | `docs/plugins/manifest.md`                                     |
-| Memory / QMD            | `docs/concepts/memory.md`                                      |
-| macOS app               | `docs/mac/`                                                    |
-
-## Codebase Quick Ref
-
-- **Runtime**: Node 22+, Bun for dev/scripts, pnpm for package management.
-- **Source**: `src/` — CLI in `src/cli`, commands in `src/commands`, gateway in `src/gateway`.
-- **Tests**: Colocated `*.test.ts`. Run: `pnpm test`. Build: `pnpm build`. Lint: `pnpm check`.
-- **Extensions**: `extensions/*` — workspace packages with own `package.json`.
-- **Channels**: `src/telegram`, `src/discord`, `src/slack`, `src/signal`, `src/imessage`, `src/web`, `src/channels`. Extensions in `extensions/*`.
-
-## Issue Tracking (Beads)
-
-Local-only SQLite tracker (`br`). Prefix: `oc-`. `.beads/` is gitignored.
-Key commands: `br ready`, `br show <id>`, `br update <id> --claim`,
-`br close <id> --reason "..."`, `br create "Title" -p 1 -t task`, `br list`.
+| Area                       | Load                                                           |
+| -------------------------- | -------------------------------------------------------------- |
+| Upstream fork / sync       | `UPSTREAM.md`                                                  |
+| Ops / spinup / diagnostics | `.kiro/KIRO-OPS.md`                                            |
+| Gateway / WS protocol      | `docs/architecture.md`, `docs/gateway/protocol.md`             |
+| Agent loop / auto-reply    | `docs/concepts/agent-loop.md`                                  |
+| Sessions / compaction      | `docs/concepts/session.md`                                     |
+| System prompt              | `docs/concepts/system-prompt.md`                               |
+| Context window             | `docs/concepts/context.md`                                     |
+| Skills system              | `docs/tools/skills.md`                                         |
+| Tool execution             | `docs/tools/exec.md`                                           |
+| Testing                    | `docs/help/testing.md`                                         |
+| Debugging                  | `docs/help/debugging.md`                                       |
+| Environment / config       | `docs/help/environment.md`                                     |
+| Gateway config ref         | `docs/gateway/configuration-reference.md` (large — grep first) |
+| Channel-specific           | `docs/channels/<channel>.md`                                   |
+| Provider-specific          | `docs/providers/<provider>.md`                                 |
+| Plugin dev                 | `docs/plugins/manifest.md`                                     |
+| Memory / QMD               | `docs/concepts/memory.md`                                      |
+| macOS app                  | `docs/mac/`                                                    |
 
 ## Workflow Tips
 
@@ -146,212 +135,3 @@ Key commands: `br ready`, `br show <id>`, `br update <id> --claim`,
 - When touching shared logic (routing, pairing, allowlists), all channels are affected.
 - Don't modify or add tests unless explicitly asked.
 - Run `pnpm build && pnpm check` before considering work done.
-
-## Agent Instructions
-
-This file tells agents how to manage Tyler's local development environment. The setup runs across multiple tmux sessions — openclaw services (proxy + gateway), an MCP session with a headless browser for automation, and project-specific kiro-cli sessions. Everything is managed through a single script.
-
-### spinup — Session Manager
-
-`~/bin/spinup` manages tmux development sessions. It is idempotent and safe to run repeatedly.
-
-#### Usage
-
-```bash
-spinup               # Start/reset ALL sessions
-spinup oc            # Start/reset only the openclaw infra session (proxy + gateway)
-spinup oc --defer    # Same, but backgrounds with 3s delay (safe from Discord agent)
-spinup oc-cli        # Start/reset only the openclaw kiro-cli session
-spinup mcp           # Start/reset only the MCP session (kiro-cli + dev-browser)
-spinup pwc           # Start/reset only the PwC session
-spinup sermon        # Start/reset only the sermon session
-spinup status        # Machine-readable health of all sessions, panes, and ports
-spinup logs [name]   # Tail logs (kiro-proxy|gateway|dev-browser|all) [lines=30]
-spinup restart-pane <title>  # Restart a single crashed pane by title without nuking the session
-```
-
-#### Agent interaction
-
-Every pane has a title and its startup command stored in tmux env (`CMD_<title>`). This means agents can:
-
-- **Diagnose** with `spinup status` — one command gives session/pane liveness, PIDs, dead flags, cwds, and port status in parseable key=value format.
-- **Read logs** with `spinup logs gateway 50` — no need to remember log file paths.
-- **Restart surgically** with `spinup restart-pane gateway` — respawns just that pane using its stored command, without touching other panes or sessions.
-- **Target windows** via `tmux send-keys -t oc:kiro-proxy` or by title lookup.
-- **Discover commands** with `tmux show-environment -t oc` to see what each pane runs.
-
-Pane titles across all sessions: `kiro-proxy`, `gateway`, `kiro-cli`, `dev-browser`.
-
-#### When to run it
-
-| User says                                                                    | Command         |
-| ---------------------------------------------------------------------------- | --------------- |
-| "spin up" / "spinup" / "start everything" / "set me up" / "boot up"          | `spinup`        |
-| "restart everything" / "reset everything" / "nuke it"                        | `spinup`        |
-| "the proxy is down" / "proxy crashed" / "gateway is broken" / "oc is broken" | `spinup oc`     |
-| "restart openclaw" / "reset oc"                                              | `spinup oc`     |
-| "dev-browser is broken" / "browser server crashed" / "restart mcp"           | `spinup mcp`    |
-| "restart pwc" / "reset pwc"                                                  | `spinup pwc`    |
-| "restart sermon" / "reset sermon"                                            | `spinup sermon` |
-
-#### Internals
-
-- **ANSI stripping**: all service output is piped through `sed -u "s/\x1b\[[0-9;]*m//g"` before `tee` to keep logs clean.
-- **Port cleanup**: `kill_port` (`lsof -ti:<port> | xargs -r kill -9`) runs before starting services that bind ports (kiro-proxy on 18801, dev-browser on 9222/9223).
-- **`remain-on-exit on`**: set on all sessions so crashed panes stay readable (enables `dead=1` detection in `spinup status`).
-
-#### Pane commands
-
-| Pane        | Actual command                                                                                               |
-| ----------- | ------------------------------------------------------------------------------------------------------------ |
-| kiro-proxy  | `pnpm openclaw kiro-proxy --verbose --routes kiro-proxy-routes.json` (cwd: `~/code/personal/clawdbot`)       |
-| gateway     | `pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback` (cwd: `~/code/personal/clawdbot`) |
-| kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                         |
-| dev-browser | kills ports 9222/9223, then `./server.sh --headless` (cwd: `~/code/work/dev-browser/skills/dev-browser`)     |
-
-#### Sessions & ports
-
-| Session    | What runs             | Ports        | Panes/Windows |
-| ---------- | --------------------- | ------------ | ------------- |
-| **oc**     | kiro-proxy, gateway   | 18801, 18800 | 2 windows     |
-| **oc-cli** | kiro-cli              | —            | 1 window      |
-| **mcp**    | kiro-cli, dev-browser | 9222, 9223   | 2 windows     |
-| **pwc**    | kiro-cli              | —            | 1 pane        |
-| **sermon** | kiro-cli              | —            | 1 pane        |
-
-#### Diagnosing problems
-
-First step is always `spinup status` — it gives session/pane liveness, PIDs, dead flags, cwds, and port status in one shot.
-
-If a specific service is misbehaving, check its logs: `spinup logs gateway 50` (or `kiro-proxy`, `dev-browser`, `all`).
-
-A pane showing `dead=1` means the process crashed but the pane was preserved. Read its output with `tmux capture-pane -t <session>:<window>.<pane> -p | tail -20` to understand what went wrong.
-
-#### Targeted recovery
-
-- **Single pane crashed** → `spinup restart-pane <title>` (e.g. `spinup restart-pane gateway`) — respawns just that pane using its stored command.
-- **Whole session broken** → `spinup oc` / `spinup mcp` etc.
-- **Only reset all** (`spinup`) if the user explicitly asks or multiple sessions are broken.
-
-#### After running
-
-1. Confirm exit code 0
-2. Tell the user which sessions were started
-3. Remind them to attach: `tmux attach -t <session-name>`
-4. For **oc**, services take ~5–10 seconds to fully start. If the user immediately reports issues, wait and recheck with `spinup status` before re-running spinup.
-
-#### Logs
-
-`spinup logs [name] [lines]` tails logs without needing to remember paths. Direct paths if needed:
-
-| Service     | Log file                               |
-| ----------- | -------------------------------------- |
-| kiro-proxy  | `/tmp/kiro-proxy-YYYY-MM-DD.log`       |
-| gateway     | `/tmp/openclaw-gateway-YYYY-MM-DD.log` |
-| dev-browser | `/tmp/dev-browser-YYYY-MM-DD.log`      |
-
-## Operational Diagnostics
-
-### Checking context usage across all sessions
-
-The kiro-proxy logs `context: X%` after each ACP response. The gateway logs
-detailed `[context-diag]` entries with message counts, history chars, image
-blocks, and system prompt size per session key.
-
-Quick commands:
-
-```bash
-# Latest context % per channel (from proxy logs)
-grep -E 'channel route:|context:' /tmp/kiro-proxy.log | tail -40
-
-# Detailed context-diag per session (from gateway logs)
-grep 'context-diag' /tmp/openclaw-gateway.log | tail -20
-
-# Latest context-diag per unique session
-grep 'context-diag' /tmp/openclaw-gateway.log | awk -F'sessionKey=' '{print $2}' | \
-  awk '{print $1}' | sort -u | while read key; do
-    grep "sessionKey=$key " /tmp/openclaw-gateway.log | grep 'context-diag' | tail -1
-  done
-```
-
-### Key metrics to watch
-
-| Metric                | Where                                   | Warning threshold    |
-| --------------------- | --------------------------------------- | -------------------- |
-| kiro-cli context %    | proxy log `context: X%`                 | >50% consider `/new` |
-| Gateway history chars | gateway `context-diag` historyTextChars | >200K chars          |
-| Gateway message count | gateway `context-diag` messages=        | >200 msgs            |
-| System memory         | `free -h`                               | <1GB available       |
-| Load average          | `uptime`                                | >2.0 sustained       |
-| ACP child process RSS | `ps aux --sort=-%mem \| head -15`       | >200MB per process   |
-
-### GC idle timeout behavior
-
-The proxy kills idle ACP sessions after 24 hours of inactivity (previously
-30 min — raised because sessions are bounded by channel count and aggressive
-GC was destroying valuable context between messages). When this happens, the
-log shows:
-
-```
-[kiro-session] killing process (pid XXXXX) reason=gc-idle-timeout (session=..., idle=XXXXs, limit=1800s)
-```
-
-The session respawns automatically on the next message. Context resets to ~2%.
-This is normal and expected — it keeps memory usage bounded.
-
-### System resource baseline (exe.dev VM)
-
-- 7.8GB RAM total, ~4.5GB available under normal load
-- Gateway: ~390MB RSS (largest single process)
-- kiro-proxy: ~180MB RSS
-- Each kiro-cli ACP child: 65-90MB RSS
-- dev-browser + Chromium: ~170MB combined
-- Swap usage of 1-1.5GB is normal; watch for >3GB
-
-### ACP session architecture (critical path)
-
-The kiro-proxy spawns `kiro-cli acp` as direct child processes with
-stdin/stdout ACP protocol pipes. **These are the processes that matter.**
-They drive the entire Discord → kiro-cli pipeline. If these orphan or
-accumulate, the system degrades (memory pressure, port exhaustion, stale
-sessions).
-
-The tmux `kiro-cli` sessions (`oc-cli`, `mcp:main`, `pwc:main`,
-`sermon:main`) are separate interactive sessions for manual laptop use —
-they are NOT part of the Discord pipeline and are low priority for monitoring.
-
-#### Identifying ACP processes
-
-ACP processes show as `kiro-cli acp` (parent) + `kiro-cli-chat acp` (child)
-in `ps` output. Each Discord channel conversation spawns one pair. To audit:
-
-```bash
-# List all ACP processes (the ones that matter)
-ps aux | grep -E 'kiro-cli.*acp|kiro-cli-chat.*acp' | grep -v grep
-
-# Cross-reference with proxy's known sessions
-grep -E 'spawned|killing|gc-idle-timeout' /tmp/kiro-proxy.log | tail -20
-```
-
-Every `kiro-cli acp` process should trace back to a kiro-proxy child spawn.
-If a process exists but the proxy has no record of it (or logged a kill for
-it), it's orphaned and safe to clean up.
-
-#### Orphan prevention
-
-The proxy's GC idle timeout (1800s) is the primary defense. But if the proxy
-itself crashes or restarts, its children may survive as orphans. After any
-proxy restart, audit ACP processes against the new proxy's session list.
-
-#### Conservative cleanup rule
-
-Never kill an ACP process unless you can confirm with 100% certainty it is
-orphaned (no matching proxy session, no recent activity). Long-running jobs
-are expected — a process being old is not sufficient reason to kill it.
-
-### Cross-session communication
-
-There is no inter-agent communication. Each Discord channel → kiro-cli ACP
-session is fully isolated. The `#oc-tmux-session` agent can monitor all
-sessions via logs and `spinup status` but cannot inject messages into other
-channels' ACP sessions.
