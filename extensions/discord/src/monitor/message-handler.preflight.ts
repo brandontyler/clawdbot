@@ -3,7 +3,7 @@ import {
   ensureConfiguredAcpRouteReady,
   resolveConfiguredAcpRoute,
 } from "../../../../src/acp/persistent-bindings.route.js";
-import { hasControlCommand } from "../../../../src/auto-reply/command-detection.js";
+import { hasControlCommand, isTextOnlyCommand } from "../../../../src/auto-reply/command-detection.js";
 import { shouldHandleTextCommands } from "../../../../src/auto-reply/commands-registry.js";
 import {
   recordPendingHistoryEntryIfEnabled,
@@ -291,8 +291,14 @@ export async function preflightDiscordMessage(
   });
 
   // Intercept text-only slash commands (e.g. user typing "/reset" instead of using Discord's slash command picker)
-  // These should not be forwarded to the agent; proper slash command interactions are handled elsewhere
-  if (!isDirectMessage && baseText && hasControlCommand(baseText, params.cfg)) {
+  // These should not be forwarded to the agent; proper slash command interactions are handled elsewhere.
+  // Text-only commands (scope === "text") have no native slash equivalent and must pass through.
+  if (
+    !isDirectMessage &&
+    baseText &&
+    hasControlCommand(baseText, params.cfg) &&
+    !isTextOnlyCommand(baseText, params.cfg)
+  ) {
     logVerbose(`discord: drop text-based slash command ${message.id} (intercepted at gateway)`);
     return null;
   }

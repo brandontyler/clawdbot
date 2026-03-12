@@ -4,6 +4,7 @@ import {
   listChatCommands,
   listChatCommandsForConfig,
   normalizeCommandBody,
+  resolveTextCommand,
 } from "./commands-registry.js";
 import { isAbortTrigger } from "./reply/abort.js";
 
@@ -62,6 +63,20 @@ export function isControlCommandMessage(
   }
   const normalized = normalizeCommandBody(trimmed, options).trim().toLowerCase();
   return isAbortTrigger(normalized);
+}
+
+/**
+ * Returns true when the text matches a registered command that is text-only
+ * (scope === "text") — i.e. it has no native slash-command counterpart.
+ * Channel monitors use this to avoid dropping text-only commands that would
+ * otherwise be mistaken for native slash interactions.
+ */
+export function isTextOnlyCommand(text?: string, cfg?: OpenClawConfig): boolean {
+  if (!text) {
+    return false;
+  }
+  const resolved = resolveTextCommand(text.trim(), cfg);
+  return resolved?.command.scope === "text";
 }
 
 /**
