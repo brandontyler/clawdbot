@@ -58,6 +58,8 @@ export type ChannelRoute = {
   cwd: string;
   /** Optional extra args for kiro-cli (appended after "acp"). */
   kiroArgs?: string[];
+  /** If true, sessions are never hibernated — always start fresh. */
+  noHibernate?: boolean;
 };
 
 export type KiroProxyOptions = {
@@ -76,6 +78,8 @@ export type KiroProxyOptions = {
    * E.g. ["--workspace", "/my/project"]
    */
   kiroArgs?: string[];
+  /** If true, sessions are never hibernated — always start fresh. */
+  noHibernate?: boolean;
   /** Working directory passed to every kiro process. Default: process.cwd() */
   cwd?: string;
   /**
