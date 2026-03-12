@@ -262,9 +262,17 @@ export class SessionManager {
       `session ready: session=${this.tag(sessionKey)} pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
     );
 
-    // For the very first turn, send system prompt (if any) prepended to the
-    // first user message so Kiro can establish context.
-    const promptText = this.buildPromptFromMessages(messages);
+    // For noHibernate routes the ACP session is always fresh — only send the
+    // latest user message so the model doesn't hallucinate prior context from
+    // the gateway's replayed history.
+    const freshOnly = route?.noHibernate === true && !session.wasLoaded;
+    const promptMessages = freshOnly ? messages.slice(-1) : messages;
+    if (freshOnly && messages.length > 1) {
+      this.log(
+        `noHibernate fresh session — sending only latest message (dropped ${messages.length - 1} replayed)`,
+      );
+    }
+    const promptText = this.buildPromptFromMessages(promptMessages);
 
     const handle: KiroSessionHandle = {
       acpSessionId: session.acpSessionId,
@@ -366,19 +374,25 @@ export class SessionManager {
     sessionKey: string,
     sessionOpts: KiroSessionOptions,
   ): Promise<KiroSession> {
+    const channelId = detectChannelId(sessionKey);
+    const route = channelId ? this.channelRoutes[channelId] : undefined;
     const hibernated = this.hibernated.get(sessionKey);
     if (hibernated) {
       this.hibernated.delete(sessionKey);
       saveHibernated(this.hibernated);
-      this.log(
-        `resuming hibernated session: acp=${hibernated.acpSessionId} ctx=${hibernated.contextPct.toFixed(0)}% age=${Math.round((Date.now() - hibernated.hibernatedAt) / 60_000)}min`,
-      );
-      const session = await KiroSession.load(
-        hibernated.acpSessionId,
-        sessionOpts,
-        this.buildSessionEvents(sessionKey),
-      );
-      return session;
+      if (route?.noHibernate) {
+        this.log(`discarding hibernated session (noHibernate): acp=${hibernated.acpSessionId}`);
+      } else {
+        this.log(
+          `resuming hibernated session: acp=${hibernated.acpSessionId} ctx=${hibernated.contextPct.toFixed(0)}% age=${Math.round((Date.now() - hibernated.hibernatedAt) / 60_000)}min`,
+        );
+        const session = await KiroSession.load(
+          hibernated.acpSessionId,
+          sessionOpts,
+          this.buildSessionEvents(sessionKey),
+        );
+        return session;
+      }
     }
     return KiroSession.create(sessionOpts, this.buildSessionEvents(sessionKey));
   }
@@ -390,18 +404,21 @@ export class SessionManager {
   hibernateSession(sessionKey: string, session: KiroSession, reason: string): void {
     const channelId = detectChannelId(sessionKey);
     const route = channelId ? this.channelRoutes[channelId] : undefined;
-    this.hibernated.set(sessionKey, {
-      acpSessionId: session.acpSessionId,
-      cwd: route?.cwd ?? this.sessionOpts.cwd,
-      contextPct: session.lastContextPct,
-      hibernatedAt: Date.now(),
-    });
-    saveHibernated(this.hibernated);
-    session.kill(`hibernate: ${reason}`);
+    const skip = route?.noHibernate === true;
+    if (!skip) {
+      this.hibernated.set(sessionKey, {
+        acpSessionId: session.acpSessionId,
+        cwd: route?.cwd ?? this.sessionOpts.cwd,
+        contextPct: session.lastContextPct,
+        hibernatedAt: Date.now(),
+      });
+      saveHibernated(this.hibernated);
+    }
+    session.kill(`${skip ? "kill" : "hibernate"}: ${reason}`);
     this.sessions.delete(sessionKey);
     this.cleanupSession(sessionKey);
     this.log(
-      `session hibernated: session=${this.tag(sessionKey)} acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}% reason=${reason}`,
+      `session ${skip ? "killed (noHibernate)" : "hibernated"}: session=${this.tag(sessionKey)} acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}% reason=${reason}`,
     );
   }
 

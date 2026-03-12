@@ -150,6 +150,8 @@ export class KiroSession {
   lastContextPct = 0;
   /** True while a prompt() call is in-flight (GC must never kill). */
   isPrompting = false;
+  /** True if this session was restored via loadSession (not freshly created). */
+  wasLoaded = false;
 
   private constructor(
     proc: ChildProcess,
@@ -316,6 +318,7 @@ export class KiroSession {
         mcpServers: [],
       });
       session.acpSessionId = acpSessionId;
+      session.wasLoaded = true;
       log(`session loaded: ${acpSessionId}`);
     } catch (err) {
       log(`loadSession failed (${String(err)}), falling back to newSession`);
