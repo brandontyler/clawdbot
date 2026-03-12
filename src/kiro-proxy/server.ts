@@ -62,6 +62,25 @@ function formatErrorVerbose(err: unknown, label: string): string {
   return `${label}: ${JSON.stringify(err)}`;
 }
 
+/** Extract a short, user-facing summary from a kiro-cli stream error. */
+function extractStreamErrorSummary(err: unknown): string {
+  const raw =
+    err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
+  if (/InternalServerError|Internal error/i.test(raw)) {
+    return " (InternalServerError)";
+  }
+  if (/timeout/i.test(raw)) {
+    return " (timeout)";
+  }
+  if (/rate.?limit|throttl/i.test(raw)) {
+    return " (rate limited)";
+  }
+  if (/context.*(length|limit|overflow)/i.test(raw)) {
+    return " (context overflow)";
+  }
+  return "";
+}
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // ─── Persistent corruption log ────────────────────────────────────────────────
@@ -542,6 +561,22 @@ async function handleCompletions(
         sseChunk(res, buildFinalChunk(completionId));
         sseDone(res);
         return;
+      }
+
+      // Surface the error visibly so the user knows the response was cut short
+      // (partial content may already have been streamed to Discord).
+      if (!isInvalidHistoryError(err)) {
+        const hadPartial = responseChunks.length > 0;
+        const detail = extractStreamErrorSummary(err);
+        sseChunk(
+          res,
+          buildChunk(
+            completionId,
+            hadPartial
+              ? `\n\n⚠️ Response interrupted — the model hit an internal error mid-stream.${detail} Please try again.`
+              : `⚠️ The model returned an error before generating a response.${detail} Please try again.`,
+          ),
+        );
       }
 
       if (isInvalidHistoryError(err)) {
