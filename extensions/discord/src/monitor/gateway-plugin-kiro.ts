@@ -126,6 +126,18 @@ class KiroGatewayPlugin extends ResilientGatewayPlugin {
   }
 }
 
+class SafeKiroGatewayPlugin extends KiroGatewayPlugin {
+  override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
+    if (!this.gatewayInfo) {
+      this.gatewayInfo = await fetchDiscordGatewayInfo({
+        token: client.options.token,
+        fetchImpl: (input, init) => fetch(input, init as RequestInit),
+      });
+    }
+    return super.registerClient(client);
+  }
+}
+
 export function createKiroGatewayPlugin(params: {
   discordConfig: DiscordAccountConfig;
   runtime: RuntimeEnv;
@@ -139,17 +151,6 @@ export function createKiroGatewayPlugin(params: {
   };
 
   if (!proxy) {
-    class SafeKiroGatewayPlugin extends KiroGatewayPlugin {
-      override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
-        if (!this.gatewayInfo) {
-          this.gatewayInfo = await fetchDiscordGatewayInfo({
-            token: client.options.token,
-            fetchImpl: (input, init) => fetch(input, init as RequestInit),
-          });
-        }
-        return super.registerClient(client);
-      }
-    }
     return new SafeKiroGatewayPlugin(options);
   }
 
@@ -182,6 +183,6 @@ export function createKiroGatewayPlugin(params: {
     return new ProxyKiroGatewayPlugin();
   } catch (err) {
     params.runtime.error?.(danger(`discord: invalid gateway proxy: ${String(err)}`));
-    return new KiroGatewayPlugin(options);
+    return new SafeKiroGatewayPlugin(options);
   }
 }
