@@ -224,13 +224,16 @@ function buildChunk(completionId: string, content: string): OpenAIChunk {
   };
 }
 
-function buildFinalChunk(completionId: string): OpenAIChunk {
+function buildFinalChunk(
+  completionId: string,
+  finishReason: "stop" | "length" = "stop",
+): OpenAIChunk {
   return {
     id: completionId,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model: KIRO_MODEL_ID,
-    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
   };
 }
 
@@ -405,10 +408,11 @@ async function handleCompletions(
       resolvePromptLock = r;
     });
 
+    let wasMaxTokens = false;
     let tFirstChunk = 0;
     const responseChunks: string[] = [];
     try {
-      await session.prompt(promptText, (text) => {
+      const stopReason = await session.prompt(promptText, (text) => {
         if (!tFirstChunk) {
           tFirstChunk = performance.now();
         }
@@ -416,6 +420,16 @@ async function handleCompletions(
         sseChunk(res, buildChunk(completionId, text));
       });
       session.consecutiveErrors = 0;
+
+      // When the model hits its output token limit, append a visible notice
+      // so the user knows the response was cut short and can ask to continue.
+      wasMaxTokens = stopReason === "max_tokens";
+      if (wasMaxTokens && responseChunks.length > 0) {
+        const notice =
+          '\n\n⚠️ *Response truncated — output token limit reached. Say "continue" to pick up where I left off.*';
+        sseChunk(res, buildChunk(completionId, notice));
+        log(`⚠️ max_tokens: session=${sessionTag}… responseLen=${responseChunks.join("").length}`);
+      }
 
       // Detect kiro-cli inline corruption message in the completed response.
       const fullResponse = responseChunks.join("");
@@ -729,7 +743,7 @@ async function handleCompletions(
       resolvePromptLock!();
     }
 
-    sseChunk(res, buildFinalChunk(completionId));
+    sseChunk(res, buildFinalChunk(completionId, wasMaxTokens ? "length" : "stop"));
     sseDone(res);
   } else {
     // ── Blocking (non-streaming) response ─────────────────────────────────
