@@ -4,16 +4,22 @@
 // - Flap detection: force fresh IDENTIFY after repeated rapid disconnects
 // - Exponential backoff with jitter on reconnect attempts
 // - "Resumed successfully" debug logging
+// - Safe gateway metadata fetch via fetchDiscordGatewayInfo (upstream improvement)
 //
 // Kept in a separate file so upstream gateway-plugin.ts can be synced cleanly.
 
 import { GatewayPlugin } from "@buape/carbon/gateway";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 import WebSocket from "ws";
 import type { DiscordAccountConfig } from "../../../../src/config/types.js";
 import { danger } from "../../../../src/globals.js";
 import type { RuntimeEnv } from "../../../../src/runtime.js";
-import { ResilientGatewayPlugin, resolveDiscordGatewayIntents } from "./gateway-plugin.js";
+import {
+  ResilientGatewayPlugin,
+  fetchDiscordGatewayInfo,
+  resolveDiscordGatewayIntents,
+} from "./gateway-plugin.js";
 
 /** A resume that lasts less than this is considered a "flap". */
 const STABLE_CONNECTION_MS = 60_000;
@@ -133,19 +139,43 @@ export function createKiroGatewayPlugin(params: {
   };
 
   if (!proxy) {
-    return new KiroGatewayPlugin(options);
+    class SafeKiroGatewayPlugin extends KiroGatewayPlugin {
+      override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
+        if (!this.gatewayInfo) {
+          this.gatewayInfo = await fetchDiscordGatewayInfo({
+            token: client.options.token,
+            fetchImpl: (input, init) => fetch(input, init as RequestInit),
+          });
+        }
+        return super.registerClient(client);
+      }
+    }
+    return new SafeKiroGatewayPlugin(options);
   }
 
   try {
-    const agent = new HttpsProxyAgent<string>(proxy);
+    const wsAgent = new HttpsProxyAgent<string>(proxy);
+    const fetchAgent = new ProxyAgent(proxy);
     params.runtime.log?.("discord: gateway proxy enabled");
 
     class ProxyKiroGatewayPlugin extends KiroGatewayPlugin {
       constructor() {
         super(options);
       }
-      createWebSocket(url: string) {
-        return new WebSocket(url, { agent });
+
+      override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
+        if (!this.gatewayInfo) {
+          this.gatewayInfo = await fetchDiscordGatewayInfo({
+            token: client.options.token,
+            fetchImpl: (input, init) => undiciFetch(input, init),
+            fetchInit: { dispatcher: fetchAgent },
+          });
+        }
+        return super.registerClient(client);
+      }
+
+      override createWebSocket(url: string) {
+        return new WebSocket(url, { agent: wsAgent });
       }
     }
 
