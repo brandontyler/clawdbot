@@ -1,6 +1,6 @@
 # Upstream Sync Guide
 
-**Last synced:** `upstream/main` @ `f2e28fc30` — 2026-03-12 (v2026.3.11+, unreleased v2026.3.12)
+**Last synced:** `upstream/main` @ `2f03de029` — 2026-03-13 (v2026.3.13+, unreleased)
 
 This repo is a fork of [OpenClaw](https://github.com/openclaw/openclaw) customized
 to work with `kiro-cli`. The goal is to keep the delta against upstream as small
