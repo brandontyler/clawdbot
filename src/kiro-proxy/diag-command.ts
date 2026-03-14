@@ -23,6 +23,7 @@ type SessionInfo = {
   consecutiveErrors: number;
   sentMessages: number;
   isPrompting: boolean;
+  promptingSecs: number | null;
 };
 
 type RouteEntry = { cwd: string };
@@ -66,7 +67,9 @@ function sessionLine(s: SessionInfo, routes: Record<string, RouteEntry>): string
   const ctx = `ctx=${s.contextPct}%`.padEnd(8);
   const idle = `idle=${formatIdle(s.idleSecs)}`.padEnd(12);
   const rss = s.rssMb != null ? `${s.rssMb}MB` : "?MB";
-  const status = s.isPrompting ? "⏳ prompting" : "✅ idle";
+  const status = s.isPrompting
+    ? `⏳ prompting${s.promptingSecs != null ? ` ${formatIdle(s.promptingSecs)}` : ""}`
+    : "✅ idle";
   const errs = s.consecutiveErrors > 0 ? ` ⚠️${s.consecutiveErrors}err` : "";
   return `  ${name} ${ctx} ${idle} ${rss.padEnd(5)} ${status}${errs}`;
 }

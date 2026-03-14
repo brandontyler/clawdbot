@@ -150,6 +150,8 @@ export class KiroSession {
   lastContextPct = 0;
   /** True while a prompt() call is in-flight (GC must never kill). */
   isPrompting = false;
+  /** Epoch ms when the current prompt started (null when idle). */
+  promptStartedAt: number | null = null;
   /** True if this session was restored via loadSession (not freshly created). */
   wasLoaded = false;
 
@@ -337,6 +339,7 @@ export class KiroSession {
   async prompt(text: string, onChunk: ChunkCallback): Promise<string> {
     this.lastTouchedAt = Date.now();
     this.isPrompting = true;
+    this.promptStartedAt = Date.now();
     this.chunkCallback = onChunk;
     this.events.onPromptStart?.();
 
@@ -372,6 +375,7 @@ export class KiroSession {
     } finally {
       clearInterval(keepAlive);
       this.isPrompting = false;
+      this.promptStartedAt = null;
       this.chunkCallback = null;
       this.events.onPromptEnd?.();
     }

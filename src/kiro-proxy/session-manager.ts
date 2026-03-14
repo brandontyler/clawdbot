@@ -442,6 +442,7 @@ export class SessionManager {
     consecutiveErrors: number;
     sentMessages: number;
     isPrompting: boolean;
+    promptingSecs: number | null;
   }> {
     const now = Date.now();
     const result: Array<{
@@ -454,6 +455,7 @@ export class SessionManager {
       consecutiveErrors: number;
       sentMessages: number;
       isPrompting: boolean;
+      promptingSecs: number | null;
     }> = [];
     for (const [key, { session, handle }] of this.sessions) {
       const rssKb = session.getRssKb();
@@ -467,6 +469,10 @@ export class SessionManager {
         consecutiveErrors: session.consecutiveErrors,
         sentMessages: handle.sentMessageCount,
         isPrompting: session.isPrompting,
+        promptingSecs:
+          session.promptStartedAt != null
+            ? Math.round((now - session.promptStartedAt) / 1000)
+            : null,
       });
     }
     return result;
@@ -586,7 +592,7 @@ export class SessionManager {
       const summary = sessions
         .map(
           (s) =>
-            `${this.tag(s.key)}(ctx=${Math.round(s.contextPct)}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? ",PROMPTING" : ""})`,
+            `${this.tag(s.key)}(ctx=${Math.round(s.contextPct)}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB,errs=${s.consecutiveErrors}${s.isPrompting ? `,PROMPTING=${s.promptingSecs}s` : ""})`,
         )
         .join(" ");
       this.log(
@@ -630,7 +636,7 @@ export class SessionManager {
       const summary = survivors
         .map(
           (s) =>
-            `${this.tag(s.key)}(ctx=${Math.round(s.contextPct)}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? ",PROMPTING" : ""})`,
+            `${this.tag(s.key)}(ctx=${Math.round(s.contextPct)}%,idle=${s.idleSecs}s,rss=${s.rssMb ?? "?"}MB${s.isPrompting ? `,PROMPTING=${s.promptingSecs}s` : ""})`,
         )
         .join(" ");
       this.log(
