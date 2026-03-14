@@ -83,53 +83,12 @@ None currently — upstream removed the a2ui bundle files.
 ```bash
 git fetch upstream
 git rebase upstream/main
-```bash
-git fetch upstream
-git rebase upstream/main
-
-# If conflicts in patched files: re-apply the small edits listed above
-
-# Update sync point (use commit hash, not a fake version)
-# Format: `upstream/main` @ `<hash>` — YYYY-MM-DD
-
-# Verify
-pnpm install
-pnpm build
-pnpm check
-
-# IMPORTANT: rebuild before restarting the gateway.
-# The gateway runs from dist/ — if you restart without rebuilding,
-# it will auto-build from stale dist, which can take 3+ minutes
-# during which Discord messages are silently dropped.
+# Re-apply edits from "Upstream Files We Patch" if conflicts
+pnpm install && pnpm build && pnpm check
+# Update sync point at top of this file
 spinup oc --defer
 # Send a real Discord message to confirm delivery (probe alone won't catch config issues)
 ```
-
-## Post-Sync Checklist (Lessons Learned)
-
-1. **Rebuild before restart.** `pnpm build` before `spinup oc --defer`. The
-   gateway detects stale dist and rebuilds on startup, but that 3+ minute
-   window silently drops all inbound Discord messages.
-
-2. **Check `~/.openclaw/openclaw.json` for stale plugin references.** Upstream
-   may add/remove/rename plugin slots between versions. A stale reference
-   (e.g. `memory-core` after it was removed) causes `debounce flush failed`
-   errors that silently break message delivery — the gateway looks healthy
-   (connected, no WS errors) but replies never arrive. Fix: remove the stale
-   entry from the config before restarting.
-
-3. **Verify patched files survived the rebase.** Walk the "Upstream Files We
-   Patch" table above. Key ones that silently break if lost:
-   - `attempt.ts` session-key header → proxy can't route to correct cwd
-   - `provider.ts` kiro plugin import → falls back to upstream plugin without
-     flap detection
-   - `provider.lifecycle.ts` resume handling → health-monitor restart loop
-
-4. **Test the full message flow after restart.** `channels status --probe`
-   showing "works" only proves the Discord WS connection is alive. Send a real
-   message on Discord and confirm a reply comes back — config errors and
-   missing plugins can cause silent delivery failures that the probe doesn't
-   catch.
 
 ## Why the Discord Hardening?
 
