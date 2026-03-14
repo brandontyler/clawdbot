@@ -282,10 +282,10 @@ async function fetchDiscordGatewayInfoWithTimeout(params: {
 //    route it through handleZombieConnection() instead.
 
 export class ResilientGatewayPlugin extends GatewayPlugin {
-  private get _reconnectAttempts(): number {
+  protected get _reconnectAttempts(): number {
     return (this as unknown as { reconnectAttempts: number }).reconnectAttempts;
   }
-  private set _reconnectAttempts(v: number) {
+  protected set _reconnectAttempts(v: number) {
     (this as unknown as { reconnectAttempts: number }).reconnectAttempts = v;
   }
 

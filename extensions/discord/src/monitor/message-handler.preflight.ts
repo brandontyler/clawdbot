@@ -7,9 +7,36 @@ import { resolveMentionGatingWithBypass } from "openclaw/plugin-sdk/channel-runt
 import { loadConfig } from "openclaw/plugin-sdk/config-runtime";
 import { isDangerousNameMatchingEnabled } from "openclaw/plugin-sdk/config-runtime";
 import {
+<<<<<<< HEAD
   ensureConfiguredBindingRouteReady,
   resolveConfiguredBindingRoute,
 } from "openclaw/plugin-sdk/conversation-runtime";
+=======
+  ensureConfiguredAcpRouteReady,
+  resolveConfiguredAcpRoute,
+} from "../../../../src/acp/persistent-bindings.route.js";
+import {
+  hasControlCommand,
+  isTextOnlyCommand,
+} from "../../../../src/auto-reply/command-detection.js";
+import { shouldHandleTextCommands } from "../../../../src/auto-reply/commands-registry.js";
+import {
+  recordPendingHistoryEntryIfEnabled,
+  type HistoryEntry,
+} from "../../../../src/auto-reply/reply/history.js";
+import {
+  buildMentionRegexes,
+  matchesMentionWithExplicit,
+} from "../../../../src/auto-reply/reply/mentions.js";
+import { formatAllowlistMatchMeta } from "../../../../src/channels/allowlist-match.js";
+import { resolveControlCommandGate } from "../../../../src/channels/command-gating.js";
+import { logInboundDrop } from "../../../../src/channels/logging.js";
+import { resolveMentionGatingWithBypass } from "../../../../src/channels/mention-gating.js";
+import { loadConfig } from "../../../../src/config/config.js";
+import { isDangerousNameMatchingEnabled } from "../../../../src/config/dangerous-name-matching.js";
+import { logVerbose, shouldLogVerbose } from "../../../../src/globals.js";
+import { recordChannelActivity } from "../../../../src/infra/channel-activity.js";
+>>>>>>> 0f1616e162 (fix: post-sync adjustments — protected _reconnectAttempts, format preflight)
 import {
   getSessionBindingService,
   type SessionBindingRecord,
