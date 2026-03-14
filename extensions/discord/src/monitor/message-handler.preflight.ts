@@ -3,7 +3,10 @@ import {
   ensureConfiguredAcpRouteReady,
   resolveConfiguredAcpRoute,
 } from "../../../../src/acp/persistent-bindings.route.js";
-import { hasControlCommand, isTextOnlyCommand } from "../../../../src/auto-reply/command-detection.js";
+import {
+  hasControlCommand,
+  isTextOnlyCommand,
+} from "../../../../src/auto-reply/command-detection.js";
 import { shouldHandleTextCommands } from "../../../../src/auto-reply/commands-registry.js";
 import {
   recordPendingHistoryEntryIfEnabled,
