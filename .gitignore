@@ -139,5 +139,8 @@ docs/superpowers
 # Beads (local issue tracking)
 .beads/
 
-# Agent memory (personal, don't commit)
-.kiro/memory.md
+# Kiro agent config (local-only, never track)
+.kiro/
+
+# Deprecated changelog fragment workflow
+changelog/fragments/
