@@ -1989,6 +1989,7 @@ export async function runEmbeddedAttempt(
         },
         params.thinkLevel,
         sessionAgentId,
+        effectiveWorkspace,
       );
 
       // Inject session key header for kiro provider so the proxy can route
