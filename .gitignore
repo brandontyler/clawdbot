@@ -142,8 +142,8 @@ docs/superpowers
 # Kiro agent config (local-only, never track)
 .kiro/
 
+# Kiro proxy logs
+logs/
+
 # Deprecated changelog fragment workflow
 changelog/fragments/
-
-# Beads (local issue tracking)
-.beads/
