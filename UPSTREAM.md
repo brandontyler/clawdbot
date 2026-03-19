@@ -84,6 +84,7 @@ None currently — upstream removed the a2ui bundle files.
 git fetch upstream
 git rebase upstream/main
 # Re-apply edits from "Upstream Files We Patch" if conflicts
+chmod +x .kiro/hooks/*.sh 2>/dev/null  # restore execute bits (git doesn't track untracked perms)
 pnpm install && pnpm build && pnpm check
 # Update sync point at top of this file
 spinup oc --defer
