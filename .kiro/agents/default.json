@@ -15,12 +15,12 @@
     "preToolUse": [
       {
         "matcher": "execute_bash",
-        "command": ".kiro/hooks/dcg-guard.sh",
+        "command": "bash .kiro/hooks/dcg-guard.sh",
         "description": "DCG: Block destructive commands (rm -rf, git reset --hard, force push, etc.)"
       },
       {
         "matcher": "fs_write",
-        "command": ".kiro/hooks/fs-write-guard.sh",
+        "command": "bash .kiro/hooks/fs-write-guard.sh",
         "description": "Block writes outside repo or to sensitive files (.env, secrets, credentials)"
       }
     ]
