@@ -13,6 +13,10 @@ function relativeSymlinkTarget(sourcePath, targetPath) {
 }
 
 function symlinkPath(sourcePath, targetPath, type) {
+  // Remove stale target so a partial previous run can't cause EEXIST crash-loops.
+  try {
+    fs.unlinkSync(targetPath);
+  } catch {}
   fs.symlinkSync(relativeSymlinkTarget(sourcePath, targetPath), targetPath, type);
 }
 
@@ -63,6 +67,9 @@ function stagePluginRuntimeOverlay(sourceDir, targetDir) {
     }
 
     if (dirent.isSymbolicLink()) {
+      try {
+        fs.unlinkSync(targetPath);
+      } catch {}
       fs.symlinkSync(fs.readlinkSync(sourcePath), targetPath);
       continue;
     }
