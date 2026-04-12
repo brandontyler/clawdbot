@@ -103,6 +103,18 @@ if (isMain) {
     if (isUncaughtExceptionHandled(error)) {
       return;
     }
+    // Kiro: suppress known transient errors that don't warrant a crash
+    const errMsg = error instanceof Error ? error.message : String(error);
+    if (
+      errMsg.includes("zombie connection") ||
+      errMsg.includes("certificate has expired")
+    ) {
+      console.warn(
+        "[openclaw] Suppressed transient uncaught exception (continuing):",
+        errMsg.slice(0, 200),
+      );
+      return;
+    }
     if (isBenignUncaughtExceptionError(error)) {
       console.warn(
         "[openclaw] Non-fatal uncaught exception (continuing):",

@@ -34,6 +34,8 @@ minimumReleaseAgeExclude:
 
 onlyBuiltDependencies:
   - "@openclaw/fs-safe"
+
+ignoredBuiltDependencies:
   - "@discordjs/opus"
   - "@google/genai"
   - "@lydell/node-pty"

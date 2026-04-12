@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Extracts X/Twitter auth cookies from Windows Chrome via PowerShell DPAPI decryption.
+# Usage: eval "$(./scripts/refresh-x-cookies)"
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PS="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+PS1_FILE="$SCRIPT_DIR/extract-x-cookies.ps1"
+
+# Convert WSL path to Windows path for the .ps1 file
+WIN_PS1=$(wslpath -w "$PS1_FILE")
+
+RESULT=$("$PS" -NoProfile -ExecutionPolicy Bypass -File "$WIN_PS1" 2>/dev/null | tr -d '\r')
+
+AUTH_TOKEN=$(echo "$RESULT" | tail -1 | cut -d'|' -f1)
+CT0=$(echo "$RESULT" | tail -1 | cut -d'|' -f2)
+
+if [[ -z "$AUTH_TOKEN" || -z "$CT0" || "$AUTH_TOKEN" == *"Error"* ]]; then
+    echo "ERROR: Failed to extract cookies. Is Chrome logged into x.com?" >&2
+    echo "Try closing Chrome and running again, or update ~/.profile manually." >&2
+    exit 1
+fi
+
+# Update ~/.profile
+sed -i '/^export AUTH_TOKEN=/d; /^export CT0=/d' ~/.profile
+echo "export AUTH_TOKEN=\"$AUTH_TOKEN\"" >> ~/.profile
+echo "export CT0=\"$CT0\"" >> ~/.profile
+
+echo "✅ Cookies refreshed and saved to ~/.profile"
+echo "Run: source ~/.profile"
