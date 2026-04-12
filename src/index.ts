@@ -90,6 +90,22 @@ if (isMain) {
   installUnhandledRejectionHandler();
 
   process.on("uncaughtException", (error) => {
+    const msg = error?.message ?? `${error}`;
+    // @buape/carbon's heartbeat timer can throw "zombie connection" errors
+    // after a WebSocket disconnect race. Transient TLS errors ("certificate has
+    // expired") happen on captive-portal / flaky networks. DNS blips
+    // ("EAI_AGAIN", "ENOTFOUND") surface when the resolver is momentarily
+    // unreachable during gateway reconnect. All are non-fatal — the gateway
+    // reconnect logic handles recovery. Log and continue.
+    if (
+      msg.includes("zombie connection") ||
+      msg.includes("certificate has expired") ||
+      msg.includes("EAI_AGAIN") ||
+      msg.includes("ENOTFOUND")
+    ) {
+      console.error("[openclaw] Suppressed non-fatal gateway error:", msg);
+      return;
+    }
     console.error("[openclaw] Uncaught exception:", formatUncaughtError(error));
     restoreTerminalState("uncaught exception", { resumeStdinIfPaused: false });
     process.exit(1);

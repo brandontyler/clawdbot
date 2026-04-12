@@ -7,6 +7,11 @@ export type SubCliDescriptor = NamedCommandDescriptor;
 const subCliCommandCatalog = defineCommandDescriptorCatalog([
   { name: "acp", description: "Agent Control Protocol tools", hasSubcommands: true },
   {
+    name: "kiro-proxy",
+    description: "Local OpenAI-compatible proxy backed by kiro CLI (ACP)",
+    hasSubcommands: false,
+  },
+  {
     name: "gateway",
     description: "Run, inspect, and query the WebSocket Gateway",
     hasSubcommands: true,

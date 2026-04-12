@@ -83,7 +83,7 @@ export const discordChannelConfigUiHints = {
   },
   "inboundWorker.runTimeoutMs": {
     label: "Discord Inbound Worker Timeout (ms)",
-    help: "Optional queued Discord inbound worker timeout in ms. This is separate from Carbon listener timeouts; defaults to 1800000 and can be disabled with 0. Set per account via channels.discord.accounts.<id>.inboundWorker.runTimeoutMs.",
+    help: "Optional queued Discord inbound worker timeout in ms. This is separate from Carbon listener timeouts; defaults to 7200000 and can be disabled with 0. Set per account via channels.discord.accounts.<id>.inboundWorker.runTimeoutMs.",
   },
   "eventQueue.listenerTimeout": {
     label: "Discord EventQueue Listener Timeout (ms)",

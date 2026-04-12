@@ -1,0 +1,74 @@
+# Daily X/Twitter Digest Topics
+# Format: topic_name | search_query | min_faves | max_results
+#
+# WATCHLIST METHODOLOGY (2026-03-27):
+# - Account-based queries built from 3 data sources:
+#   1. Your actual X follows (bird following) — people you chose to listen to
+#   2. High-engagement search results — who consistently gets likes on these topics
+#   3. Verified handles — every from: account tested with bird search
+#
+# Two tiers per area:
+#   Tier 1: ACCOUNTS (from:) — official sources + proven voices. High signal.
+#   Tier 2: KEYWORDS — community buzz the watchlist misses. Higher min_faves to filter noise.
+
+# === CLAUDE CODE ===
+# Tier 1: Anthropic official + Claude Code team (all verified, all you follow)
+#   AnthropicAI — official account (3K-6K likes on announcements)
+#   alexalbert__ — Alex Albert, Research @ Anthropic (126K followers, you follow)
+#   bcherny — Boris Cherny, Claude Code @ Anthropic (341K followers, you follow)
+#   dmwlff — Adam Wolff, Claude Code @ Anthropic (19K followers, you follow)
+#   _catwu — Cat Wu, Claude Code @ Anthropic (68K followers, you follow)
+#   adocomplete — Ado, Community+Code @ Anthropic (28K followers, you follow)
+#   AmandaAskell — Amanda Askell, Anthropic (character/alignment, high engagement)
+Claude Code Official | from:AnthropicAI OR from:alexalbert__ OR from:bcherny OR from:dmwlff OR from:_catwu OR from:adocomplete | 20 | 5
+# Tier 2: Community — viral takes, tools, complaints, sentiment
+Claude Code Community | "Claude Code" min_faves:300 lang:en -filter:replies -filter:retweets | 300 | 5
+
+# === KIRO CLI ===
+# Tier 1: Official + team members you follow
+#   kirodotdev — official Kiro account (17K followers, you follow)
+#   clare_liguori — Senior Principal Engineer, AWS Agentic AI / Kiro (23K followers, you follow)
+Kiro CLI Official | from:kirodotdev OR from:clare_liguori (Kiro OR agent OR Strands) | 5 | 5
+# Tier 2: Community mentions
+Kiro CLI Community | ("Kiro CLI" OR "kiro-cli" OR kirodotdev) lang:en -filter:retweets | 5 | 3
+
+# === AMAZON CONNECT / AWS AI ===
+# Tier 1: AWS official accounts you follow
+#   awscloud — main AWS account (342 likes on Connect Health announcement)
+#   awsdevelopers — AWS dev-focused (37K followers, you follow)
+#   jeffbarr — Jeff Barr, Chief Evangelist (238K followers, you follow)
+#   edjgeek — Eric Johnson, Principal DA (30K followers, you follow)
+#   brooke_jamieson — Senior DA @ AWS (7K followers, you follow)
+AWS & Connect Official | from:awscloud OR from:awsdevelopers OR from:jeffbarr OR from:edjgeek OR from:brooke_jamieson (Connect OR Bedrock OR agent OR AI) | 10 | 5
+# Tier 2: Community
+Amazon Connect Community | "Amazon Connect" (AI OR agent OR "contact center" OR CCaaS OR Bedrock) min_faves:5 lang:en -filter:replies -filter:retweets | 5 | 3
+
+# === AI DEV THOUGHT LEADERS ===
+# These are the people who consistently surface what matters in AI development.
+# Selected by: high engagement on AI coding topics + you already follow several.
+#   karpathy — Andrej Karpathy (2M followers, defines AI dev discourse)
+#   simonw — Simon Willison (tools, evals, practical AI dev)
+#   danshipper — Dan Shipper, CEO @ Every (97K followers, you follow, AI edge)
+#   nummanali — Numman Ali, agentic engineering (10K followers, you follow)
+#   theo — Theo/t3.gg (consistent Claude Code commentary, high engagement)
+#   GergelyOrosz — Gergely Orosz (dev industry perspective on AI tools)
+AI Dev Leaders | from:karpathy OR from:simonw OR from:danshipper OR from:nummanali OR from:theo OR from:GergelyOrosz min_faves:50 | 50 | 5
+
+# === OPENCLAW ===
+# Tier 1: Official account + core contributors
+#   openclaw — official account (1.8K-8.4K likes on release posts)
+#   nichochar — Nicholas Charriere, OpenClaw creator
+#   4shadowed — Carbon library author (Discord integration OpenClaw uses)
+#   joshavant — core contributor, security features
+OpenClaw Official | from:openclaw OR from:nichochar OR from:4shadowed OR from:joshavant | 5 | 5
+# Tier 2: Community — high engagement posts about OpenClaw
+OpenClaw Community | "OpenClaw" min_faves:50 lang:en -filter:replies -filter:retweets | 50 | 5
+
+# === PARIS TRIP (April 2026) ===
+# Tier 1: Curated Paris food/culture accounts
+#   davidlebovitz — 200K+ followers, daily Paris food/restaurants/bakeries
+#   lindseytramuta — ~50K followers, "New Paris" — current restaurants, neighborhoods, shops
+#   paabordeaux — Alexander Lobrano, former Gourmet magazine Paris correspondent
+Paris Trip | from:davidlebovitz OR from:lindseytramuta OR from:paabordeaux | 3 | 5
+# Tier 2: Community — trending Paris travel/food tips
+Paris Community | Paris (restaurant OR bakery OR food OR "must visit" OR hidden OR arrondissement) min_faves:100 lang:en -filter:replies -filter:retweets | 100 | 3

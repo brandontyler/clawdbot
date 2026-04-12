@@ -333,7 +333,7 @@ export type DiscordAccountConfig = {
   inboundWorker?: {
     /**
      * Max time (ms) a queued inbound run may execute before OpenClaw aborts it.
-     * Defaults to 1800000 (30 minutes). Set 0 to disable the worker-owned timeout.
+     * Defaults to 7200000 (2 hours). Set 0 to disable the worker-owned timeout.
      */
     runTimeoutMs?: number;
   };

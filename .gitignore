@@ -150,3 +150,10 @@ test/fixtures/openclaw-vitest-unit-report.json
 analysis/
 .artifacts/qa-e2e/
 extensions/qa-lab/web/dist/
+
+# Kiro fork
+.kiro/
+.beads/
+logs/
+kiro-proxy-routes.json
+client_secret*.json

@@ -110,7 +110,7 @@ function createDefaultGatewayInfo(): APIGatewayBotInfo {
   };
 }
 
-async function fetchDiscordGatewayInfo(params: {
+export async function fetchDiscordGatewayInfo(params: {
   token: string;
   fetchImpl: DiscordGatewayFetch;
   fetchInit?: DiscordGatewayFetchInit;
@@ -229,6 +229,60 @@ function resolveGatewayInfoWithFallback(params: { runtime?: RuntimeEnv; error: u
   };
 }
 
+export class ResilientGatewayPlugin extends carbonGateway.GatewayPlugin {
+  protected get _reconnectAttempts(): number {
+    return (this as unknown as { reconnectAttempts: number }).reconnectAttempts;
+  }
+  protected set _reconnectAttempts(v: number) {
+    (this as unknown as { reconnectAttempts: number }).reconnectAttempts = v;
+  }
+
+  override setupWebSocket(): void {
+    if (!(this as unknown as { ws: ws.WebSocket | null }).ws) {
+      return;
+    }
+    const socket = (this as unknown as { ws: ws.WebSocket }).ws;
+
+    // Save reconnect count before parent's "open" handler resets it to 0.
+    const savedAttempts = this._reconnectAttempts;
+
+    super.setupWebSocket();
+
+    // Restore saved count — parent's "open" handler already reset it to 0.
+    // It will be properly reset to 0 only when READY/RESUMED arrives.
+    socket.on("open", () => {
+      this._reconnectAttempts = savedAttempts;
+    });
+
+    // Reset reconnect counter only on successful READY/RESUMED.
+    socket.on("message", (data: ws.RawData) => {
+      try {
+        const raw =
+          typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
+        const parsed = JSON.parse(raw);
+        if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
+          this._reconnectAttempts = 0;
+        }
+      } catch {
+        // Ignore — parent handles validation.
+      }
+    });
+  }
+
+  override connect(resume?: boolean): void {
+    try {
+      super.connect(resume);
+    } catch (err) {
+      if (String(err).includes("zombie connection")) {
+        this.emitter.emit("debug", `caught zombie connection error, reconnecting`);
+        (this as unknown as { handleZombieConnection: () => void }).handleZombieConnection();
+        return;
+      }
+      throw err;
+    }
+  }
+}
+
 function createGatewayPlugin(params: {
   options: {
     reconnect: { maxAttempts: number };
@@ -247,7 +301,7 @@ function createGatewayPlugin(params: {
     webSocketCtor?: DiscordGatewayWebSocketCtor;
   };
 }): carbonGateway.GatewayPlugin {
-  class SafeGatewayPlugin extends carbonGateway.GatewayPlugin {
+  class SafeResilientGatewayPlugin extends ResilientGatewayPlugin {
     private gatewayInfoUsedFallback = false;
 
     constructor() {
@@ -354,7 +408,7 @@ function createGatewayPlugin(params: {
     }
   }
 
-  return new SafeGatewayPlugin();
+  return new SafeResilientGatewayPlugin();
 }
 
 export function createDiscordGatewayPlugin(params: {

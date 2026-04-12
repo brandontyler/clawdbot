@@ -1291,6 +1291,17 @@ export async function runEmbeddedAttempt(
         activeSession.agent.streamFn = cacheTrace.wrapStreamFn(activeSession.agent.streamFn);
       }
 
+      // Inject session key header for kiro provider so the proxy can route
+      // to the correct per-channel cwd.
+      if (params.provider === "kiro" && params.sessionKey) {
+        const inner = activeSession.agent.streamFn;
+        activeSession.agent.streamFn = (model, context, options) =>
+          inner(model, context, {
+            ...options,
+            headers: { ...options?.headers, "x-openclaw-session-key": params.sessionKey! },
+          });
+      }
+
       // Anthropic Claude endpoints can reject replayed `thinking` blocks
       // (e.g. thinkingSignature:"reasoning_text") on any follow-up provider
       // call, including tool continuations. Wrap the stream function so every
