@@ -13,7 +13,6 @@ minimumReleaseAgeExclude:
   - "jscpd"
   - "jscpd-*"
   - "openclaw"
-  - "protobufjs"
   - "@mariozechner/*"
   - "@typescript/native-preview*"
   - "@oxlint/*"
