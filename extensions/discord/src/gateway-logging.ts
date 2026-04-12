@@ -8,6 +8,7 @@ const INFO_DEBUG_MARKERS = [
   "Gateway websocket closed",
   "Gateway reconnect scheduled in",
   "Gateway forcing fresh IDENTIFY after",
+  "Resumed successfully",
 ];
 
 const shouldPromoteGatewayDebug = (message: string) =>

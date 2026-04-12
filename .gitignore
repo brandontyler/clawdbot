@@ -234,3 +234,11 @@ extensions/**/.openclaw-runtime-deps-stamp.json
 /.opengrep-out/
 /.crabbox-artifacts
 .comux*
+
+# Kiro-specific
+.kiro/
+.beads/
+logs/
+kiro-proxy-routes.json
+client_secret*.json
+excalidraw.log

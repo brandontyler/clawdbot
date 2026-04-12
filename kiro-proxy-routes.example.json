@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to kiro-proxy-routes.json and replace paths. Channel IDs come from your Discord server. Use scripts/add-channel.sh to add new entries.",
+  "CHANNEL_ID_HERE": {
+    "cwd": "/absolute/path/to/this/repo",
+    "kiroArgs": ["--agent", "default", "--trust-all-tools"],
+    "noHibernate": true
+  }
+}

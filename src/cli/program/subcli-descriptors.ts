@@ -7,6 +7,11 @@ export type SubCliDescriptor = NamedCommandDescriptor;
 const subCliCommandCatalog = defineCommandDescriptorCatalog([
   { name: "acp", description: "Run and manage ACP-backed coding agents", hasSubcommands: true },
   {
+    name: "kiro-proxy",
+    description: "Local OpenAI-compatible proxy backed by kiro CLI (ACP)",
+    hasSubcommands: false,
+  },
+  {
     name: "gateway",
     description: "Run, inspect, and query the OpenClaw Gateway",
     hasSubcommands: true,
