@@ -197,13 +197,17 @@ async function main() {
     process.stderr.write(`[${slug}] scraping...`);
     const jobs = await scrapeCity(slug);
     process.stderr.write(` ${jobs.length} fire job(s)\n`);
+    // Stream results immediately so partial output survives timeouts
+    for (const job of jobs) {
+      console.log(JSON.stringify(job));
+    }
     allJobs.push(...jobs);
     if (slugs.indexOf(slug) < slugs.length - 1) {
       await new Promise((r) => setTimeout(r, 800));
     }
   }
 
-  console.log(JSON.stringify(allJobs, null, 2));
+  process.stderr.write(`[done] ${allJobs.length} total fire jobs from ${slugs.length} cities\n`);
 }
 
 main().catch((e) => {
