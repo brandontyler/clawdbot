@@ -422,6 +422,39 @@ export class SessionManager {
     );
   }
 
+  /**
+   * Snapshot a session: persist the ACP session ID to the hibernation file
+   * without killing the process. If the process dies later (VM reboot, proxy
+   * restart, laptop shutdown), the next message will restore from this snapshot.
+   */
+  snapshotSession(sessionKey: string, session: KiroSession): void {
+    const channelId = detectChannelId(sessionKey);
+    const route = channelId ? this.channelRoutes[channelId] : undefined;
+    if (route?.noHibernate === true) {
+      return;
+    }
+    this.hibernated.set(sessionKey, {
+      acpSessionId: session.acpSessionId,
+      cwd: route?.cwd ?? this.sessionOpts.cwd,
+      contextPct: session.lastContextPct,
+      hibernatedAt: Date.now(),
+    });
+    saveHibernated(this.hibernated);
+    this.log(
+      `session snapshot saved: session=${this.tag(sessionKey)} acp=${session.acpSessionId} ctx=${session.lastContextPct.toFixed(0)}%`,
+    );
+  }
+
+  /** Snapshot all active sessions without killing them. */
+  snapshotAll(): number {
+    let count = 0;
+    for (const [key, managed] of this.sessions) {
+      this.snapshotSession(key, managed.session);
+      count++;
+    }
+    return count;
+  }
+
   /** Look up a live session by key (for manual hibernate endpoint). */
   getSessionEntry(sessionKey: string): { session: KiroSession } | undefined {
     const managed = this.sessions.get(sessionKey);
@@ -589,6 +622,7 @@ export class SessionManager {
       return;
     }
     // Log pool health every 5 minutes for passive diagnostics.
+    // Also auto-snapshot all sessions so state survives ungraceful shutdowns.
     this.heartbeatTimer = setInterval(() => {
       const sessions = this.getSessionsInfo();
       const totalRss = sessions.reduce((sum, s) => sum + (s.rssMb ?? 0), 0);
@@ -601,6 +635,9 @@ export class SessionManager {
       this.log(
         `heartbeat: sessions=${sessions.length} totalRss=${totalRss}MB${summary ? ` [${summary}]` : ""}`,
       );
+      if (sessions.length > 0) {
+        this.snapshotAll();
+      }
     }, 300_000);
     this.heartbeatTimer.unref();
   }
