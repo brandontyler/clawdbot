@@ -204,6 +204,15 @@ do_wake() {
   echo "$count hibernated session(s) waiting. They will restore on next Discord message."
 }
 
+do_snapshot() {
+  echo "=== Snapshotting all ACP sessions ==="
+  local result
+  result=$(curl -sf -X POST http://127.0.0.1:18801/snapshot 2>/dev/null) || { echo "Proxy not reachable"; return 1; }
+  local count
+  count=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('snapshotted',0))" 2>/dev/null)
+  echo "Saved $count session(s). Processes still running — state will survive restart."
+}
+
 # Auto-detect the clawdbot repo root: walk up from this script's real location
 # looking for kiro-proxy-routes.json (the marker file).
 # Falls back to SPINUP_OC_DIR env var, then the current working directory.
@@ -236,6 +245,7 @@ case "$TARGET" in
   context) do_context; exit 0 ;;
   logs)   do_logs "${ARGS[1]:-all}" "${ARGS[2]:-30}"; exit 0 ;;
   hibernate) do_hibernate; exit 0 ;;
+  snapshot) do_snapshot; exit 0 ;;
   wake) do_wake; exit 0 ;;
   restart-pane)
     if [[ -z "${ARGS[1]:-}" ]]; then
