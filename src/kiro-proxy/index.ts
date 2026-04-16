@@ -120,6 +120,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
   };
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGHUP", () => gracefulShutdown("SIGHUP"));
 
   // Return a shutdown function
   return () =>
