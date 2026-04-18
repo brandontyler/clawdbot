@@ -1168,6 +1168,46 @@ export function createKiroProxyServer(
       return;
     }
 
+    // POST /admin/kill/<channelId> — kill a session by channel ID so it respawns
+    // with fresh config (e.g. after changing the default model).
+    if (method === "POST" && url.startsWith("/admin/kill/")) {
+      const channelId = decodeURIComponent(url.slice("/admin/kill/".length));
+      const sessionKey = `agent:main:discord:channel:${channelId}`;
+      const entry = manager.getSessionEntry(sessionKey);
+      if (!entry) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "session not found", channelId }));
+      } else {
+        manager.resetSession(sessionKey, "admin-kill");
+        log(`admin kill: channel=${channelId}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ killed: true, channelId }));
+      }
+      return;
+    }
+
+    // POST /admin/kill-all — kill all active sessions so they respawn with fresh config.
+    if (method === "POST" && url === "/admin/kill-all") {
+      const sessions = manager.getSessionsInfo();
+      let killed = 0;
+      for (const s of sessions) {
+        if (s.alive && !s.isPrompting) {
+          manager.resetSession(s.key, "admin-kill-all");
+          killed++;
+        }
+      }
+      log(`admin kill-all: killed=${killed} skipped=${sessions.length - killed}`);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          killed,
+          skipped: sessions.length - killed,
+          total: sessions.length,
+        }),
+      );
+      return;
+    }
+
     if (method === "POST" && url === "/v1/chat/completions") {
       handleCompletions(req, res, manager, log).catch((err) => {
         log(`unhandled error: ${String(err)}`);
