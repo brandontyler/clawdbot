@@ -226,16 +226,15 @@ export class SessionManager {
           clearTimeout(killTimer);
           this.log(`/chat new failed (process may be dead): ${String(err)}`);
         }
-        if (chatNewOk) {
-          // Re-hibernate: the ACP session now has clean context on disk.
-          existing.session.lastContextPct = 0;
-          this.hibernateSession(sessionKey, existing.session, "session-reset");
-        } else {
-          // /chat new failed — don't hibernate the bloated session. Kill it
-          // so next request creates a completely fresh one.
-          existing.session.kill("session-reset-failed");
-          this.sessions.delete(sessionKey);
-          this.cleanupSession(sessionKey);
+        // Whether /chat new succeeded or not, kill without hibernating.
+        // Hibernating preserves the ACP session file which still contains the
+        // old conversation — resuming it would restore the stale context.
+        existing.session.kill(chatNewOk ? "session-reset" : "session-reset-failed");
+        this.sessions.delete(sessionKey);
+        this.cleanupSession(sessionKey);
+        // Clear any hibernated entry so the next message starts fresh.
+        if (this.hibernated.delete(sessionKey)) {
+          saveHibernated(this.hibernated);
         }
       } else {
         // Wait for any in-flight prompt to finish before sending the next one.
@@ -336,6 +335,11 @@ export class SessionManager {
       existing.session.kill(`auto-reset: ${reason}`);
       this.sessions.delete(sessionKey);
       this.cleanupSession(sessionKey);
+    }
+    // Always clear the hibernated entry so the session starts fresh.
+    if (this.hibernated.delete(sessionKey)) {
+      saveHibernated(this.hibernated);
+      this.log(`cleared hibernated entry: ${this.tag(sessionKey)} reason=${reason}`);
     }
   }
 
