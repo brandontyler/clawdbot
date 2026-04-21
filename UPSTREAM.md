@@ -1,6 +1,6 @@
 # Upstream Sync Guide
 
-**Last synced:** `upstream/main` @ `ccf29464db` — 2026-04-11
+**Last synced:** `upstream/main` @ `655e0be3d7` — 2026-04-20
 
 Fork of [OpenClaw](https://github.com/openclaw/openclaw) customized for `kiro-cli`.
 Keep the delta small so pulling upstream stays painless.
@@ -81,30 +81,23 @@ exactly where to look and what to change. For full code, run
 
 ### Group 2: Small additions (5–15 lines)
 
-| File                                    | Where / What                                                                                                            |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `src/cli/program/register.subclis-core.ts` | Add `kiro-proxy` entry to `entrySpecs` array (~5 lines, after `acp`)                                                    |
-| `src/logging/console.ts`                | `shouldSuppressConsoleMessage()`: widen `"[EventQueue] Slow listener detected"` to also match `"[EventQueue] Listener"` |
-| `src/gateway/channel-health-monitor.ts` | After `evaluateChannelHealth()`: add `log.info` with all status fields (3 lines)                                        |
+| File                                       | Where / What                                                                        |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `src/cli/program/register.subclis-core.ts` | Add `kiro-proxy` entry to `entrySpecs` array (~5 lines, after `acp`)                |
+| `src/cli/program/subcli-descriptors.ts`    | Add `kiro-proxy` descriptor to `subCliCommandCatalog` array (~5 lines, after `acp`) |
+| `src/gateway/channel-health-monitor.ts`    | After `evaluateChannelHealth()`: add `log.info` with all status fields (3 lines)    |
 
 ### Group 3: Larger patches
 
-| File                                               | Where / What                                                                                                                                                                                                                                                                                    |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/index.ts`                                     | `uncaughtException` handler: add early return for `"zombie connection"`, `"certificate has expired"`, `"EAI_AGAIN"`, `"ENOTFOUND"` (~16 lines before existing crash handler)                                                                                                                    |
-| `src/agents/pi-embedded-runner/run/attempt.ts`     | **3 patches:** (1) `ensureGlobalUndiciStreamTimeouts({ timeoutMs: params.timeoutMs })` (2) After `setTransport`: inject `x-openclaw-session-key` header when `provider === "kiro"` (~10 lines) (3) Replace orphan trailing-user-message removal block with 2-line comment (block was ~15 lines) |
-| `extensions/discord/src/monitor/gateway-plugin.ts` | Export `fetchDiscordGatewayInfo`; add `ResilientGatewayPlugin` class (~45 lines) fixing reconnect-counter and zombie-heartbeat bugs; change `SafeGatewayPlugin` → `SafeResilientGatewayPlugin extends ResilientGatewayPlugin`                                                                   |
-| `extensions/discord/src/monitor/provider.ts`       | Import `createKiroGatewayPlugin`; use it instead of `createDiscordGatewayPlugin` in `monitorDiscordProvider()` and `__testing` (3 lines)                                                                                                                                                        |
-| `package.json`                                     | Add `kiro-proxy`/`kiro-proxy:dev` scripts; append `verify-runtime-artifacts.mjs` to `build` chain                                                                                                                                                  |
-| `pnpm-workspace.yaml`                              | Add `@jscpd/*`, `@tloncorp/*`, `jscpd-*` to `minimumReleaseAgeExclude` (transient upstream dep freshness)                                                                                                                                          |
-| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`                                                                                                                                                                                                           |
-
-### ⚠️ Rebase hazard: `commands-registry.data.ts`
-
-This file has a +803/-12 diff from a previous rebase that inlined all of
-`commands-registry.shared.ts`. On next sync: **revert to upstream's version**
-(`git checkout --theirs`). Verify `data.ts` still imports
-`buildBuiltinChatCommands` from shared.
+| File                                               | Where / What                                                                                                                                                                                                                  |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                                     | `uncaughtException` handler: add early return for `"zombie connection"`, `"certificate has expired"`, `"EAI_AGAIN"`, `"ENOTFOUND"` (~16 lines before existing crash handler)                                                  |
+| `src/agents/pi-embedded-runner/run/attempt.ts`     | After `cacheTrace.wrapStreamFn`: inject `x-openclaw-session-key` header when `provider === "kiro"` (~10 lines). Previous patches (undici timeouts, orphan trailing-user removal) absorbed by upstream.                        |
+| `extensions/discord/src/monitor/gateway-plugin.ts` | Export `fetchDiscordGatewayInfo`; add `ResilientGatewayPlugin` class (~45 lines) fixing reconnect-counter and zombie-heartbeat bugs; change `SafeGatewayPlugin` → `SafeResilientGatewayPlugin extends ResilientGatewayPlugin` |
+| `extensions/discord/src/monitor/provider.ts`       | Import `createKiroGatewayPlugin`; use it instead of `createDiscordGatewayPlugin` in `monitorDiscordProvider()` and `__testing` (3 lines)                                                                                      |
+| `package.json`                                     | Add `kiro-proxy`/`kiro-proxy:dev` scripts; append `verify-runtime-artifacts.mjs` to `build` chain                                                                                                                             |
+| `pnpm-workspace.yaml`                              | Consolidate `minimumReleaseAgeExclude` (add `@buape/*`, `@jscpd/*`, `@tloncorp/*`, `jscpd*`; remove stale entries); move `@discordjs/opus` from `onlyBuiltDependencies` to `ignoredBuiltDependencies`                         |
+| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`                                                                                                                                         |
 
 ---
 

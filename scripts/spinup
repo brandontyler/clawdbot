@@ -40,7 +40,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate infra-rcms-projects; do
+  for sess in oc oc-cli mcp pwc sermon realestate infra-rcms-projects lifegroup; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -275,7 +275,7 @@ fi
 # --- oc session ---
 cleanup_logs
 PROXY_CMD="pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json 2>&1 | $STRIP_BUILD | $STRIP | tee -a $(log_path kiro-proxy)"
-GATEWAY_CMD="pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback 2>&1 | $STRIP_BUILD | $STRIP | tee -a $(log_path openclaw-gateway)"
+GATEWAY_CMD="AWS_PROFILE=personal pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback 2>&1 | $STRIP_BUILD | $STRIP | tee -a $(log_path openclaw-gateway)"
 KIRO_CLI_CMD="kiro-cli"
 
 if [[ "$TARGET" == "all" || "$TARGET" == "oc" ]]; then
@@ -375,4 +375,13 @@ if [[ "$TARGET" == "all" || "$TARGET" == "infra-rcms-projects" ]]; then
   echo "  tmux attach -t infra-rcms-projects"
 fi
 
+
+# --- lifegroup session ---
+LIFEGROUP_DIR=~/code/personal/lifegroup
+
+if [[ "$TARGET" == "all" || "$TARGET" == "lifegroup" ]]; then
+  new_session lifegroup -n main -c "$LIFEGROUP_DIR" "$KIRO_CLI_CMD"
+  tag_pane lifegroup lifegroup:main.0 kiro-cli "$KIRO_CLI_CMD"
+  echo "  tmux attach -t lifegroup"
+fi
 echo "Done."

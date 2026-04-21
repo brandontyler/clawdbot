@@ -7,7 +7,8 @@
   "resources": [
     "file://AGENTS.md",
     "file://CODEBASE.md",
-    "skill://~/.kiro/skills/dev-browser/SKILL.md"
+    "skill://~/.kiro/skills/dev-browser/SKILL.md",
+    "skill://~/.kiro/skills/beads/SKILL.md"
   ],
   "hooks": {
     "preToolUse": [

@@ -1,16 +1,18 @@
 {
   "name": "default",
   "description": "Default agent",
-  "tools": ["@builtin"],
-  "allowedTools": ["@builtin"],
+  "tools": [
+    "@builtin"
+  ],
+  "allowedTools": [
+    "@builtin"
+  ],
   "resources": [
     "file://.kiro/memory.md",
     "file://.kiro/KIRO.md",
-    "file://.kiro/KIRO-OPS.md",
-    "file://AGENTS.md",
-    "file://UPSTREAM.md"
+    "skill://~/.kiro/skills/**/SKILL.md"
   ],
-  "model": "claude-opus-4.6-1m",
+  "model": "claude-opus-4.6",
   "hooks": {
     "preToolUse": [
       {
