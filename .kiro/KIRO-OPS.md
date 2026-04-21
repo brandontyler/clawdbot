@@ -22,6 +22,7 @@ spinup status        # Machine-readable health of all sessions, panes, and ports
 spinup context       # ACP session context usage bars (reads from proxy /sessions endpoint)
 spinup logs [name]   # Tail logs (kiro-proxy|gateway|dev-browser|excalidraw|defer|all) [lines=30]
 spinup hibernate     # Hibernate all idle ACP sessions (safe shutdown prep)
+spinup snapshot      # Save all session IDs to disk without killing processes
 spinup wake          # Show hibernated sessions (they restore on next Discord message)
 spinup restart-pane <title>  # Restart a single crashed pane by title without nuking the session
 ```
@@ -40,15 +41,15 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `sms-poller`, `kiro-cl
 
 ### When to run it
 
-| User says                                                                    | Command         |
-| ---------------------------------------------------------------------------- | --------------- |
-| "spin up" / "spinup" / "start everything" / "set me up" / "boot up"          | `spinup`        |
-| "restart everything" / "reset everything" / "nuke it"                        | `spinup`        |
-| "the proxy is down" / "proxy crashed" / "gateway is broken" / "oc is broken" | `spinup oc`     |
-| "restart openclaw" / "reset oc"                                              | `spinup oc`     |
-| "dev-browser is broken" / "browser server crashed" / "restart mcp"           | `spinup mcp`    |
-| "restart pwc" / "reset pwc"                                                  | `spinup pwc`    |
-| "restart sermon" / "reset sermon"                                            | `spinup sermon` |
+| User says                                                                    | Command             |
+| ---------------------------------------------------------------------------- | ------------------- |
+| "spin up" / "spinup" / "start everything" / "set me up" / "boot up"          | `spinup`            |
+| "restart everything" / "reset everything" / "nuke it"                        | `spinup`            |
+| "the proxy is down" / "proxy crashed" / "gateway is broken" / "oc is broken" | `spinup oc`         |
+| "restart openclaw" / "reset oc"                                              | `spinup oc`         |
+| "dev-browser is broken" / "browser server crashed" / "restart mcp"           | `spinup mcp`        |
+| "restart pwc" / "reset pwc"                                                  | `spinup pwc`        |
+| "restart sermon" / "reset sermon"                                            | `spinup sermon`     |
 | "restart realestate" / "reset realestate"                                    | `spinup realestate` |
 
 ### Internals
@@ -59,25 +60,25 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `sms-poller`, `kiro-cl
 
 ### Pane commands
 
-| Pane        | Actual command                                                                                               |
-| ----------- | ------------------------------------------------------------------------------------------------------------ |
-| kiro-proxy  | `pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json` (cwd: `~/code/personal/clawdbot`)       |
-| gateway     | `pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback` (cwd: `~/code/personal/clawdbot`) |
-| sms-poller  | `scripts/sms-poller.sh` (cwd: `~/code/personal/clawdbot`)                                                    |
-| kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                         |
-| dev-browser | kills ports 9222/9223, then `./server.sh --headless` (cwd: `~/code/work/dev-browser/skills/dev-browser`)     |
-| excalidraw  | `PORT=3000 npm run canvas` (cwd: `~/code/work/mcp_excalidraw`)                                               |
+| Pane        | Actual command                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------------- |
+| kiro-proxy  | `pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json` (cwd: `~/code/personal/clawdbot`) |
+| gateway     | `pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback` (cwd: `~/code/personal/clawdbot`)        |
+| sms-poller  | `scripts/sms-poller.sh` (cwd: `~/code/personal/clawdbot`)                                                           |
+| kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                                |
+| dev-browser | kills ports 9222/9223, then `./server.sh --headless` (cwd: `~/code/work/dev-browser/skills/dev-browser`)            |
+| excalidraw  | `PORT=3000 npm run canvas` (cwd: `~/code/work/mcp_excalidraw`)                                                      |
 
 ### Sessions & ports
 
-| Session        | What runs                          | Ports        | Panes/Windows |
-| -------------- | ---------------------------------- | ------------ | ------------- |
-| **oc**         | kiro-proxy, gateway, sms-poller    | 18801, 18800 | 3 windows     |
-| **oc-cli**     | kiro-cli                           | —            | 1 window      |
-| **mcp**        | kiro-cli, dev-browser, excalidraw  | 9222, 9223, 3000 | 3 windows |
-| **pwc**        | kiro-cli                           | —            | 1 pane        |
-| **sermon**     | kiro-cli                           | —            | 1 pane        |
-| **realestate** | kiro-cli                           | —            | 1 pane        |
+| Session        | What runs                         | Ports            | Panes/Windows |
+| -------------- | --------------------------------- | ---------------- | ------------- |
+| **oc**         | kiro-proxy, gateway, sms-poller   | 18801, 18800     | 3 windows     |
+| **oc-cli**     | kiro-cli                          | —                | 1 window      |
+| **mcp**        | kiro-cli, dev-browser, excalidraw | 9222, 9223, 3000 | 3 windows     |
+| **pwc**        | kiro-cli                          | —                | 1 pane        |
+| **sermon**     | kiro-cli                          | —                | 1 pane        |
+| **realestate** | kiro-cli                          | —                | 1 pane        |
 
 ### After running
 
@@ -132,18 +133,20 @@ grep 'context-diag' /tmp/openclaw-gateway.log | awk -F'sessionKey=' '{print $2}'
 ### GC idle timeout behavior
 
 The proxy's default idle timeout is 4 hours (`DEFAULT_IDLE_SECS = 14400` in
-`session-manager.ts`). All routes currently have `noHibernate: true` in
-`kiro-proxy-routes.json`, so idle sessions are killed outright (no context
-preserved). When this happens:
+`session-manager.ts`). When a session goes idle, the proxy hibernates it:
+kills the ACP child process but saves the session ID to
+`~/.openclaw/kiro-proxy-hibernated.json`. On the next Discord message, it
+spawns a new kiro-cli process and calls `loadSession` with the saved ID,
+restoring the full conversation history. If `loadSession` fails, it falls
+back to a fresh session automatically.
 
 ```
-session killed (noHibernate): session=<key> acp=<id> ctx=X% reason=gc-idle-timeout (idle=14400s)
+session hibernated: session=<key> acp=<id> ctx=X% reason=gc-idle-timeout (idle=14400s)
 ```
 
-The session respawns automatically on the next message with a fresh context (~2%).
-
-To re-enable hibernation (preserve ACP session ID for context restore), remove
-`"noHibernate": true` from the route and restart the proxy (`spinup oc --defer`).
+To disable hibernation for a specific route (kill outright, no context
+preserved), add `"noHibernate": true` to that route in
+`kiro-proxy-routes.json` and restart the proxy (`spinup oc --defer`).
 
 ### System resource baseline (exe.dev VM)
 
@@ -177,11 +180,50 @@ First step is always `spinup status`. If a specific service is misbehaving:
 A pane showing `dead=1` means the process crashed but was preserved. Read with:
 `tmux capture-pane -t <session>:<window>.<pane> -p | tail -20`
 
+### Proxy admin API
+
+The proxy exposes admin endpoints for session management:
+
+```bash
+# List all active sessions
+curl -s http://localhost:18801/sessions | python3 -m json.tool
+
+# Kill a specific channel's session (respawns with fresh config on next message)
+curl -s -X POST http://localhost:18801/admin/kill/<channelId>
+
+# Kill all idle sessions (skips sessions mid-prompt)
+curl -s -X POST http://localhost:18801/admin/kill-all
+
+# Hibernate a session (preserves context for later restore)
+curl -s -X POST http://localhost:18801/hibernate/<sessionKey>
+```
+
+Use `/admin/kill-all` after changing `kiro-cli settings` (e.g. default model)
+to force all sessions to respawn with the new config.
+
+### Querying ACP sessions via the proxy
+
+You can send text (including kiro-cli slash commands) to any channel's ACP
+session through the proxy's OpenAI-compatible endpoint:
+
+```bash
+curl -s http://localhost:18801/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-openclaw-session-key: agent:main:discord:channel:<CHANNEL_ID>" \
+  -d '{"model":"kiro-default","stream":false,"messages":[{"role":"user","content":"/model"}]}'
+```
+
+**Limitation:** kiro-cli slash commands only return output on the **first
+prompt** of a fresh ACP session. After that, slash command output is not
+routed through the ACP response stream (kiro-cli bug/limitation). Normal
+text prompts work on every turn.
+
 ### Targeted recovery
 
 - **Single pane crashed** → `spinup restart-pane <title>`
 - **Whole session broken** → `spinup oc` / `spinup mcp` etc.
 - **Only reset all** (`spinup`) if explicitly asked or multiple sessions are broken.
+- **Stale config** (model change, settings update) → `curl -s -X POST http://localhost:18801/admin/kill-all`
 
 ### Conservative cleanup rule
 
@@ -190,6 +232,8 @@ no recent activity). Long-running jobs are expected.
 
 ### Cross-session communication
 
-No inter-agent communication. Each Discord channel → kiro-cli ACP session is
-fully isolated. The `#oc-tmux-session` agent can monitor all sessions via logs
-and `spinup status` but cannot inject messages into other channels' ACP sessions.
+Each Discord channel → kiro-cli ACP session is fully isolated. However, any
+agent can query or manage other sessions through the proxy admin API
+(`/sessions`, `/admin/kill/<channelId>`, `/v1/chat/completions` with a
+target session key). The `#oc-tmux-session` agent can also monitor via logs
+and `spinup status`.

@@ -64,6 +64,18 @@ OpenClaw Official | from:openclaw OR from:nichochar OR from:4shadowed OR from:jo
 # Tier 2: Community — high engagement posts about OpenClaw
 OpenClaw Community | "OpenClaw" min_faves:50 lang:en -filter:replies -filter:retweets | 50 | 5
 
+# === AGENT SKILLS ===
+# Tier 1: Key people building/curating the skills ecosystem
+#   anthropics — Anthropic's official skills repo announcements
+#   nichochar — OpenClaw creator, ClawHub marketplace
+#   obra — Jesse Vincent, Superpowers author (20+ skills, high engagement)
+#   kepabordeaux — Kepano, Obsidian CEO, obsidian-skills (16K stars)
+#   garabordeauxrytan — Garry Tan, YC CEO, gstack (28 skills)
+#   mattpocock — Matt Pocock, 17 dev workflow skills
+Agent Skills Leaders | from:obra OR from:kepano OR from:garrytan OR from:mattpocock (skill OR skills OR SKILL.md OR agent) | 10 | 5
+# Tier 2: Community — viral skill discoveries, new releases, ecosystem buzz
+Agent Skills Community | ("agent skills" OR "SKILL.md" OR "claude skills" OR "awesome skills" OR ClawHub) min_faves:50 lang:en -filter:replies -filter:retweets | 50 | 5
+
 # === PARIS TRIP (April 2026) ===
 # Tier 1: Curated Paris food/culture accounts
 #   davidlebovitz — 200K+ followers, daily Paris food/restaurants/bakeries
