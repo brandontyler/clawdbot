@@ -14,7 +14,7 @@
 # Entries older than TTL_DAYS are purged on each run.
 set -uo pipefail
 
-PROFILE="tylerbtt"
+PROFILE="personal"
 REGION="us-east-1"
 DYNAMO_TABLE="x-bookmark-seen"
 TTL_DAYS=30

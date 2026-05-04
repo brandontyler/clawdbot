@@ -53,7 +53,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate infra-rcms-projects lifegroup; do
+  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -370,14 +370,14 @@ if [[ "$TARGET" == "all" || "$TARGET" == "realestate" ]]; then
 fi
 
 
-# --- paris session (disabled — ACP sessions still work via proxy route) ---
-# PARIS_DIR=/home/tylerbtt/code/personal/paris
-#
-# if [[ "$TARGET" == "all" || "$TARGET" == "paris" ]]; then
-#   new_session paris -n main -c "$PARIS_DIR" "$KIRO_CLI_CMD"
-#   tag_pane paris paris:main.0 kiro-cli "$KIRO_CLI_CMD"
-#   echo "  tmux attach -t paris"
-# fi
+# --- travel-agent session ---
+TRAVEL_AGENT_DIR=~/code/personal/travel
+
+if [[ "$TARGET" == "all" || "$TARGET" == "travel-agent" ]]; then
+  new_session travel-agent -n main -c "$TRAVEL_AGENT_DIR" "$KIRO_CLI_CMD"
+  tag_pane travel-agent travel-agent:main.0 kiro-cli "$KIRO_CLI_CMD"
+  echo "  tmux attach -t travel-agent"
+fi
 
 # --- infra-rcms-projects session ---
 INFRA_RCMS_PROJECTS_DIR=~/code/work/infra-rcms-projects
@@ -396,5 +396,14 @@ if [[ "$TARGET" == "all" || "$TARGET" == "lifegroup" ]]; then
   new_session lifegroup -n main -c "$LIFEGROUP_DIR" "$KIRO_CLI_CMD"
   tag_pane lifegroup lifegroup:main.0 kiro-cli "$KIRO_CLI_CMD"
   echo "  tmux attach -t lifegroup"
+fi
+
+# --- finances session ---
+FINANCES_DIR=~/code/personal/finances
+
+if [[ "$TARGET" == "all" || "$TARGET" == "finances" ]]; then
+  new_session finances -n main -c "$FINANCES_DIR" "$KIRO_CLI_CMD"
+  tag_pane finances finances:main.0 kiro-cli "$KIRO_CLI_CMD"
+  echo "  tmux attach -t finances"
 fi
 echo "Done."

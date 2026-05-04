@@ -7,7 +7,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROFILE="tylerbtt"
+PROFILE="personal"
 REGION="us-east-1"
 DYNAMO_TABLE="fire-jobs-seen"
 TTL_DAYS=60
@@ -78,7 +78,7 @@ log "[1/2] GovernmentJobs.com (NEOGOV) via headless Chrome..."
 if curl -s http://localhost:9223/json/version > /dev/null 2>&1; then
   log "  dev-browser on :9223 — connected"
   neogov_tmp=$(mktemp)
-  timeout 300 node "$SCRIPT_DIR/scrape-neogov.mjs" > "$neogov_tmp" 2>> "$LOGFILE"
+  timeout 600 node "$SCRIPT_DIR/scrape-neogov.mjs" > "$neogov_tmp" 2>> "$LOGFILE"
   neogov_exit=$?
   if [ "$neogov_exit" -eq 124 ]; then
     log "  NEOGOV timed out at 300s — using partial results"
@@ -189,7 +189,8 @@ fj_count=$(grep -c 'firejobs' "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  firejobs done: scraped $fj_total_scraped total listings, $fj_count North TX jobs"
 
 # --- Build digest ---
-total=$(grep -c . "$JOBS_FILE" 2>/dev/null || echo 0)
+total=$(grep -c . "$JOBS_FILE" 2>/dev/null | tail -1 || echo 0)
+total=${total//[^0-9]/}
 log "Total jobs collected: $total"
 
 {
@@ -236,21 +237,23 @@ log "Result: $total found, $new_count new"
 # --- Notify ---
 if [ "$new_count" -gt 0 ]; then
   body=$(cat "$DIGEST_FILE")
-  if aws ses send-email --from "$EMAIL_FROM" \
-    --destination "{\"ToAddresses\":[\"$EMAIL_TO\"]}" \
-    --message "{\"Subject\":{\"Data\":\"🚒 ${new_count} firefighter job(s) — North TX — $DATE_LABEL\"},\"Body\":{\"Text\":{\"Data\":$(echo "$body" | jq -Rs .)}}}" \
-    --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1; then
-    log "Email sent to $EMAIL_TO"
+  # Email via gog (Google OAuth)
+  if gog gmail send -a brandon.tyler@gmail.com \
+    --to "brandon.tyler@gmail.com" \
+    --subject "🚒 ${new_count} firefighter job(s) — North TX — $DATE_LABEL" \
+    --body "$body" > /dev/null 2>&1; then
+    log "Email sent via gog"
   else
     log_err "Email send failed"
   fi
-  if aws pinpoint-sms-voice-v2 send-text-message \
-    --destination-phone-number "$SMS_PHONE" --origination-identity "$TOLL_FREE" \
-    --message-body "🚒 ${new_count} new firefighter job(s) in North TX. Check email." \
-    --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1; then
-    log "SMS sent to $SMS_PHONE"
-  else
-    log_err "SMS send failed"
+  # Discord notification
+  DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+  if [ -n "$DISCORD_TOKEN" ]; then
+    curl -s -X POST "https://discord.com/api/v10/channels/1475513267433767014/messages" \
+      -H "Authorization: Bot $DISCORD_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"content\":$(echo "🚒 ${new_count} new firefighter job(s) in North TX. Check email." | jq -Rs .)}" > /dev/null
+    log "Discord notification sent"
   fi
 else
   log "No new jobs — skipping notifications"

@@ -97,7 +97,7 @@ exactly where to look and what to change. For full code, run
 | `extensions/discord/src/monitor/provider.ts`       | Import `createKiroGatewayPlugin`; use it instead of `createDiscordGatewayPlugin` in `monitorDiscordProvider()` and `__testing` (3 lines)                                                                                      |
 | `package.json`                                     | Add `kiro-proxy`/`kiro-proxy:dev` scripts; append `verify-runtime-artifacts.mjs` to `build` chain                                                                                                                             |
 | `pnpm-workspace.yaml`                              | Consolidate `minimumReleaseAgeExclude` (add `@buape/*`, `@jscpd/*`, `@tloncorp/*`, `jscpd*`; remove stale entries); move `@discordjs/opus` from `onlyBuiltDependencies` to `ignoredBuiltDependencies`                         |
-| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`                                                                                                                                         |
+| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`, `excalidraw.log`                                                                                                                       |
 
 ---
 
