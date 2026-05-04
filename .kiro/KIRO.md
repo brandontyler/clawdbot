@@ -106,6 +106,16 @@ delay: `spinup oc --defer=5`.
   try to merge them, just regenerate after sync.
 - When upstream changes come, the smaller our diff the easier the rebase.
   Every line we add to an upstream file is future merge conflict surface.
+- **Upstream sync: never use `git checkout --theirs`** — during rebase, "theirs"
+  is the old merge-base version, not upstream HEAD. Always use
+  `git show upstream/main:<file> > <file>` then re-apply our patch. After
+  resolving, verify: `diff <(git show upstream/main:<file>) <file>` should show
+  only our patch lines. Stale files silently pass rebase but break the build.
+- **Upstream sync: patches get absorbed.** Each sync, check whether upstream
+  adopted our changes (e.g. EAI_AGAIN handling, config deprecations). Drop
+  patches that are no longer needed — fewer patches = easier future syncs.
+- **Upstream sync: the running gateway rewrites config.** Stop the gateway
+  before editing `~/.openclaw/openclaw.json` or it will restore old values.
 
 ## Context Management
 
