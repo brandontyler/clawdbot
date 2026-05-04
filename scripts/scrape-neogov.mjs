@@ -104,7 +104,30 @@ function httpReq(method, path) {
   });
 }
 
+const PER_CITY_TIMEOUT_MS = 30_000; // 30s max per city
+
 async function scrapeCity(slug) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PER_CITY_TIMEOUT_MS);
+  try {
+    const result = await Promise.race([
+      _scrapeCity(slug),
+      new Promise((_, reject) => {
+        controller.signal.addEventListener("abort", () =>
+          reject(new Error(`per-city timeout (${PER_CITY_TIMEOUT_MS / 1000}s)`)),
+        );
+      }),
+    ]);
+    clearTimeout(timer);
+    return result;
+  } catch (e) {
+    clearTimeout(timer);
+    process.stderr.write(` TIMEOUT: ${e.message}\n`);
+    return [];
+  }
+}
+
+async function _scrapeCity(slug) {
   const url = `https://www.governmentjobs.com/careers/${slug}`;
   let tab;
   try {
@@ -179,7 +202,10 @@ async function scrapeCity(slug) {
     const parsed = JSON.parse(result?.result?.value || "[]");
     jobs = parsed
       .filter((j) => j.title && FIRE_KEYWORDS.test(j.title + " " + j.meta))
-      .map((j) => ({ ...j, city: slug }));
+      .map((j) => {
+        j.city = slug;
+        return j;
+      });
   } catch (e) {
     process.stderr.write(`[${slug}] Scrape error: ${e.message}\n`);
   }

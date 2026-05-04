@@ -8,7 +8,7 @@ BASE="https://dentonbible.org"
 PUB_URL="$BASE/media/publications/?category=this-week"
 PRINT_EMAIL="Brandon.Tyler@hpeprint.com"
 FROM="noreply@tylerbtt.email.connect.aws"
-PROFILE="tylerbtt"
+PROFILE="personal"
 REGION="us-east-1"
 DISCORD_CHANNEL="1475513267433767014"
 PROJECT_DIR="$HOME/code/personal/clawdbot"
@@ -58,33 +58,21 @@ fi
 B64=$(base64 -w0 "$PDF_FILE")
 TITLE=$(echo "$ARTICLE_PATH" | sed 's|/article/||; s/-/ /g')
 
-# Build raw MIME email with PDF attachment
-RAW_EMAIL=$(cat <<MIME
-From: $FROM
-To: $PRINT_EMAIL
-Subject: Sermon Notes - $TITLE
-MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="BOUNDARY123"
-
---BOUNDARY123
-Content-Type: text/plain; charset=UTF-8
-
-
---BOUNDARY123
-Content-Type: application/pdf; name="sermon-notes.pdf"
-Content-Transfer-Encoding: base64
-Content-Disposition: attachment; filename="sermon-notes.pdf"
-
-$B64
---BOUNDARY123--
-MIME
-)
-
-RAW_B64=$(echo "$RAW_EMAIL" | base64 -w0)
-
-aws ses send-raw-email \
-  --raw-message "Data=$RAW_B64" \
-  --profile "$PROFILE" --region "$REGION" --no-cli-pager >/dev/null
-
-log "Emailed PDF to $PRINT_EMAIL"
+# Send PDF to HP ePrint via gog gmail (with attachment)
+if gog gmail send -a brandon.tyler@gmail.com \
+  --to "$PRINT_EMAIL" \
+  --subject "Sermon Notes - $TITLE" \
+  --body " " \
+  --attach "$PDF_FILE" 2>&1; then
+  log "Emailed PDF to $PRINT_EMAIL via gog"
+else
+  log "ERROR: gog gmail send failed — retrying in 30s..."
+  sleep 30
+  gog gmail send -a brandon.tyler@gmail.com \
+    --to "$PRINT_EMAIL" \
+    --subject "Sermon Notes - $TITLE" \
+    --body " " \
+    --attach "$PDF_FILE" 2>&1
+  log "Retry sent to $PRINT_EMAIL via gog"
+fi
 post_discord "🖨️ Sermon notes sent to printer: **$TITLE** ($((PDF_SIZE / 1024))KB)"

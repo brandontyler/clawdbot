@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOPICS_FILE="$SCRIPT_DIR/x-digest-topics.txt"
 DIGEST_DIR="/tmp/x-digest"
 FETCH_COUNT=30
-PROFILE="tylerbtt"
+PROFILE="personal"
 REGION="us-east-1"
 DYNAMO_TABLE="x-digest-seen"
 TTL_DAYS=7
@@ -182,21 +182,39 @@ fi
 
 echo "Digest saved: $DIGEST_FILE ($topic_count topics, $total_posts new, $skipped_seen skipped)"
 
-# --- Send email ---
-email_body=$(cat "$DIGEST_FILE")
-aws ses send-email \
-  --from "$EMAIL_FROM" \
-  --destination "{\"ToAddresses\":[\"$EMAIL_TO\"]}" \
-  --message "{\"Subject\":{\"Data\":\"Daily X Digest — $DATE_LABEL\"},\"Body\":{\"Text\":{\"Data\":$(echo "$email_body" | jq -Rs .)}}}" \
-  --profile "$PROFILE" --region "$REGION" \
-  > /dev/null 2>&1 && echo "Email sent to $EMAIL_TO" || echo "Email send failed" >&2
+# --- Send email via gog (Google OAuth — always works) ---
+gog gmail send -a brandon.tyler@gmail.com \
+  --to "brandon.tyler@gmail.com" \
+  --subject "Daily X Digest — $DATE_LABEL" \
+  --body "$(cat "$DIGEST_FILE")" \
+  > /dev/null 2>&1 && echo "Email sent via gog" || echo "Email send failed" >&2
 
-# --- Send SMS ---
-aws pinpoint-sms-voice-v2 send-text-message \
-  --destination-phone-number "$SMS_PHONE" \
-  --origination-identity "$TOLL_FREE" \
-  --message-body "Your daily X digest is ready — $total_posts new posts across $topic_count topics. Check your email." \
-  --profile "$PROFILE" --region "$REGION" \
-  > /dev/null 2>&1 && echo "SMS alert sent" || echo "SMS alert failed" >&2
+# --- Send notification to Discord ---
+DISCORD_CHANNEL="${DIGEST_DISCORD_CHANNEL:-1475513267433767014}"
+DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+if [ -n "$DISCORD_TOKEN" ]; then
+  chunk=""
+  sent=0
+  while IFS= read -r line; do
+    if [ ${#chunk} -gt 0 ] && [[ "$line" == "## "* ]] && [ $((${#chunk} + ${#line})) -gt 1900 ]; then
+      curl -s -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
+        -H "Authorization: Bot $DISCORD_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"content\":$(echo "$chunk" | jq -Rs .)}" > /dev/null
+      sent=$((sent + 1))
+      chunk=""
+      sleep 1
+    fi
+    chunk="${chunk}${line}"$'\n'
+  done < "$DIGEST_FILE"
+  if [ -n "$chunk" ]; then
+    curl -s -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
+      -H "Authorization: Bot $DISCORD_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"content\":$(echo "$chunk" | jq -Rs .)}" > /dev/null
+    sent=$((sent + 1))
+  fi
+  echo "Discord: sent $sent message(s)"
+fi
 
 cat "$DIGEST_FILE"
