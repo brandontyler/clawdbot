@@ -754,15 +754,26 @@ async function handleCompletions(
       if (!isInvalidHistoryError(err)) {
         const hadPartial = responseChunks.length > 0;
         const detail = extractStreamErrorSummary(err);
-        sseChunk(
-          res,
-          buildChunk(
-            completionId,
-            hadPartial
-              ? `\n\n⚠️ Response interrupted — the model hit an internal error mid-stream.${detail} Please try again.`
-              : `⚠️ The model returned an error before generating a response.${detail} Please try again.`,
-          ),
-        );
+        if (hadPartial) {
+          // Partial content already streamed — append error notice.
+          sseChunk(
+            res,
+            buildChunk(
+              completionId,
+              `\n\n⚠️ Response interrupted — the model hit an internal error mid-stream.${detail} Please try again.`,
+            ),
+          );
+        } else {
+          // No content streamed yet — signal error via SSE error event so the
+          // gateway treats this as a model failure (not a valid empty response
+          // that triggers continuation/retry logic).
+          res.write(
+            `data: ${JSON.stringify({ error: { message: `Model error${detail}`, type: "server_error", code: "internal_error" } })}\n\n`,
+          );
+          sseDone(res);
+          resolvePromptLock();
+          return;
+        }
       }
 
       if (isInvalidHistoryError(err)) {
