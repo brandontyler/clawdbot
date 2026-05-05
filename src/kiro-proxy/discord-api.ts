@@ -3,9 +3,13 @@
  *
  * Used by alerts.ts (context threshold warnings) and progress.ts
  * (incremental tool progress updates during long-running ACP sessions).
+ *
+ * Also exports a NotificationSink implementation for Discord so the proxy
+ * core can be decoupled from the specific messaging backend.
  */
 
 import { readFileSync } from "node:fs";
+import type { NotificationSink } from "./notification-sink.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -119,4 +123,9 @@ export async function deleteMessage(channelId: string, messageId: string): Promi
   } catch {
     // Best-effort.
   }
+}
+
+/** Create a NotificationSink backed by Discord REST API. */
+export function createDiscordSink(): NotificationSink {
+  return { postMessage, editMessage, deleteMessage };
 }

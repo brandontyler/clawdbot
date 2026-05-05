@@ -1,6 +1,6 @@
 # Upstream Sync Guide
 
-**Last synced:** `upstream/main` @ `655e0be3d7` — 2026-04-20
+**Last synced:** `upstream/main` @ `fc1f1f4fdf` — 2026-05-04
 
 Fork of [OpenClaw](https://github.com/openclaw/openclaw) customized for `kiro-cli`.
 Keep the delta small so pulling upstream stays painless.
@@ -10,20 +10,30 @@ Keep the delta small so pulling upstream stays painless.
 ```bash
 git fetch upstream
 git rebase upstream/main
-# For each conflict: accept theirs, re-apply our patch (see Patched Files below)
+# For each conflict: replace file with upstream HEAD, re-apply our patch:
+#   git show upstream/main:<file> > <file>
+#   (apply patch from table below)
+#   git add <file>
+# IMPORTANT: Do NOT use `git checkout --theirs` — it gives the old merge-base,
+# not upstream HEAD. Always use `git show upstream/main:` instead.
 # pnpm-lock.yaml: always delete and regenerate
 chmod +x .kiro/hooks/*.sh 2>/dev/null
 pnpm install && pnpm build && pnpm check
+# Verify every patched file has a small diff vs upstream:
+#   for f in <patched files>; do diff <(git show upstream/main:"$f") "$f" | wc -l; done
 openclaw config set agents.defaults.timeoutSeconds 999999
-openclaw config set agents.defaults.llm.idleTimeoutSeconds 999999
 # Update "Last synced" at top of this file
 spinup oc --defer
 # Send a real Discord message to confirm delivery
 ```
 
-**Conflict strategy:** Accept upstream (`git checkout --theirs <file>`), then
-re-apply our edit from the Patched Files table. Kiro-only files never conflict —
-keep ours. Generated files (`pnpm-lock.yaml`): regenerate.
+**Conflict strategy:** For each conflicted patched file, replace it with
+upstream's current version (`git show upstream/main:<file> > <file>`), then
+re-apply our edit from the Patched Files table. Do NOT use `git checkout --theirs`
+— during rebase, "theirs" is the old merge-base version, not upstream HEAD.
+After resolving, verify each file: `diff <(git show upstream/main:<file>) <file>`
+should show only our patch lines. Kiro-only files never conflict — keep ours.
+Generated files (`pnpm-lock.yaml`, `a2ui.bundle.*`): regenerate.
 
 ---
 
@@ -73,11 +83,9 @@ exactly where to look and what to change. For full code, run
 | File                                         | Where / What                                                                             |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `extensions/discord/src/gateway-logging.ts`  | `INFO_DEBUG_MARKERS` array: add `"Resumed successfully"`                                 |
-| `src/auto-reply/reply/queue/settings.ts`     | `defaultQueueModeForChannel()`: return `"steer-backlog"` (upstream: `"collect"`)         |
+| `src/auto-reply/reply/queue/settings.ts`     | `defaultQueueModeForChannel()`: return `"steer-backlog"` (upstream: `"steer"`)           |
 | `src/auto-reply/reply/typing.ts`             | `createTypingController()` default: `typingTtlMs = 15 * 60_000` (upstream: `2 * 60_000`) |
 | `extensions/discord/src/monitor/timeouts.ts` | `DISCORD_DEFAULT_INBOUND_WORKER_TIMEOUT_MS`: `120 * 60_000` (upstream: `30 * 60_000`)    |
-| `extensions/discord/src/config-ui-hints.ts`  | `inboundWorker.runTimeoutMs` help string: `1800000` → `7200000` (matches timeouts.ts)    |
-| `src/config/types.discord.ts`                | `runTimeoutMs` JSDoc: `1800000 (30 minutes)` → `7200000 (2 hours)` (matches timeouts.ts) |
 
 ### Group 2: Small additions (5–15 lines)
 
@@ -89,29 +97,34 @@ exactly where to look and what to change. For full code, run
 
 ### Group 3: Larger patches
 
-| File                                               | Where / What                                                                                                                                                                                                                  |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/index.ts`                                     | `uncaughtException` handler: add early return for `"zombie connection"`, `"certificate has expired"`, `"EAI_AGAIN"`, `"ENOTFOUND"` (~16 lines before existing crash handler)                                                  |
-| `src/agents/pi-embedded-runner/run/attempt.ts`     | After `cacheTrace.wrapStreamFn`: inject `x-openclaw-session-key` header when `provider === "kiro"` (~10 lines). Previous patches (undici timeouts, orphan trailing-user removal) absorbed by upstream.                        |
-| `extensions/discord/src/monitor/gateway-plugin.ts` | Export `fetchDiscordGatewayInfo`; add `ResilientGatewayPlugin` class (~45 lines) fixing reconnect-counter and zombie-heartbeat bugs; change `SafeGatewayPlugin` → `SafeResilientGatewayPlugin extends ResilientGatewayPlugin` |
-| `extensions/discord/src/monitor/provider.ts`       | Import `createKiroGatewayPlugin`; use it instead of `createDiscordGatewayPlugin` in `monitorDiscordProvider()` and `__testing` (3 lines)                                                                                      |
-| `package.json`                                     | Add `kiro-proxy`/`kiro-proxy:dev` scripts; append `verify-runtime-artifacts.mjs` to `build` chain                                                                                                                             |
-| `pnpm-workspace.yaml`                              | Consolidate `minimumReleaseAgeExclude` (add `@buape/*`, `@jscpd/*`, `@tloncorp/*`, `jscpd*`; remove stale entries); move `@discordjs/opus` from `onlyBuiltDependencies` to `ignoredBuiltDependencies`                         |
-| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`, `excalidraw.log`                                                                                                                       |
+| File                                               | Where / What                                                                                                                                                                                                                           |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                                     | `uncaughtException` handler: add early return for `"zombie connection"`, `"certificate has expired"` (~8 lines before existing benign-error handler). `EAI_AGAIN`/`ENOTFOUND` absorbed by upstream's `isBenignUncaughtExceptionError`. |
+| `src/agents/pi-embedded-runner/run/attempt.ts`     | After `cacheTrace.wrapStreamFn`: inject `x-openclaw-session-key` header when `provider === "kiro"` (~10 lines). Previous patches (undici timeouts, orphan trailing-user removal) absorbed by upstream.                                 |
+| `extensions/discord/src/monitor/gateway-plugin.ts` | Add `ResilientGatewayPlugin` class (~45 lines) fixing reconnect-counter and zombie-heartbeat bugs; change `OpenClawGatewayPlugin` → extends `ResilientGatewayPlugin` instead of `GatewayPlugin`                                        |
+| `extensions/discord/src/monitor/provider.ts`       | Import `createKiroGatewayPlugin`; use it instead of `createDiscordGatewayPlugin` in `monitorDiscordProvider()` and `__testing` (3 lines)                                                                                               |
+| `package.json`                                     | Add `kiro-proxy`/`kiro-proxy:dev` scripts; append `verify-runtime-artifacts.mjs` to `build` chain                                                                                                                                      |
+| `pnpm-workspace.yaml`                              | Move `@discordjs/opus` from `onlyBuiltDependencies` to `ignoredBuiltDependencies`                                                                                                                                                      |
+| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`, `excalidraw.log`                                                                                                                                |
 
 ---
 
 ## Required Gateway Config
 
-| Setting                                  | Value    | Why                                                                                                                                                                               |
-| ---------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents.defaults.timeoutSeconds`         | `999999` | Embedded run timeout. Default 48h, but resets to 3600 on some upgrades. Upstream validation rejects `0`; use large value instead. Discord worker timeout (2h) is the outer guard. |
-| `agents.defaults.llm.idleTimeoutSeconds` | `999999` | Upstream's 60s idle timeout kills long-running tool executions. Upstream validation rejects `0`. Proxy manages its own.                                                           |
+| Setting                                | Value    | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents.defaults.timeoutSeconds`       | `999999` | Embedded run timeout. Default 48h, but resets to 3600 on some upgrades. Upstream validation rejects `0`; use large value instead. Discord worker timeout (2h) is the outer guard.                                                                                                                                                                                                                                                                  |
+| `models.providers.kiro.timeoutSeconds` | `999999` | Per-provider request timeout. Required since upstream `e899b32e1d` (2026-04-27) restructured idle watchdog logic: `agents.defaults.timeoutSeconds` is now treated as an _implicit_ timeout clamped to 120s for the LLM idle watchdog, while `models.providers.*.timeoutSeconds` is _explicit_ and honored directly. Without this, the gateway kills kiro-proxy connections after 120s of no SSE tokens (which happens during long tool-use turns). |
 
 ```bash
 openclaw config set agents.defaults.timeoutSeconds 999999
-openclaw config set agents.defaults.llm.idleTimeoutSeconds 999999
+# Also required after 2026-05-04 sync:
+openclaw config set models.providers.kiro.timeoutSeconds 999999
 ```
+
+Note: The legacy `agents.defaults.llm.idleTimeoutSeconds` key was removed upstream.
+If the running gateway keeps restoring it, stop the gateway first, edit
+`~/.openclaw/openclaw.json` to remove the `llm` block, then restart.
 
 ## Post-Sync Checklist
 

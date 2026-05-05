@@ -29,6 +29,8 @@ export { KiroSession } from "./kiro-session.js";
 export { SessionManager, detectChannelId } from "./session-manager.js";
 export { createKiroProxyServer } from "./server.js";
 export type { KiroProxyOptions, ChannelRoute } from "./types.js";
+export type { NotificationSink } from "./notification-sink.js";
+export { createDiscordSink } from "./discord-api.js";
 
 const DEFAULT_PORT = 18790;
 const DEFAULT_HOST = "127.0.0.1";

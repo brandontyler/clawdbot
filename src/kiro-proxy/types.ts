@@ -23,6 +23,7 @@ export type OpenAIChatRequest = {
   user?: string;
   temperature?: number;
   max_tokens?: number;
+  max_completion_tokens?: number;
 };
 
 export type OpenAIChunk = {

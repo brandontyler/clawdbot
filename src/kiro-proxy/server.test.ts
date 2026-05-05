@@ -169,9 +169,31 @@ describe("POST /v1/chat/completions (stream: false)", () => {
       },
     });
     expect(status).toBe(200);
-    const b = body as { object: string; choices: Array<{ message: { content: string } }> };
+    const b = body as {
+      object: string;
+      choices: Array<{ message: { content: string } }>;
+      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+    };
     expect(b.object).toBe("chat.completion");
     expect(b.choices[0]?.message.content).toBe("Hello from Kiro!");
+  });
+
+  it("returns estimated token usage (non-zero)", async () => {
+    const { body } = await testFetch(baseUrl, "/v1/chat/completions", {
+      method: "POST",
+      body: {
+        model: "kiro-default",
+        stream: false,
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+    const b = body as {
+      usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+    };
+    // "latest user message" is the prompt text; "Hello from Kiro!" is the response
+    expect(b.usage.prompt_tokens).toBeGreaterThan(0);
+    expect(b.usage.completion_tokens).toBeGreaterThan(0);
+    expect(b.usage.total_tokens).toBe(b.usage.prompt_tokens + b.usage.completion_tokens);
   });
 
   it("returns 400 for malformed JSON", async () => {

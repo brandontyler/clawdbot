@@ -86,3 +86,41 @@ describe("SessionManager.resolveSessionKey", () => {
     );
   });
 });
+
+// ─── resolveSessionTag ────────────────────────────────────────────────────────
+
+import { resolveSessionTag, detectChannelId } from "./session-manager.js";
+
+describe("detectChannelId", () => {
+  it("extracts channel ID from an OpenClaw session key", () => {
+    expect(detectChannelId("agent:main:discord:channel:1475216992956059698")).toBe(
+      "1475216992956059698",
+    );
+  });
+
+  it("returns undefined for non-Discord keys", () => {
+    expect(detectChannelId("agent:main:telegram:chat:12345")).toBeUndefined();
+  });
+
+  it("returns undefined for undefined input", () => {
+    expect(detectChannelId(undefined)).toBeUndefined();
+  });
+});
+
+describe("resolveSessionTag", () => {
+  it("returns project name for known channel routes", () => {
+    const routes = { "123456": { cwd: "/home/user/code/myproject" } };
+    const tag = resolveSessionTag("agent:main:discord:channel:123456", routes);
+    expect(tag).toBe("myproject(3456)");
+  });
+
+  it("returns short channel ID for unknown routes", () => {
+    const tag = resolveSessionTag("agent:main:discord:channel:999888777", {});
+    expect(tag).toBe("ch:888777");
+  });
+
+  it("returns truncated key for non-channel session keys", () => {
+    const tag = resolveSessionTag("abcdef1234567890abcdef", {});
+    expect(tag).toBe("abcdef1234567890…");
+  });
+});
