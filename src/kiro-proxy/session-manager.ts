@@ -210,46 +210,18 @@ export class SessionManager {
     const existing = this.sessions.get(sessionKey);
 
     if (existing && existing.session.alive) {
-      // Session was reset upstream — message count dropped below what we've sent.
-      if (messages.length < existing.handle.sentMessageCount) {
-        this.log(
-          `session reset detected (msgs=${messages.length} < sent=${existing.handle.sentMessageCount}), sending /chat new then replacing`,
-        );
-        // Send /chat new to clear kiro-cli's internal context before killing.
-        const killTimer = setTimeout(() => existing.session.kill("chat-new-timeout"), 5000);
-        let chatNewOk = false;
-        try {
-          await existing.session.prompt("/chat new", () => {});
-          clearTimeout(killTimer);
-          chatNewOk = true;
-        } catch (err) {
-          clearTimeout(killTimer);
-          this.log(`/chat new failed (process may be dead): ${String(err)}`);
-        }
-        // Whether /chat new succeeded or not, kill without hibernating.
-        // Hibernating preserves the ACP session file which still contains the
-        // old conversation — resuming it would restore the stale context.
-        existing.session.kill(chatNewOk ? "session-reset" : "session-reset-failed");
-        this.sessions.delete(sessionKey);
-        this.cleanupSession(sessionKey);
-        // Clear any hibernated entry so the next message starts fresh.
-        if (this.hibernated.delete(sessionKey)) {
-          saveHibernated(this.hibernated);
-        }
-      } else {
-        // Wait for any in-flight prompt to finish before sending the next one.
-        await existing.promptLock;
-        const newMessages = messages.slice(existing.handle.sentMessageCount);
-        const promptText = this.buildPromptFromMessages(newMessages);
-        existing.handle.sentMessageCount = messages.length;
-        existing.handle.lastTouchedAt = Date.now();
-        existing.session.lastTouchedAt = Date.now();
-        const rssKb = existing.session.getRssKb();
-        this.log(
-          `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
-        );
-        return { session: existing.session, promptText, managed: existing };
-      }
+      // Wait for any in-flight prompt to finish before sending the next one.
+      await existing.promptLock;
+      const newMessages = messages.slice(existing.handle.sentMessageCount);
+      const promptText = this.buildPromptFromMessages(newMessages);
+      existing.handle.sentMessageCount = messages.length;
+      existing.handle.lastTouchedAt = Date.now();
+      existing.session.lastTouchedAt = Date.now();
+      const rssKb = existing.session.getRssKb();
+      this.log(
+        `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
+      );
+      return { session: existing.session, promptText, managed: existing };
     }
 
     // Dead or non-existent session — create a fresh one.
