@@ -83,9 +83,31 @@ function extractStreamErrorSummary(err: unknown): string {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// ─── Token estimation ─────────────────────────────────────────────────────────
+
+/** Rough token estimate (~4 chars per token for English text). */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Build an estimated usage object from prompt and response text. */
+function estimateUsage(
+  promptText: string,
+  responseText: string,
+): {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+} {
+  const prompt_tokens = estimateTokens(promptText);
+  const completion_tokens = estimateTokens(responseText);
+  return { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens };
+}
+
 // ─── Persistent corruption log ────────────────────────────────────────────────
 
-const CORRUPTION_LOG_DIR = `${process.env.HOME}/code/personal/clawdbot/logs`;
+const CORRUPTION_LOG_DIR =
+  process.env.KIRO_PROXY_LOG_DIR ?? `${process.env.HOME}/code/personal/clawdbot/logs`;
 const CORRUPTION_LOG_PATH = `${CORRUPTION_LOG_DIR}/corruption-events.jsonl`;
 
 /** Kiro-cli emits this message inline in the response stream when its internal session corrupts. */
@@ -201,6 +223,158 @@ function buildCorruptionDiagnostics(
     promptText: opts.promptText,
     roleCounts,
   };
+}
+
+// ─── Recovery helper ──────────────────────────────────────────────────────────
+
+type RecoveryContext = {
+  sessionKey: string;
+  openclawSessionKey: string | undefined;
+  messages: OpenAIMessage[];
+  incomingChars: number;
+  promptText: string;
+  responseText: string;
+  t0: number;
+  session: import("./kiro-session.js").KiroSession;
+  managed: { handle: { sentMessageCount: number }; promptLock: Promise<void> };
+  manager: SessionManager;
+  log: (msg: string) => void;
+};
+
+type RecoveryResult = { ok: true; text: string; promptUsed: string } | { ok: false };
+
+/**
+ * Attempt two-phase recovery after an invalid-history error.
+ *
+ * Phase 1: Replay the latest user message with a safety preamble.
+ * Phase 2: Send a minimal no-tool prompt to break doom loops.
+ *
+ * Returns the recovered text on success, or { ok: false } if both attempts fail.
+ * The caller is responsible for emitting the text (streaming or blocking).
+ */
+async function attemptRecovery(
+  ctx: RecoveryContext,
+  onChunk?: (text: string) => void,
+): Promise<RecoveryResult> {
+  const {
+    sessionKey,
+    openclawSessionKey,
+    messages,
+    incomingChars,
+    promptText,
+    responseText,
+    t0,
+    session,
+    managed,
+    manager,
+    log,
+  } = ctx;
+
+  log(formatErrorVerbose("invalid conversation history", "invalid history detected"));
+  const recoveryText = manager.getLatestUserMessage(messages);
+  const elapsed = performance.now() - t0;
+  const diag = buildCorruptionDiagnostics(session, managed, {
+    sessionKey,
+    phase: "initial",
+    error: "invalid conversation history",
+    messages,
+    incomingChars,
+    promptText,
+    responseText,
+    elapsedMs: Math.round(elapsed),
+  });
+  logCorruptionEvent(diag);
+  log(`🔴 CORRUPTION DIAG (ACP error): ${JSON.stringify(diag, null, 2)}`);
+  manager.resetSession(sessionKey, "invalid-conversation-history");
+
+  // Brief delay to let the killed kiro-cli process fully exit before respawning.
+  await sleep(1000);
+
+  // Attempt 1: replay user message with safety preamble
+  if (recoveryText) {
+    const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
+    log(`recovery attempt 1: preamble + user message (${recoveryText.length} chars)`);
+    try {
+      const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
+      const recovery = await manager.getOrCreate(sessionKey, cleanMessages, openclawSessionKey);
+      recovery.managed.handle.sentMessageCount = messages.length;
+
+      let recoveryResolve: () => void;
+      recovery.managed.promptLock = new Promise((r) => {
+        recoveryResolve = r;
+      });
+
+      const parts: string[] = [];
+      await recovery.session.prompt(safeRecoveryText, (text) => {
+        parts.push(text);
+        onChunk?.(text);
+      });
+      recovery.session.consecutiveErrors = 0;
+      recoveryResolve!();
+
+      return { ok: true, text: parts.join(""), promptUsed: safeRecoveryText };
+    } catch (retryErr) {
+      log(formatErrorVerbose(retryErr, "recovery attempt 1 failed"));
+      logCorruptionEvent(
+        buildCorruptionDiagnostics(session, managed, {
+          sessionKey,
+          phase: "recovery-1",
+          error: retryErr,
+          messages,
+          incomingChars,
+          promptText,
+          responseText,
+          elapsedMs: Math.round(performance.now() - t0),
+        }),
+      );
+      manager.resetSession(sessionKey, "recovery-attempt-1-failed");
+    }
+  }
+
+  // Backoff before attempt 2 to let resources settle
+  log(`recovery backoff: waiting ${RECOVERY_BACKOFF_MS}ms before attempt 2`);
+  await sleep(RECOVERY_BACKOFF_MS);
+
+  // Attempt 2: minimal no-tool prompt to break the doom loop
+  log("recovery attempt 2: fallback no-tool prompt");
+  try {
+    const fallbackMessages = [{ role: "user" as const, content: FALLBACK_RECOVERY_PROMPT }];
+    const fallback = await manager.getOrCreate(sessionKey, fallbackMessages, openclawSessionKey);
+    fallback.managed.handle.sentMessageCount = messages.length;
+
+    let fallbackResolve: () => void;
+    fallback.managed.promptLock = new Promise((r) => {
+      fallbackResolve = r;
+    });
+
+    const parts: string[] = [];
+    await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
+      parts.push(text);
+      onChunk?.(text);
+    });
+    fallback.session.consecutiveErrors = 0;
+    fallbackResolve!();
+
+    return { ok: true, text: parts.join(""), promptUsed: FALLBACK_RECOVERY_PROMPT };
+  } catch (fallbackErr) {
+    log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed"));
+    logCorruptionEvent(
+      buildCorruptionDiagnostics(session, managed, {
+        sessionKey,
+        phase: "recovery-2",
+        error: fallbackErr,
+        messages,
+        incomingChars,
+        promptText,
+        responseText,
+        elapsedMs: Math.round(performance.now() - t0),
+      }),
+    );
+    manager.resetSession(sessionKey, "recovery-attempt-2-failed");
+  }
+
+  log("recovery exhausted — both attempts failed");
+  return { ok: false };
 }
 
 // ─── SSE helpers ──────────────────────────────────────────────────────────────
@@ -403,10 +577,8 @@ async function handleCompletions(
     };
     req.once("close", onClose);
 
-    let resolvePromptLock: () => void;
-    managed.promptLock = new Promise((r) => {
-      resolvePromptLock = r;
-    });
+    // Use the unlock function from getOrCreate (lock was set there to prevent races).
+    const resolvePromptLock = sessionResult.unlockPrompt ?? (() => {});
 
     let wasMaxTokens = false;
     let tFirstChunk = 0;
@@ -594,128 +766,36 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        log(formatErrorVerbose(err, "invalid history detected"));
-        const recoveryText = manager.getLatestUserMessage(body.messages);
-        const elapsed = performance.now() - t0;
-        const diag = buildCorruptionDiagnostics(session, managed, {
-          sessionKey,
-          phase: "initial",
-          error: err,
-          messages: body.messages,
-          incomingChars,
-          promptText,
-          responseText: responseChunks.join(""),
-          elapsedMs: Math.round(elapsed),
-        });
-        logCorruptionEvent(diag);
-        log(`🔴 CORRUPTION DIAG (ACP error): ${JSON.stringify(diag, null, 2)}`);
-        manager.resetSession(sessionKey, "invalid-conversation-history");
-
-        // Brief delay to let the killed kiro-cli process fully exit before respawning.
-        await sleep(1000);
-
-        // Attempt 1: replay user message with safety preamble
-        if (recoveryText) {
-          const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
-          log(`recovery attempt 1: preamble + user message (${recoveryText.length} chars)`);
-          try {
-            const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
-            const recovery = await manager.getOrCreate(
-              sessionKey,
-              cleanMessages,
-              openclawSessionKey,
-            );
-            recovery.managed.handle.sentMessageCount = body.messages.length;
-
-            let recoveryResolve: () => void;
-            recovery.managed.promptLock = new Promise((r) => {
-              recoveryResolve = r;
-            });
-
-            await recovery.session.prompt(safeRecoveryText, (text) => {
-              if (!tFirstChunk) {
-                tFirstChunk = performance.now();
-              }
-              sseChunk(res, buildChunk(completionId, text));
-            });
-            recovery.session.consecutiveErrors = 0;
-            recoveryResolve!();
-
-            sseChunk(res, buildFinalChunk(completionId));
-            sseDone(res);
-            return;
-          } catch (retryErr) {
-            log(formatErrorVerbose(retryErr, "recovery attempt 1 failed"));
-            logCorruptionEvent(
-              buildCorruptionDiagnostics(session, managed, {
-                sessionKey,
-                phase: "recovery-1",
-                error: retryErr,
-                messages: body.messages,
-                incomingChars,
-                promptText,
-                responseText: responseChunks.join(""),
-                elapsedMs: Math.round(performance.now() - t0),
-              }),
-            );
-            manager.resetSession(sessionKey, "recovery-attempt-1-failed");
-          }
-        }
-
-        // Backoff before attempt 2 to let resources settle
-        log(`recovery backoff: waiting ${RECOVERY_BACKOFF_MS}ms before attempt 2`);
-        await sleep(RECOVERY_BACKOFF_MS);
-
-        // Attempt 2: minimal no-tool prompt to break the doom loop
-        log("recovery attempt 2: fallback no-tool prompt");
-        try {
-          const fallbackMessages = [{ role: "user" as const, content: FALLBACK_RECOVERY_PROMPT }];
-          const fallback = await manager.getOrCreate(
+        const recoveryResult = await attemptRecovery(
+          {
             sessionKey,
-            fallbackMessages,
             openclawSessionKey,
-          );
-          fallback.managed.handle.sentMessageCount = body.messages.length;
-
-          let fallbackResolve: () => void;
-          fallback.managed.promptLock = new Promise((r) => {
-            fallbackResolve = r;
-          });
-
-          await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
+            messages: body.messages,
+            incomingChars,
+            promptText,
+            responseText: responseChunks.join(""),
+            t0,
+            session,
+            managed,
+            manager,
+            log,
+          },
+          (text) => {
             if (!tFirstChunk) {
               tFirstChunk = performance.now();
             }
             sseChunk(res, buildChunk(completionId, text));
-          });
-          fallback.session.consecutiveErrors = 0;
-          fallbackResolve!();
+          },
+        );
 
+        if (recoveryResult.ok) {
           sseChunk(res, buildFinalChunk(completionId));
           sseDone(res);
           return;
-        } catch (fallbackErr) {
-          log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed"));
-          logCorruptionEvent(
-            buildCorruptionDiagnostics(session, managed, {
-              sessionKey,
-              phase: "recovery-2",
-              error: fallbackErr,
-              messages: body.messages,
-              incomingChars,
-              promptText,
-              responseText: responseChunks.join(""),
-              elapsedMs: Math.round(performance.now() - t0),
-            }),
-          );
-          manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
 
         // Both recovery attempts failed — return a synthetic response and
         // leave the session cleared so the NEXT message starts fresh.
-        // This avoids the doom loop: no third session spawn, just a clean
-        // message telling the user what happened.
-        log("recovery exhausted — returning synthetic reset notice");
         sseChunk(
           res,
           buildChunk(
@@ -743,15 +823,12 @@ async function handleCompletions(
       resolvePromptLock!();
     }
 
-    sseChunk(res, buildFinalChunk(completionId, wasMaxTokens ? "length" : "stop"));
+    sseChunk(res, buildFinalChunk(completionId, "stop"));
     sseDone(res);
   } else {
     // ── Blocking (non-streaming) response ─────────────────────────────────
     const parts: string[] = [];
-    let resolveBlockLock: () => void;
-    managed.promptLock = new Promise((r) => {
-      resolveBlockLock = r;
-    });
+    const resolveBlockLock = sessionResult.unlockPrompt ?? (() => {});
 
     try {
       await session.prompt(promptText, (text) => parts.push(text));
@@ -826,7 +903,7 @@ async function handleCompletions(
                 finish_reason: "stop",
               },
             ],
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            usage: estimateUsage(promptText, retryText),
           };
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(completion));
@@ -873,7 +950,7 @@ async function handleCompletions(
               finish_reason: "stop",
             },
           ],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          usage: estimateUsage(promptText, ""),
         };
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(completion));
@@ -903,99 +980,21 @@ async function handleCompletions(
       }
 
       if (isInvalidHistoryError(err)) {
-        log(formatErrorVerbose(err, "invalid history detected (blocking)"));
-        const recoveryText = manager.getLatestUserMessage(body.messages);
-        const elapsed = performance.now() - t0;
-        const diag = buildCorruptionDiagnostics(session, managed, {
+        const recoveryResult = await attemptRecovery({
           sessionKey,
-          phase: "initial-blocking",
-          error: err,
+          openclawSessionKey,
           messages: body.messages,
           incomingChars,
           promptText,
           responseText: parts.join(""),
-          elapsedMs: Math.round(elapsed),
+          t0,
+          session,
+          managed,
+          manager,
+          log,
         });
-        logCorruptionEvent(diag);
-        log(`🔴 CORRUPTION DIAG (ACP error, blocking): ${JSON.stringify(diag, null, 2)}`);
-        manager.resetSession(sessionKey, "invalid-conversation-history");
 
-        // Brief delay to let the killed kiro-cli process fully exit before respawning.
-        await sleep(1000);
-
-        // Attempt 1: replay user message with safety preamble
-        if (recoveryText) {
-          const safeRecoveryText = RECOVERY_PREAMBLE + recoveryText;
-          log(`recovery attempt 1: preamble + user message (${recoveryText.length} chars)`);
-          try {
-            const cleanMessages = [{ role: "user" as const, content: safeRecoveryText }];
-            const recovery = await manager.getOrCreate(
-              sessionKey,
-              cleanMessages,
-              openclawSessionKey,
-            );
-            recovery.managed.handle.sentMessageCount = body.messages.length;
-            const retryParts: string[] = [];
-            await recovery.session.prompt(safeRecoveryText, (text) => retryParts.push(text));
-            recovery.session.consecutiveErrors = 0;
-
-            const fullText = retryParts.join("");
-            const completion: OpenAICompletion = {
-              id: completionId,
-              object: "chat.completion",
-              created: Math.floor(Date.now() / 1000),
-              model: KIRO_MODEL_ID,
-              choices: [
-                {
-                  index: 0,
-                  message: { role: "assistant", content: fullText },
-                  finish_reason: "stop",
-                },
-              ],
-              usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-            };
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(completion));
-            return;
-          } catch (retryErr) {
-            log(formatErrorVerbose(retryErr, "recovery attempt 1 failed (blocking)"));
-            logCorruptionEvent(
-              buildCorruptionDiagnostics(session, managed, {
-                sessionKey,
-                phase: "recovery-1-blocking",
-                error: retryErr,
-                messages: body.messages,
-                incomingChars,
-                promptText,
-                responseText: parts.join(""),
-                elapsedMs: Math.round(performance.now() - t0),
-              }),
-            );
-            manager.resetSession(sessionKey, "recovery-attempt-1-failed");
-          }
-        }
-
-        // Backoff before attempt 2
-        log(`recovery backoff: waiting ${RECOVERY_BACKOFF_MS}ms before attempt 2`);
-        await sleep(RECOVERY_BACKOFF_MS);
-
-        // Attempt 2: minimal no-tool prompt to break the doom loop
-        log("recovery attempt 2: fallback no-tool prompt (blocking)");
-        try {
-          const fallbackMessages = [{ role: "user" as const, content: FALLBACK_RECOVERY_PROMPT }];
-          const fallback = await manager.getOrCreate(
-            sessionKey,
-            fallbackMessages,
-            openclawSessionKey,
-          );
-          fallback.managed.handle.sentMessageCount = body.messages.length;
-          const fallbackParts: string[] = [];
-          await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) =>
-            fallbackParts.push(text),
-          );
-          fallback.session.consecutiveErrors = 0;
-
-          const fullText = fallbackParts.join("");
+        if (recoveryResult.ok) {
           const completion: OpenAICompletion = {
             id: completionId,
             object: "chat.completion",
@@ -1004,30 +1003,15 @@ async function handleCompletions(
             choices: [
               {
                 index: 0,
-                message: { role: "assistant", content: fullText },
+                message: { role: "assistant", content: recoveryResult.text },
                 finish_reason: "stop",
               },
             ],
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            usage: estimateUsage(recoveryResult.promptUsed, recoveryResult.text),
           };
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(completion));
           return;
-        } catch (fallbackErr) {
-          log(formatErrorVerbose(fallbackErr, "recovery attempt 2 failed (blocking)"));
-          logCorruptionEvent(
-            buildCorruptionDiagnostics(session, managed, {
-              sessionKey,
-              phase: "recovery-2-blocking",
-              error: fallbackErr,
-              messages: body.messages,
-              incomingChars,
-              promptText,
-              responseText: parts.join(""),
-              elapsedMs: Math.round(performance.now() - t0),
-            }),
-          );
-          manager.resetSession(sessionKey, "recovery-attempt-2-failed");
         }
       }
 
@@ -1058,11 +1042,7 @@ async function handleCompletions(
       choices: [
         { index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" },
       ],
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-      },
+      usage: estimateUsage(promptText, fullText),
     };
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(completion));
