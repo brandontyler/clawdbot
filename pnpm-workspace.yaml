@@ -34,9 +34,6 @@ minimumReleaseAgeExclude:
 
 onlyBuiltDependencies:
   - "@openclaw/fs-safe"
-
-ignoredBuiltDependencies:
-  - "@discordjs/opus"
   - "@google/genai"
   - "@lydell/node-pty"
   - "@matrix-org/matrix-sdk-crypto-nodejs"
@@ -51,5 +48,6 @@ ignoredBuiltDependencies:
   - sharp
 
 ignoredBuiltDependencies:
+  - "@discordjs/opus"
   - koffi
   - tree-sitter-bash

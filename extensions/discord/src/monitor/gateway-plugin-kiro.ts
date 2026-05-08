@@ -8,18 +8,15 @@
 //
 // Kept in a separate file so upstream gateway-plugin.ts can be synced cleanly.
 
-import { GatewayPlugin } from "@buape/carbon/gateway";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import type { DiscordAccountConfig } from "openclaw/plugin-sdk/config-runtime";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import WebSocket from "ws";
-import {
-  ResilientGatewayPlugin,
-  fetchDiscordGatewayInfo,
-  resolveDiscordGatewayIntents,
-} from "./gateway-plugin.js";
+import * as discordGateway from "../internal/gateway.js";
+import { fetchDiscordGatewayInfo } from "./gateway-metadata.js";
+import { ResilientGatewayPlugin, resolveDiscordGatewayIntents } from "./gateway-plugin.js";
 
 /** A resume that lasts less than this is considered a "flap". */
 const STABLE_CONNECTION_MS = 60_000;
@@ -47,28 +44,35 @@ class KiroGatewayPlugin extends ResilientGatewayPlugin {
     (this as unknown as { sequence: number | null }).sequence = v;
   }
 
-  override setupWebSocket(): void {
-    super.setupWebSocket();
+  constructor(options: ConstructorParameters<typeof discordGateway.GatewayPlugin>[0]) {
+    super(options);
 
-    const ws = (this as unknown as { ws: WebSocket | null }).ws;
-    if (!ws) {
-      return;
-    }
-
-    // Track successful READY/RESUMED for flap detection.
-    ws.on("message", (data: WebSocket.Data) => {
-      try {
-        const raw =
-          typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
-        const parsed = JSON.parse(raw);
-        if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
-          this._lastResumedAt = Date.now();
-          this.emitter.emit("debug", `Resumed successfully (${parsed.t})`);
-        }
-      } catch {
-        // Ignore — parent handles validation.
+    // Patch setupWebSocket to add flap detection logging.
+    const origSetup = (
+      this as unknown as { setupWebSocket: (r?: boolean) => void }
+    ).setupWebSocket.bind(this);
+    (this as unknown as { setupWebSocket: (r?: boolean) => void }).setupWebSocket = (
+      resume?: boolean,
+    ) => {
+      origSetup(resume);
+      const ws = (this as unknown as { ws: WebSocket | null }).ws;
+      if (!ws) {
+        return;
       }
-    });
+      ws.on("message", (data: WebSocket.Data) => {
+        try {
+          const raw =
+            typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
+          const parsed = JSON.parse(raw);
+          if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
+            this._lastResumedAt = Date.now();
+            this.emitter.emit("debug", `Resumed successfully (${parsed.t})`);
+          }
+        } catch {
+          // Ignore — parent handles validation.
+        }
+      });
+    };
   }
 
   override connect(resume?: boolean): void {
@@ -127,22 +131,24 @@ class KiroGatewayPlugin extends ResilientGatewayPlugin {
 }
 
 class SafeKiroGatewayPlugin extends KiroGatewayPlugin {
-  override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
+  override async registerClient(client: unknown) {
     if (!this.gatewayInfo) {
       this.gatewayInfo = await fetchDiscordGatewayInfo({
-        token: client.options.token,
+        token: (client as { options: { token: string } }).options.token,
         fetchImpl: (input, init) => fetch(input, init as RequestInit),
       });
     }
-    return super.registerClient(client);
+    return super.registerClient(client as never);
   }
 }
 
 export function createKiroGatewayPlugin(params: {
   discordConfig: DiscordAccountConfig;
   runtime: RuntimeEnv;
-}): GatewayPlugin {
-  const intents = resolveDiscordGatewayIntents(params.discordConfig?.intents);
+}): discordGateway.GatewayPlugin {
+  const intents = resolveDiscordGatewayIntents(
+    params.discordConfig?.intents as Parameters<typeof resolveDiscordGatewayIntents>[0],
+  );
   const proxy = params.discordConfig?.proxy?.trim();
   const options = {
     reconnect: { maxAttempts: 50 },
@@ -151,7 +157,7 @@ export function createKiroGatewayPlugin(params: {
   };
 
   if (!proxy) {
-    return new SafeKiroGatewayPlugin(options);
+    return new SafeKiroGatewayPlugin(options) as unknown as discordGateway.GatewayPlugin;
   }
 
   try {
@@ -160,19 +166,15 @@ export function createKiroGatewayPlugin(params: {
     params.runtime.log?.("discord: gateway proxy enabled");
 
     class ProxyKiroGatewayPlugin extends KiroGatewayPlugin {
-      constructor() {
-        super(options);
-      }
-
-      override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
+      override async registerClient(client: unknown) {
         if (!this.gatewayInfo) {
           this.gatewayInfo = await fetchDiscordGatewayInfo({
-            token: client.options.token,
+            token: (client as { options: { token: string } }).options.token,
             fetchImpl: (input, init) => undiciFetch(input, init),
             fetchInit: { dispatcher: fetchAgent },
           });
         }
-        return super.registerClient(client);
+        return super.registerClient(client as never);
       }
 
       override createWebSocket(url: string) {
@@ -180,9 +182,9 @@ export function createKiroGatewayPlugin(params: {
       }
     }
 
-    return new ProxyKiroGatewayPlugin();
+    return new ProxyKiroGatewayPlugin(options) as unknown as discordGateway.GatewayPlugin;
   } catch (err) {
     params.runtime.error?.(danger(`discord: invalid gateway proxy: ${String(err)}`));
-    return new SafeKiroGatewayPlugin(options);
+    return new SafeKiroGatewayPlugin(options) as unknown as discordGateway.GatewayPlugin;
   }
 }

@@ -105,28 +105,37 @@ export class ResilientGatewayPlugin extends discordGateway.GatewayPlugin {
     (this as unknown as { reconnectAttempts: number }).reconnectAttempts = v;
   }
 
-  override setupWebSocket(): void {
-    if (!(this as unknown as { ws: ws.WebSocket | null }).ws) {
-      return;
-    }
-    const socket = (this as unknown as { ws: ws.WebSocket }).ws;
-    const savedAttempts = this._reconnectAttempts;
-    super.setupWebSocket();
-    socket.on("open", () => {
-      this._reconnectAttempts = savedAttempts;
-    });
-    socket.on("message", (data: ws.RawData) => {
-      try {
-        const raw =
-          typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
-        const parsed = JSON.parse(raw);
-        if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
-          this._reconnectAttempts = 0;
-        }
-      } catch {
-        // Ignore — parent handles validation.
+  constructor(options: ConstructorParameters<typeof discordGateway.GatewayPlugin>[0]) {
+    super(options);
+    // Monkey-patch setupWebSocket to fix reconnect counter reset on READY/RESUMED.
+    const origSetup = (
+      this as unknown as { setupWebSocket: (r?: boolean) => void }
+    ).setupWebSocket.bind(this);
+    (this as unknown as { setupWebSocket: (r?: boolean) => void }).setupWebSocket = (
+      resume?: boolean,
+    ) => {
+      const wsRef = (this as unknown as { ws: ws.WebSocket | null }).ws;
+      if (!wsRef) {
+        return;
       }
-    });
+      const savedAttempts = this._reconnectAttempts;
+      origSetup(resume);
+      wsRef.on("open", () => {
+        this._reconnectAttempts = savedAttempts;
+      });
+      wsRef.on("message", (data: ws.RawData) => {
+        try {
+          const raw =
+            typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
+          const parsed = JSON.parse(raw);
+          if (parsed?.op === 0 && (parsed?.t === "READY" || parsed?.t === "RESUMED")) {
+            this._reconnectAttempts = 0;
+          }
+        } catch {
+          // Ignore — parent handles validation.
+        }
+      });
+    };
   }
 
   override connect(resume?: boolean): void {
