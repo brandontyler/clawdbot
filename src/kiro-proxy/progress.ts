@@ -234,6 +234,9 @@ export class ProgressReporter {
     this.started = true;
     this.log(`progress-diag: start channelId=${channelId} ctx=${contextPct}`);
 
+    // Post immediately so the progress message appears above the partial stream.
+    void this.sendOrEdit();
+
     this.firstTimer = setTimeout(() => {
       this.firstTimer = null;
       this.log(
