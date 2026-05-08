@@ -116,6 +116,12 @@ delay: `spinup oc --defer=5`.
   patches that are no longer needed — fewer patches = easier future syncs.
 - **Upstream sync: the running gateway rewrites config.** Stop the gateway
   before editing `~/.openclaw/openclaw.json` or it will restore old values.
+- **gateway-plugin-kiro.ts type pitfalls:** (1) `ResolveDiscordGatewayIntentsParams`
+  is not exported from upstream — use `Parameters<typeof resolveDiscordGatewayIntents>[0]`.
+  (2) `gatewayInfo` is inherited as `protected gatewayInfo?: APIGatewayBotInfo` —
+  don't redeclare it. (3) `setupWebSocket` is private — monkey-patch in constructor,
+  don't use `override`. (4) Return types need `as unknown as discordGateway.GatewayPlugin`
+  cast due to private field mismatch in subclass hierarchy.
 
 ## Context Management
 
