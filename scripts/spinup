@@ -18,7 +18,7 @@ cleanup_logs() {
   else
     cutoff=$(date -d "$TODAY -7 days" +%s)
   fi
-  find /tmp -maxdepth 1 \( -name 'kiro-proxy-*.log' -o -name 'openclaw-gateway-*.log' -o -name 'dev-browser-*.log' -o -name 'excalidraw-canvas-*.log' \) \
+  find /tmp -maxdepth 1 \( -name 'kiro-proxy-*.log' -o -name 'openclaw-gateway-*.log' -o -name 'dev-browser-*.log' -o -name 'excalidraw-canvas-*.log' -o -name 'pi-agent-*.log' \) \
     | while read -r f; do
         [[ "$f" =~ [0-9]{4}-[0-9]{2}-[0-9]{2} ]] || continue
         local d="${BASH_REMATCH[0]}"
@@ -53,7 +53,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances; do
+  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances pi-agent; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -84,6 +84,7 @@ do_logs() {
     [gateway]=openclaw-gateway
     [dev-browser]=dev-browser
     [excalidraw]=excalidraw-canvas
+    [pi-agent]=pi-agent
     [defer]=spinup-defer
   )
   for name in "${!log_names[@]}"; do
@@ -405,5 +406,17 @@ if [[ "$TARGET" == "all" || "$TARGET" == "finances" ]]; then
   new_session finances -n main -c "$FINANCES_DIR" "$KIRO_CLI_CMD"
   tag_pane finances finances:main.0 kiro-cli "$KIRO_CLI_CMD"
   echo "  tmux attach -t finances"
+fi
+
+# --- pi-agent session ---
+PI_AGENT_DIR=~/code/personal/pi-agent
+PI_AGENT_CMD="npm start 2>&1 | tee -a $(log_path pi-agent)"
+
+if [[ "$TARGET" == "all" || "$TARGET" == "pi-agent" ]]; then
+  new_session pi-agent -n main -c "$PI_AGENT_DIR" "$PI_AGENT_CMD"
+  tag_pane pi-agent pi-agent:main.0 pi-agent "$PI_AGENT_CMD"
+  tmux new-window -t pi-agent -n shell -c "$PI_AGENT_DIR"
+  tmux set-option -w -t pi-agent:shell remain-on-exit on
+  echo "  tmux attach -t pi-agent"
 fi
 echo "Done."
