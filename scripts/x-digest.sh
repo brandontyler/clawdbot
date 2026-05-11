@@ -31,7 +31,7 @@ mkdir -p "$DIGEST_DIR"
 DATE_LABEL=$(date '+%A, %B %d %Y')
 TODAY=$(date +%Y-%m-%d)
 DIGEST_FILE="$DIGEST_DIR/digest-${TODAY}.md"
-SINCE=$(date -d "2 days ago" +%Y-%m-%d 2>/dev/null || date -v-2d +%Y-%m-%d)
+SINCE=$(date -d "1 day ago" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
 EXPIRES_AT=$(date -d "+${TTL_DAYS} days" +%s 2>/dev/null || date -v+${TTL_DAYS}d +%s)
 
 # --- DynamoDB helpers ---
@@ -92,6 +92,58 @@ MARK_SEEN_FILE=$(mktemp)
 : > "$MARK_SEEN_FILE"
 trap 'rm -f "$RUN_SEEN_FILE" "$MARK_SEEN_FILE"' EXIT
 
+# --- LLM relevance filter ---
+# Uses kiro-cli headless mode to score tweet relevance.
+# Input: topic name + newline-separated tweets (tab-delimited: id, user, likes, rts, date, text)
+# Output: only tweets scoring >= 6/10 for relevance
+RELEVANCE_THRESHOLD=6
+
+score_relevance() {
+  local topic="$1"
+  local tweets_text="$2"
+
+  # Build numbered list for the model
+  local numbered=""
+  local i=1
+  while IFS=$'\t' read -r tid user likes rts created text; do
+    [ -z "$tid" ] && continue
+    numbered="${numbered}${i}. @${user} (${likes} likes): ${text}\n"
+    i=$((i + 1))
+  done <<< "$tweets_text"
+
+  local count=$((i - 1))
+  [ "$count" -eq 0 ] && return
+
+  # Ask the model to score relevance
+  local prompt="You are filtering tweets for a developer's daily digest about: ${topic}.
+Score each tweet 1-10 for relevance. A relevant tweet is: substantive technical content, product announcements, insightful commentary, or genuine community discussion about the topic. Irrelevant: spam, engagement bait, unrelated uses of keywords, courses/giveaways, anime, memes.
+Reply ONLY with a JSON array of integers (scores), one per tweet. Example: [8,2,7,1,9]
+
+Tweets:
+$(echo -e "$numbered")"
+
+  local scores
+  scores=$(timeout 45 kiro-cli chat --no-interactive --wrap never "$prompt" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1)
+
+  if [ -z "$scores" ]; then
+    # Model failed — pass everything through (graceful degradation)
+    echo "$tweets_text"
+    return
+  fi
+
+  # Filter: only keep tweets with score >= threshold
+  local j=0
+  while IFS=$'\t' read -r tid user likes rts created text; do
+    [ -z "$tid" ] && continue
+    local score
+    score=$(echo "$scores" | jq -r ".[$j] // 0" 2>/dev/null || echo "5")
+    if [ "$score" -ge "$RELEVANCE_THRESHOLD" ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$tid" "$user" "$likes" "$rts" "$created" "$text"
+    fi
+    j=$((j + 1))
+  done <<< "$tweets_text"
+}
+
 # --- Build digest ---
 {
   echo "# Daily X Digest — $DATE_LABEL"
@@ -133,6 +185,11 @@ while IFS= read -r line; do
 
   included=0
   if [ -n "$candidates" ]; then
+    # LLM relevance filter — only for keyword/community topics (Tier 2)
+    if [[ "$name" == *"Community"* ]] && [ "$(echo "$candidates" | wc -l)" -gt 0 ]; then
+      candidates=$(score_relevance "$name" "$candidates")
+    fi
+
     while IFS=$'\t' read -r tid user likes rts created_utc text; do
       [ "$included" -ge "$max_results" ] && break
 

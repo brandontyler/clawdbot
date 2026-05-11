@@ -53,7 +53,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances pi-agent; do
+  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances pi-agent hermes; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -418,5 +418,17 @@ if [[ "$TARGET" == "all" || "$TARGET" == "pi-agent" ]]; then
   tmux new-window -t pi-agent -n shell -c "$PI_AGENT_DIR"
   tmux set-option -w -t pi-agent:shell remain-on-exit on
   echo "  tmux attach -t pi-agent"
+fi
+# --- hermes session ---
+HERMES_DIR=~/code/personal/hermes
+HERMES_GATEWAY_CMD="source ~/.hermes/venv/bin/activate && AWS_PROFILE=personal hermes gateway run 2>&1 | tee -a $(log_path hermes)"
+
+if [[ "$TARGET" == "all" || "$TARGET" == "hermes" ]]; then
+  new_session hermes -n gateway -c "$HERMES_DIR" "$HERMES_GATEWAY_CMD"
+  tag_pane hermes hermes:gateway.0 hermes-gateway "$HERMES_GATEWAY_CMD"
+  tmux new-window -t hermes -n shell -c "$HERMES_DIR"
+  tmux send-keys -t hermes:shell "source ~/.hermes/venv/bin/activate && export AWS_PROFILE=personal" Enter
+  tmux set-option -w -t hermes:shell remain-on-exit on
+  echo "  tmux attach -t hermes"
 fi
 echo "Done."

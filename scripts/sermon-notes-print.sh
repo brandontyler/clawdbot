@@ -62,7 +62,7 @@ TITLE=$(echo "$ARTICLE_PATH" | sed 's|/article/||; s/-/ /g')
 if gog gmail send -a brandon.tyler@gmail.com \
   --to "$PRINT_EMAIL" \
   --subject "Sermon Notes - $TITLE" \
-  --body " " \
+  --body "Sermon notes attached." \
   --attach "$PDF_FILE" 2>&1; then
   log "Emailed PDF to $PRINT_EMAIL via gog"
 else
@@ -71,7 +71,7 @@ else
   gog gmail send -a brandon.tyler@gmail.com \
     --to "$PRINT_EMAIL" \
     --subject "Sermon Notes - $TITLE" \
-    --body " " \
+    --body "Sermon notes attached." \
     --attach "$PDF_FILE" 2>&1
   log "Retry sent to $PRINT_EMAIL via gog"
 fi
