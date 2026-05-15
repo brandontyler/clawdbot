@@ -55,7 +55,7 @@ async function discordFetch(url: string, init: RequestInit): Promise<Response> {
   if (res.status !== 429) {
     return res;
   }
-  const retryAfter = parseFloat(res.headers.get("retry-after") ?? "1");
+  const retryAfter = Number.parseFloat(res.headers.get("retry-after") ?? "1");
   const waitMs = Math.min(
     Number.isFinite(retryAfter) ? retryAfter * 1000 : 1000,
     MAX_RETRY_WAIT_MS,

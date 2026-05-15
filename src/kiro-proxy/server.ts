@@ -299,7 +299,7 @@ async function attemptRecovery(
       const recovery = await manager.getOrCreate(sessionKey, cleanMessages, openclawSessionKey);
       recovery.managed.handle.sentMessageCount = messages.length;
 
-      let recoveryResolve: () => void;
+      let recoveryResolve: () => void = () => {};
       recovery.managed.promptLock = new Promise((r) => {
         recoveryResolve = r;
       });
@@ -310,7 +310,7 @@ async function attemptRecovery(
         onChunk?.(text);
       });
       recovery.session.consecutiveErrors = 0;
-      recoveryResolve!();
+      recoveryResolve();
 
       return { ok: true, text: parts.join(""), promptUsed: safeRecoveryText };
     } catch (retryErr) {
@@ -342,7 +342,7 @@ async function attemptRecovery(
     const fallback = await manager.getOrCreate(sessionKey, fallbackMessages, openclawSessionKey);
     fallback.managed.handle.sentMessageCount = messages.length;
 
-    let fallbackResolve: () => void;
+    let fallbackResolve: () => void = () => {};
     fallback.managed.promptLock = new Promise((r) => {
       fallbackResolve = r;
     });
@@ -353,7 +353,7 @@ async function attemptRecovery(
       onChunk?.(text);
     });
     fallback.session.consecutiveErrors = 0;
-    fallbackResolve!();
+    fallbackResolve();
 
     return { ok: true, text: parts.join(""), promptUsed: FALLBACK_RECOVERY_PROMPT };
   } catch (fallbackErr) {
@@ -831,7 +831,7 @@ async function handleCompletions(
       log(
         `done: session=${sessionTag}… ctx=${session.lastContextPct.toFixed(0)}% errors=${session.consecutiveErrors} msgs=${body.messages.length}${clientDisconnected ? " (client disconnected)" : ""}`,
       );
-      resolvePromptLock!();
+      resolvePromptLock();
     }
 
     sseChunk(res, buildFinalChunk(completionId, "stop"));
@@ -1041,7 +1041,7 @@ async function handleCompletions(
     } finally {
       const tDone = performance.now();
       log(`timing: session=${sessionTag}… total=${Math.round(tDone - t0)}ms`);
-      resolveBlockLock!();
+      resolveBlockLock();
     }
 
     const fullText = parts.join("");

@@ -58,15 +58,15 @@ Config (~/.openclaw/openclaw.json, JSON5):
 `,
     )
     .action(async (opts) => {
-      const port = parseInt(opts.port as string, 10);
-      if (isNaN(port) || port < 1 || port > 65535) {
+      const port = Number.parseInt(opts.port as string, 10);
+      if (Number.isNaN(port) || port < 1 || port > 65535) {
         defaultRuntime.error("--port must be a valid port number (1–65535)");
         defaultRuntime.exit(1);
         return;
       }
 
-      const idleSecs = parseInt(opts.idleSecs as string, 10);
-      if (isNaN(idleSecs) || idleSecs < 10) {
+      const idleSecs = Number.parseInt(opts.idleSecs as string, 10);
+      if (Number.isNaN(idleSecs) || idleSecs < 10) {
         defaultRuntime.error("--idle-secs must be at least 10");
         defaultRuntime.exit(1);
         return;
