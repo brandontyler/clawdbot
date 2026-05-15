@@ -32,6 +32,7 @@ minimumReleaseAgeExclude:
   - "@openai/codex"
   - "@openai/codex-*"
   - "@smithy/*"
+  - "@aws-sdk/*"
   - "@smithy/shared-ini-file-loader@4.5.1"
   - "@typescript/native-preview*"
   - "@types/node"
