@@ -41,16 +41,13 @@ Each Discord channel is mapped to a project directory via `kiro-proxy-routes.jso
 The proxy parses the channel ID from the `x-openclaw-session-key` header
 (injected by a small patch in `attempt.ts`) and spawns kiro-cli in the matched cwd.
 
-| Discord Channel               | Channel ID          | Project Directory                 |
-| ----------------------------- | ------------------- | --------------------------------- |
-| `#openclaw`                   | 1475513267433767014 | `~/code/personal/clawdbot`        |
-| `#accode-agent`               | 1475211350291779594 | `~/code/work/accode-agent`        |
-| `#pwc`                        | 1475210716632973494 | `~/code/work/PwC`                 |
-| `#sermon-metrics`             | 1475216992956059698 | `~/code/personal/sermon`          |
-| `#main`                       | —                   | (general / unrouted)              |
-| `#real-estate`                | 1478840488944468191 | `~/code/personal/realestate`      |
-| `#paris`                      | 1479885670741704704 | `~/code/personal/paris`           |
-| `#accode-infra-rcms-projects` | 1492157561120751757 | `~/code/work/infra-rcms-projects` |
+| Discord Channel    | Channel ID          | Project Directory            |
+| ------------------ | ------------------- | ---------------------------- |
+|   | 1475216992956059698 |      |
+|      | 1478840488944468191 |  |
+|            | 1479885670741704704 |      |
+|       | 1495383782717391019 |   |
+|         | 1500137795866595458 |    |
 
 Note: channel→directory mappings live in `kiro-proxy-routes.json` (gitignored).
 On a new machine, run `scripts/setup.sh` then add channels with `scripts/add-channel.sh`.
@@ -94,6 +91,42 @@ response can be delivered before the gateway goes down. Without it, the gateway
 dies mid-response and the conversation drops. You can also specify a custom
 delay: `spinup oc --defer=5`.
 
+## EC2 Operations
+
+This machine runs on EC2 (Linux ARM64). Services are managed via **systemd user units**, NOT tmux/spinup.
+
+### Services
+
+| Service | Port | Command |
+|---------|------|---------|
+| `openclaw-gateway.service` | 18800 | OpenClaw gateway |
+| `kiro-proxy.service` | 18801 | Kiro CLI proxy (ACP bridge) |
+| `excalidraw.service` | 3000 | Excalidraw canvas server |
+
+```bash
+systemctl --user status openclaw-gateway
+systemctl --user restart kiro-proxy
+journalctl --user -u openclaw-gateway -f
+```
+
+### Scheduled Jobs (systemd timers)
+
+| Timer | Schedule (CDT) | What |
+|-------|----------------|------|
+| `fire-jobs.timer` | 6:30am | North TX firefighter job search |
+| `x-digest.timer` | 6:00am | X/Twitter digest |
+| `x-bookmark-review.timer` | 6:15am | X bookmark review |
+| `upstream-sync.timer` | 8:00am | OpenClaw upstream sync |
+
+### Key Differences from Laptop
+
+- **No tmux/spinup** — all services are systemd. Ignore `spinup` references.
+- **No `tylerbtt` AWS profile** — no mwinit dongle on EC2. Use `personal` profile for AWS calls.
+- **dev-browser** — daemon auto-starts via CLI (`dev-browser --headless status`), no dedicated pane.
+- **Discord admin channel** — `#openclaw-ec2` (ID: `1503414103341797406`)
+- **Restart services** — `systemctl --user restart <service>`, not `spinup`.
+- **Logs** — `journalctl --user -u <service> -f`, not `/tmp/*.log`.
+
 ## Lessons Learned
 
 - Don't edit `AGENTS.md` — it's an upstream file and will conflict on sync.
@@ -135,7 +168,7 @@ delay: `spinup oc --defer=5`.
 | Area                       | Load                                                           |
 | -------------------------- | -------------------------------------------------------------- |
 | Upstream fork / sync       | `UPSTREAM.md`                                                  |
-| Ops / spinup / diagnostics | `.kiro/KIRO-OPS.md`                                            |
+| Ops / EC2 systemd          | `.kiro/KIRO-OPS.md`                                            |
 | Gateway / WS protocol      | `docs/architecture.md`, `docs/gateway/protocol.md`             |
 | Agent loop / auto-reply    | `docs/concepts/agent-loop.md`                                  |
 | Sessions / compaction      | `docs/concepts/session.md`                                     |

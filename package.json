@@ -1730,8 +1730,8 @@
     "ui:i18n:check": "node --import tsx scripts/control-ui-i18n.ts check",
     "ui:i18n:sync": "node --import tsx scripts/control-ui-i18n.ts sync --write",
     "ui:install": "node scripts/ui.js install",
-    "kiro-proxy": "pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json",
-    "kiro-proxy:dev": "pnpm dev kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json"
+    "kiro-proxy": "tsx src/cli/kiro-proxy-cli.ts",
+    "kiro-proxy:dev": "tsx watch src/cli/kiro-proxy-cli.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.21.0",

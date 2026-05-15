@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # fire-jobs.sh — Daily North Texas firefighter job search
 # Sources:
-#   1. governmentjobs.com (NEOGOV) via CDP headless Chrome — real city job postings
+#   1. governmentjobs.com (NEOGOV) via dev-browser CLI — real city job postings
 #   2. firejobs.com — dedicated firefighter job board
 # Dedupes via DynamoDB. Emails + SMS on new finds.
 set -uo pipefail
+
+
+# Kill ALL dev-browser daemons before starting (prevent memory pileup from orphans)
+# The daemon auto-starts when dev-browser CLI needs it, so this is safe.
+pkill -f "daemon.mjs" 2>/dev/null || true
+sleep 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="personal"
@@ -73,15 +79,15 @@ mark_seen() {
 
 log "=== Fire Jobs Search: $DATE_LABEL ==="
 
-# --- Source 1: GovernmentJobs.com via CDP (primary) ---
-log "[1/2] GovernmentJobs.com (NEOGOV) via headless Chrome..."
-if curl -s http://localhost:9223/json/version > /dev/null 2>&1; then
-  log "  dev-browser on :9223 — connected"
+# --- Source 1: GovernmentJobs.com via dev-browser (primary) ---
+log "[1/2] GovernmentJobs.com (NEOGOV) via dev-browser..."
+if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
+  log "  dev-browser daemon — connected"
   neogov_tmp=$(mktemp)
-  timeout 600 node "$SCRIPT_DIR/scrape-neogov.mjs" > "$neogov_tmp" 2>> "$LOGFILE"
+  timeout 1800 bash "$SCRIPT_DIR/scrape-neogov.sh" > "$neogov_tmp" 2>> "$LOGFILE"
   neogov_exit=$?
   if [ "$neogov_exit" -eq 124 ]; then
-    log "  NEOGOV timed out at 300s — using partial results"
+    log "  NEOGOV timed out at 1800s — using partial results"
   elif [ "$neogov_exit" -ne 0 ]; then
     log_err "  NEOGOV scraper exited $neogov_exit"
   fi
@@ -108,7 +114,7 @@ if curl -s http://localhost:9223/json/version > /dev/null 2>&1; then
   neogov_count=$(grep -c 'governmentjobs' "$JOBS_FILE" 2>/dev/null || echo 0)
   log "  NEOGOV done: $neogov_count jobs (exit=$neogov_exit)"
 else
-  log_err "  dev-browser not running on :9223 — skipping NEOGOV"
+  log_err "  dev-browser daemon not running — skipping NEOGOV"
 fi
 
 # --- Source 2: firejobs.com (secondary) ---
@@ -249,7 +255,7 @@ if [ "$new_count" -gt 0 ]; then
   # Discord notification
   DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
   if [ -n "$DISCORD_TOKEN" ]; then
-    curl -s -X POST "https://discord.com/api/v10/channels/1475513267433767014/messages" \
+    curl -s -X POST "https://discord.com/api/v10/channels/1503414103341797406/messages" \
       -H "Authorization: Bot $DISCORD_TOKEN" \
       -H "Content-Type: application/json" \
       -d "{\"content\":$(echo "🚒 ${new_count} new firefighter job(s) in North TX. Check email." | jq -Rs .)}" > /dev/null

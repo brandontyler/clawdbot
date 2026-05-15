@@ -19,8 +19,8 @@ REGION="us-east-1"
 DYNAMO_TABLE="x-bookmark-seen"
 TTL_DAYS=30
 WORK_DIR="/tmp/x-bookmark-review"
-BIRD="/usr/local/bin/bird"
-DISCORD_CHANNEL="1475513267433767014"
+BIRD="/home/ubuntu/.local/bin/bird"
+DISCORD_CHANNEL="1503414103341797406"
 SEEN_DIR="$HOME/.local/share/x-bookmark-review"
 SEEN_FILE="$SEEN_DIR/seen.tsv"
 
