@@ -14,13 +14,13 @@ spinup               # Start/reset ALL sessions
 spinup oc            # Start/reset only the openclaw infra session (proxy + gateway + sms-poller)
 spinup oc --defer    # Same, but backgrounds with 45s delay (safe from Discord agent)
 spinup oc-cli        # Start/reset only the openclaw kiro-cli session
-spinup mcp           # Start/reset only the MCP session (kiro-cli + dev-browser + excalidraw)
-spinup pwc           # Start/reset only the PwC session
-spinup sermon        # Start/reset only the sermon session
-spinup realestate    # Start/reset only the real-estate session
+spinup accode-agent  # Start/reset accode-agent session (kiro-cli + excalidraw canvas on :3000)
+spinup pwc           # Start/reset only the PwC session (path may be missing — placeholder)
+spinup infra-rcms-projects  # Start/reset infra-rcms-projects session (placeholder)
+spinup hermes        # Start/reset hermes gateway session (placeholder)
 spinup status        # Machine-readable health of all sessions, panes, and ports
 spinup context       # ACP session context usage bars (reads from proxy /sessions endpoint)
-spinup logs [name]   # Tail logs (kiro-proxy|gateway|dev-browser|excalidraw|defer|all) [lines=30]
+spinup logs [name]   # Tail logs (kiro-proxy|gateway|excalidraw|defer|all) [lines=30]
 spinup hibernate     # Hibernate all idle ACP sessions (safe shutdown prep)
 spinup snapshot      # Save all session IDs to disk without killing processes
 spinup wake          # Show hibernated sessions (they restore on next Discord message)
@@ -37,7 +37,7 @@ Every pane has a title and its startup command stored in tmux env (`CMD_<title>`
 - **Target windows** via `tmux send-keys -t oc:kiro-proxy` or by title lookup.
 - **Discover commands** with `tmux show-environment -t oc`.
 
-Pane titles across all sessions: `kiro-proxy`, `gateway`, `sms-poller`, `kiro-cli`, `dev-browser`, `excalidraw`.
+Pane titles across all sessions: `kiro-proxy`, `gateway`, `sms-poller`, `kiro-cli`, `excalidraw`.
 
 ### When to run it
 
@@ -47,38 +47,41 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `sms-poller`, `kiro-cl
 | "restart everything" / "reset everything" / "nuke it"                        | `spinup`            |
 | "the proxy is down" / "proxy crashed" / "gateway is broken" / "oc is broken" | `spinup oc`         |
 | "restart openclaw" / "reset oc"                                              | `spinup oc`         |
-| "dev-browser is broken" / "browser server crashed" / "restart mcp"           | `spinup mcp`        |
+| "restart accode-agent" / "excalidraw canvas crashed" / "reset mcp"           | `spinup accode-agent` |
 | "restart pwc" / "reset pwc"                                                  | `spinup pwc`        |
-| "restart sermon" / "reset sermon"                                            | `spinup sermon`     |
-| "restart realestate" / "reset realestate"                                    | `spinup realestate` |
 
 ### Internals
 
 - **ANSI stripping**: service output piped through `sed -u "s/\x1b\[[0-9;]*m//g"` before `tee`.
-- **Port cleanup**: `kill_port` runs before services that bind ports (kiro-proxy 18801, dev-browser 9222/9223).
+- **Port cleanup**: `kill_port` runs before services that bind ports (kiro-proxy 18801, excalidraw 3000).
 - **`remain-on-exit on`**: crashed panes stay readable (`dead=1` detection in `spinup status`).
 
 ### Pane commands
 
-| Pane        | Actual command                                                                                                      |
-| ----------- | ------------------------------------------------------------------------------------------------------------------- |
-| kiro-proxy  | `pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json` (cwd: `~/code/personal/clawdbot`) |
-| gateway     | `pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback` (cwd: `~/code/personal/clawdbot`)        |
-| sms-poller  | `scripts/sms-poller.sh` (cwd: `~/code/personal/clawdbot`)                                                           |
-| kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                                |
-| dev-browser | kills ports 9222/9223, then `./server.sh --headless` (cwd: `~/code/work/dev-browser/skills/dev-browser`)            |
-| excalidraw  | `PORT=3000 npm run canvas` (cwd: `~/code/work/mcp_excalidraw`)                                                      |
+The clawdbot repo lives at `~/src/github.com/brandontyler/clawdbot` (ghq layout).
+
+| Pane        | Actual command                                                                                              |
+| ----------- | ----------------------------------------------------------------------------------------------------------- |
+| kiro-proxy  | `pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json` (cwd: clawdbot repo)      |
+| gateway     | `pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback` (cwd: clawdbot repo)             |
+| sms-poller  | `scripts/sms-poller.sh` (cwd: clawdbot repo)                                                                |
+| kiro-cli    | `kiro-cli` (cwd: varies per session)                                                                        |
+| excalidraw  | `PORT=3000 npm run canvas` (cwd: `~/src/github.com/yctimlin/mcp_excalidraw`)                                |
+
+Note: dev-browser no longer needs a tmux pane — it became a Rust CLI (`~/.cargo/bin/dev-browser`) with auto-spawning daemon. Use `dev-browser <<'EOF' ... EOF` from anywhere.
 
 ### Sessions & ports
 
-| Session        | What runs                         | Ports            | Panes/Windows |
-| -------------- | --------------------------------- | ---------------- | ------------- |
-| **oc**         | kiro-proxy, gateway, sms-poller   | 18801, 18800     | 3 windows     |
-| **oc-cli**     | kiro-cli                          | —                | 1 window      |
-| **mcp**        | kiro-cli, dev-browser, excalidraw | 9222, 9223, 3000 | 3 windows     |
-| **pwc**        | kiro-cli                          | —                | 1 pane        |
-| **sermon**     | kiro-cli                          | —                | 1 pane        |
-| **realestate** | kiro-cli                          | —                | 1 pane        |
+| Session                  | What runs                  | Ports        | Panes/Windows | Notes                                                |
+| ------------------------ | -------------------------- | ------------ | ------------- | ---------------------------------------------------- |
+| **oc**                   | kiro-proxy, gateway, sms-poller | 18801, 18800 | 3 windows | Auto-starts at login via launchd                     |
+| **oc-cli**               | kiro-cli                   | —            | 1 window      |                                                      |
+| **accode-agent**         | kiro-cli, excalidraw       | 3000         | 2 windows     | Replaces old `mcp` session                           |
+| **pwc**                  | kiro-cli                   | —            | 1 pane        | Path missing on this Mac — placeholder for later use |
+| **infra-rcms-projects**  | kiro-cli                   | —            | 1 pane        | Path missing on this Mac — placeholder               |
+| **hermes**               | hermes gateway             | —            | 2 windows     | Path missing on this Mac — placeholder               |
+
+Removed (moved to EC2): `sermon`, `realestate`, `travel-agent`, `lifegroup`, `finances`, `pi-agent`. Their Discord channels now route through the EC2 gateway, not this Mac.
 
 ### After running
 
@@ -95,7 +98,7 @@ Pane titles across all sessions: `kiro-proxy`, `gateway`, `sms-poller`, `kiro-cl
 | ----------- | -------------------------------------- |
 | kiro-proxy  | `/tmp/kiro-proxy-YYYY-MM-DD.log`       |
 | gateway     | `/tmp/openclaw-gateway-YYYY-MM-DD.log` |
-| dev-browser | `/tmp/dev-browser-YYYY-MM-DD.log`      |
+| excalidraw  | `/tmp/excalidraw-canvas-YYYY-MM-DD.log` |
 
 ## Operational Diagnostics
 
@@ -154,7 +157,7 @@ preserved), add `"noHibernate": true` to that route in
 - Gateway: ~390MB RSS (largest single process)
 - kiro-proxy: ~180MB RSS
 - Each kiro-cli ACP child: 65-90MB RSS
-- dev-browser + Chromium: ~170MB combined
+- excalidraw canvas: ~80MB RSS when active
 - Swap usage of 1-1.5GB is normal; watch for >3GB
 
 ### ACP session architecture (critical path)
@@ -175,7 +178,7 @@ grep -E 'spawned|killing|gc-idle-timeout' /tmp/kiro-proxy.log | tail -20
 ### Diagnosing problems
 
 First step is always `spinup status`. If a specific service is misbehaving:
-`spinup logs gateway 50` (or `kiro-proxy`, `dev-browser`, `all`).
+`spinup logs gateway 50` (or `kiro-proxy`, `excalidraw`, `all`).
 
 A pane showing `dead=1` means the process crashed but was preserved. Read with:
 `tmux capture-pane -t <session>:<window>.<pane> -p | tail -20`
@@ -221,7 +224,7 @@ text prompts work on every turn.
 ### Targeted recovery
 
 - **Single pane crashed** → `spinup restart-pane <title>`
-- **Whole session broken** → `spinup oc` / `spinup mcp` etc.
+- **Whole session broken** → `spinup oc` / `spinup accode-agent` / `spinup pwc` etc.
 - **Only reset all** (`spinup`) if explicitly asked or multiple sessions are broken.
 - **Stale config** (model change, settings update) → `curl -s -X POST http://localhost:18801/admin/kill-all`
 

@@ -53,7 +53,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances pi-agent hermes; do
+  for sess in oc oc-cli accode-agent pwc infra-rcms-projects hermes; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -314,6 +314,11 @@ if [[ "$TARGET" == "all" || "$TARGET" == "oc" ]]; then
   tmux new-window -t oc -n sms-poller -c "$OC_DIR" "$SMS_POLLER_CMD"
   tmux set-option -w -t oc:sms-poller remain-on-exit on
   tag_pane oc oc:sms-poller.0 sms-poller "$SMS_POLLER_CMD"
+  # Keep the Mac awake while the bot is running. Dies with the tmux session.
+  CAFFEINATE_CMD="caffeinate -dims"
+  tmux new-window -t oc -n caffeinate -c "$OC_DIR" "$CAFFEINATE_CMD"
+  tmux set-option -w -t oc:caffeinate remain-on-exit on
+  tag_pane oc oc:caffeinate.0 caffeinate "$CAFFEINATE_CMD"
   echo "  tmux attach -t oc"
 fi
 
@@ -324,23 +329,25 @@ if [[ "$TARGET" == "all" || "$TARGET" == "oc-cli" ]]; then
   echo "  tmux attach -t oc-cli"
 fi
 
-# --- mcp session ---
-MCP_DIR=~/code/work/accode-agent
-DEV_BROWSER_DIR=~/code/work/dev-browser/skills/dev-browser
-DEV_BROWSER_CMD="lsof -ti:9222 -ti:9223 2>/dev/null | xargs kill -9 2>/dev/null; sleep 1; ./server.sh --headless 2>&1 | tee -a $(log_path dev-browser)"
-EXCALIDRAW_DIR=~/code/work/mcp_excalidraw
+# --- accode-agent session ---
+# accode-agent: AWS internal GitLab repo (Amazon Connect CoE accelerators).
+# Wired to Discord channel 1475211350291779594 (#accode-agent) via kiro-proxy-routes.json.
+# Also runs the excalidraw canvas server on :3000 (used by the excalidraw MCP skill).
+ACCODE_AGENT_DIR=~/src/ssh.code.aws.dev/proserve/amazon-connect-coe/accelerators/accode-agent
+EXCALIDRAW_DIR=~/src/github.com/yctimlin/mcp_excalidraw
 EXCALIDRAW_CMD="PORT=3000 npm run canvas 2>&1 | tee -a $(log_path excalidraw-canvas)"
 
-if [[ "$TARGET" == "all" || "$TARGET" == "mcp" ]]; then
-  new_session mcp -n main -c "$MCP_DIR" "$KIRO_CLI_CMD"
-  tag_pane mcp mcp:main.0 kiro-cli "$KIRO_CLI_CMD"
-  tmux new-window -t mcp -n dev-browser -c "$DEV_BROWSER_DIR" "$DEV_BROWSER_CMD"
-  tmux set-option -w -t mcp:dev-browser remain-on-exit on
-  tag_pane mcp "mcp:dev-browser.0" dev-browser "$DEV_BROWSER_CMD"
-  tmux new-window -t mcp -n excalidraw -c "$EXCALIDRAW_DIR" "$EXCALIDRAW_CMD"
-  tmux set-option -w -t mcp:excalidraw remain-on-exit on
-  tag_pane mcp "mcp:excalidraw.0" excalidraw "$EXCALIDRAW_CMD"
-  echo "  tmux attach -t mcp"
+# Note: dev-browser no longer needs a tmux pane.
+# As of v0.2.x it is a Rust CLI (~/.cargo/bin/dev-browser) with an auto-spawning
+# background daemon. Scripts run via `dev-browser <<'EOF' ... EOF` from anywhere.
+
+if [[ "$TARGET" == "all" || "$TARGET" == "accode-agent" ]]; then
+  new_session accode-agent -n main -c "$ACCODE_AGENT_DIR" "$KIRO_CLI_CMD"
+  tag_pane accode-agent accode-agent:main.0 kiro-cli "$KIRO_CLI_CMD"
+  tmux new-window -t accode-agent -n excalidraw -c "$EXCALIDRAW_DIR" "$EXCALIDRAW_CMD"
+  tmux set-option -w -t accode-agent:excalidraw remain-on-exit on
+  tag_pane accode-agent "accode-agent:excalidraw.0" excalidraw "$EXCALIDRAW_CMD"
+  echo "  tmux attach -t accode-agent"
 fi
 
 # --- pwc session ---
@@ -352,35 +359,13 @@ if [[ "$TARGET" == "all" || "$TARGET" == "pwc" ]]; then
   echo "  tmux attach -t pwc"
 fi
 
-# --- sermon session ---
-SERMON_DIR=~/code/personal/sermon
-
-if [[ "$TARGET" == "all" || "$TARGET" == "sermon" ]]; then
-  new_session sermon -n main -c "$SERMON_DIR" "$KIRO_CLI_CMD"
-  tag_pane sermon sermon:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t sermon"
-fi
-
-# --- realestate session ---
-REALESTATE_DIR=~/code/personal/realestate
-
-if [[ "$TARGET" == "all" || "$TARGET" == "realestate" ]]; then
-  new_session realestate -n main -c "$REALESTATE_DIR" "$KIRO_CLI_CMD"
-  tag_pane realestate realestate:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t realestate"
-fi
-
-
-# --- travel-agent session ---
-TRAVEL_AGENT_DIR=~/code/personal/travel
-
-if [[ "$TARGET" == "all" || "$TARGET" == "travel-agent" ]]; then
-  new_session travel-agent -n main -c "$TRAVEL_AGENT_DIR" "$KIRO_CLI_CMD"
-  tag_pane travel-agent travel-agent:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t travel-agent"
-fi
+# Note: sermon, realestate, travel-agent, lifegroup, finances, pi-agent
+# all run on the EC2 box now (i-0d3dbaec422e1461d). Their Discord channels
+# are routed via the EC2 kiro-proxy, not this Mac. Removed from spinup
+# 2026-05-16.
 
 # --- infra-rcms-projects session ---
+# Path doesn't exist on this Mac; kept for future reactivation.
 INFRA_RCMS_PROJECTS_DIR=~/code/work/infra-rcms-projects
 
 if [[ "$TARGET" == "all" || "$TARGET" == "infra-rcms-projects" ]]; then
@@ -389,36 +374,6 @@ if [[ "$TARGET" == "all" || "$TARGET" == "infra-rcms-projects" ]]; then
   echo "  tmux attach -t infra-rcms-projects"
 fi
 
-
-# --- lifegroup session ---
-LIFEGROUP_DIR=~/code/personal/lifegroup
-
-if [[ "$TARGET" == "all" || "$TARGET" == "lifegroup" ]]; then
-  new_session lifegroup -n main -c "$LIFEGROUP_DIR" "$KIRO_CLI_CMD"
-  tag_pane lifegroup lifegroup:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t lifegroup"
-fi
-
-# --- finances session ---
-FINANCES_DIR=~/code/personal/finances
-
-if [[ "$TARGET" == "all" || "$TARGET" == "finances" ]]; then
-  new_session finances -n main -c "$FINANCES_DIR" "$KIRO_CLI_CMD"
-  tag_pane finances finances:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t finances"
-fi
-
-# --- pi-agent session ---
-PI_AGENT_DIR=~/code/personal/pi-agent
-PI_AGENT_CMD="npm start 2>&1 | tee -a $(log_path pi-agent)"
-
-if [[ "$TARGET" == "all" || "$TARGET" == "pi-agent" ]]; then
-  new_session pi-agent -n main -c "$PI_AGENT_DIR" "$PI_AGENT_CMD"
-  tag_pane pi-agent pi-agent:main.0 pi-agent "$PI_AGENT_CMD"
-  tmux new-window -t pi-agent -n shell -c "$PI_AGENT_DIR"
-  tmux set-option -w -t pi-agent:shell remain-on-exit on
-  echo "  tmux attach -t pi-agent"
-fi
 # --- hermes session ---
 HERMES_DIR=~/code/personal/hermes
 HERMES_GATEWAY_CMD="source ~/.hermes/venv/bin/activate && AWS_PROFILE=personal hermes gateway run 2>&1 | tee -a $(log_path hermes)"
