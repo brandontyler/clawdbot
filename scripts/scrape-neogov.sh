@@ -32,8 +32,8 @@ DEFAULT_SLUGS=(
   weatherford
   # Grayson / Cooke / North
   shermantx denisontx gainesvilletx
-  # Outer ring (~75-100mi)
-  wacotx templetx longviewtx texarkanatx thecolonytx
+  # The Colony (Denton County, ~15mi)
+  thecolonytx
 )
 
 SLUGS=("${@:-${DEFAULT_SLUGS[@]}}")
@@ -75,7 +75,7 @@ try {
       meta: (el.querySelector('.list-meta')?.textContent || '').trim().replace(/\\s+/g, ' '),
     }));
   });
-  const re = /firefight|fire\\s*(fighter|chief|inspector|marshal|captain|engineer|cadet|recruit)|paramedic|\\bems\\b/i;
+  const re = /firefight|fire\\s*(fighter|chief|inspector|marshal|captain|engineer|cadet|recruit|watch|safety|prevention)|paramedic|\\bems\\b|\\bemt\\b|emergency\\s*(medical|services|technician|room)|ambulance|er\\s+tech|first\\s*responder|hazmat|industrial\\s+fire/i;
   const filtered = jobs.filter(j => re.test(j.title + " " + j.meta));
   for (const j of filtered) {
     j.city = "${slug}";
