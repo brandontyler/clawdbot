@@ -584,13 +584,34 @@ async function handleCompletions(
     let tFirstChunk = 0;
     const responseChunks: string[] = [];
     try {
-      const stopReason = await session.prompt(promptText, (text) => {
-        if (!tFirstChunk) {
-          tFirstChunk = performance.now();
-        }
-        responseChunks.push(text);
-        sseChunk(res, buildChunk(completionId, text));
+      // Wrap prompt in a first-token timeout: if kiro-cli produces no output
+      // within 90 seconds, the session is likely dead/stale. Kill and let the
+      // caller handle the error (which triggers a retry or fresh session).
+      const FIRST_TOKEN_TIMEOUT_MS = 90_000;
+      let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        firstTokenTimer = setTimeout(() => {
+          if (!tFirstChunk) {
+            log(
+              `🔴 FIRST-TOKEN TIMEOUT (${FIRST_TOKEN_TIMEOUT_MS / 1000}s): session=${sessionTag}… ctx=${session.lastContextPct.toFixed(1)}% — killing stale session`,
+            );
+            session.kill("first-token-timeout");
+            reject(new Error("first-token-timeout"));
+          }
+        }, FIRST_TOKEN_TIMEOUT_MS);
       });
+
+      const stopReason = await Promise.race([
+        session.prompt(promptText, (text) => {
+          if (!tFirstChunk) {
+            tFirstChunk = performance.now();
+            if (firstTokenTimer) clearTimeout(firstTokenTimer);
+          }
+          responseChunks.push(text);
+          sseChunk(res, buildChunk(completionId, text));
+        }),
+        timeoutPromise,
+      ]);
       session.consecutiveErrors = 0;
 
       // When the model hits its output token limit, append a visible notice
