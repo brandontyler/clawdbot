@@ -587,7 +587,7 @@ async function handleCompletions(
       // Wrap prompt in a first-token timeout: if kiro-cli produces no output
       // within 90 seconds, the session is likely dead/stale. Kill and let the
       // caller handle the error (which triggers a retry or fresh session).
-      const FIRST_TOKEN_TIMEOUT_MS = 90_000;
+      const FIRST_TOKEN_TIMEOUT_MS = 30_000;
       let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         firstTokenTimer = setTimeout(() => {

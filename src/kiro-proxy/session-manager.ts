@@ -24,7 +24,7 @@ import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./
 import { ProgressReporter } from "./progress.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
-const DEFAULT_IDLE_SECS = 14400; // 4 hours — idle sessions hibernate (not killed), so context is preserved
+const DEFAULT_IDLE_SECS = 1800; // 30 minutes — short idle timeout prevents stale ACP pipes
 
 const HIBERNATE_PATH =
   process.env.KIRO_PROXY_HIBERNATE_PATH ??
