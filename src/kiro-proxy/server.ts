@@ -585,9 +585,14 @@ async function handleCompletions(
     const responseChunks: string[] = [];
     try {
       // Wrap prompt in a first-token timeout: if kiro-cli produces no output
-      // within 90 seconds, the session is likely dead/stale. Kill and let the
+      // within the timeout, the session is likely dead/stale. Kill and let the
       // caller handle the error (which triggers a retry or fresh session).
-      const FIRST_TOKEN_TIMEOUT_MS = 30_000;
+      // Scale timeout with context size: high-context sessions need more time
+      // for the model to process input before generating the first token.
+      const baseTimeoutMs = 30_000;
+      const ctxPct = session.lastContextPct || 0;
+      const FIRST_TOKEN_TIMEOUT_MS =
+        ctxPct > 40 ? baseTimeoutMs + Math.round(ctxPct * 1500) : baseTimeoutMs;
       let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         firstTokenTimer = setTimeout(() => {
