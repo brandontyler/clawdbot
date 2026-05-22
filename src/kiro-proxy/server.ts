@@ -306,8 +306,10 @@ async function attemptRecovery(
 
       const parts: string[] = [];
       await recovery.session.prompt(safeRecoveryText, (text) => {
-        parts.push(text);
-        onChunk?.(text);
+        if (text) {
+          parts.push(text);
+          onChunk?.(text);
+        }
       });
       recovery.session.consecutiveErrors = 0;
       recoveryResolve();
@@ -349,8 +351,10 @@ async function attemptRecovery(
 
     const parts: string[] = [];
     await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
-      parts.push(text);
-      onChunk?.(text);
+      if (text) {
+        parts.push(text);
+        onChunk?.(text);
+      }
     });
     fallback.session.consecutiveErrors = 0;
     fallbackResolve();
@@ -612,8 +616,10 @@ async function handleCompletions(
             tFirstChunk = performance.now();
             if (firstTokenTimer) clearTimeout(firstTokenTimer);
           }
-          responseChunks.push(text);
-          sseChunk(res, buildChunk(completionId, text));
+          if (text) {
+            responseChunks.push(text);
+            sseChunk(res, buildChunk(completionId, text));
+          }
         }),
         timeoutPromise,
       ]);
@@ -678,8 +684,10 @@ async function handleCompletions(
             if (!tFirstChunk) {
               tFirstChunk = performance.now();
             }
-            retryChunks.push(text);
-            sseChunk(res, buildChunk(completionId, text));
+            if (text) {
+              retryChunks.push(text);
+              sseChunk(res, buildChunk(completionId, text));
+            }
           });
           const retryResponse = retryChunks.join("");
           if (retryResponse.trim()) {
@@ -821,7 +829,9 @@ async function handleCompletions(
             if (!tFirstChunk) {
               tFirstChunk = performance.now();
             }
-            sseChunk(res, buildChunk(completionId, text));
+            if (text) {
+              sseChunk(res, buildChunk(completionId, text));
+            }
           },
         );
 
@@ -868,7 +878,9 @@ async function handleCompletions(
     const resolveBlockLock = sessionResult.unlockPrompt ?? (() => {});
 
     try {
-      await session.prompt(promptText, (text) => parts.push(text));
+      await session.prompt(promptText, (text) => {
+        if (text) parts.push(text);
+      });
       session.consecutiveErrors = 0;
 
       // Detect kiro-cli inline corruption in blocking response.
@@ -915,7 +927,9 @@ async function handleCompletions(
         let retryText = "";
         try {
           const retryParts: string[] = [];
-          await session.prompt(promptText, (text) => retryParts.push(text));
+          await session.prompt(promptText, (text) => {
+            if (text) retryParts.push(text);
+          });
           retryText = retryParts.join("");
         } catch (retryErr) {
           log(formatErrorVerbose(retryErr, "empty retry threw (blocking)"));
