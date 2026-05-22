@@ -231,26 +231,45 @@ export class SessionManager {
       } else {
         newMessages = messages.slice(existing.handle.sentMessageCount);
       }
-      const promptText = this.buildPromptFromMessages(newMessages);
-      existing.handle.sentMessageCount = messages.length;
-      existing.handle.lastTouchedAt = Date.now();
-      existing.session.lastTouchedAt = Date.now();
-      const rssKb = existing.session.getRssKb();
-      this.log(
-        `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
-      );
-      // Lock immediately so no concurrent request can slip through before
-      // the caller sets the real promptLock in the streaming path.
-      let unlockPrompt: () => void;
-      existing.promptLock = new Promise((r) => {
-        unlockPrompt = r;
-      });
-      return {
-        session: existing.session,
-        promptText,
-        managed: existing,
-        unlockPrompt: unlockPrompt!,
-      };
+
+      // Guard: if the slice produced zero new messages but the request has user
+      // messages, the gateway likely reset its session (/new) while the proxy
+      // still holds the old sentMessageCount.  Kill the stale session and let
+      // the caller fall through to create a fresh one.
+      if (
+        newMessages.length === 0 &&
+        messages.length > 0 &&
+        messages.some((m) => m.role === "user")
+      ) {
+        this.log(
+          `⚠️ session desync: sentCount=${existing.handle.sentMessageCount} msgs=${messages.length} but newMsgs=0 — gateway likely reset. Killing stale session=${this.tag(sessionKey)}`,
+        );
+        existing.session.kill("desync-empty-slice");
+        this.sessions.delete(sessionKey);
+        this.cleanupSession(sessionKey);
+        // Fall through to the "create fresh session" path below.
+      } else {
+        const promptText = this.buildPromptFromMessages(newMessages);
+        existing.handle.sentMessageCount = messages.length;
+        existing.handle.lastTouchedAt = Date.now();
+        existing.session.lastTouchedAt = Date.now();
+        const rssKb = existing.session.getRssKb();
+        this.log(
+          `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
+        );
+        // Lock immediately so no concurrent request can slip through before
+        // the caller sets the real promptLock in the streaming path.
+        let unlockPrompt: () => void;
+        existing.promptLock = new Promise((r) => {
+          unlockPrompt = r;
+        });
+        return {
+          session: existing.session,
+          promptText,
+          managed: existing,
+          unlockPrompt: unlockPrompt!,
+        };
+      }
     }
 
     // Dead or non-existent session — create a fresh one.
