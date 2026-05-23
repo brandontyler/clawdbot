@@ -135,6 +135,11 @@ if [ "$http_code" != "200" ]; then
 fi
 log "Discord message sent (HTTP $http_code)"
 
+# --- Save to vault ---
+VAULT_DIR="$HOME/vault/50-daily/$(date +%Y/%m)"
+mkdir -p "$VAULT_DIR"
+echo "$msg" > "$VAULT_DIR/$(date +%Y-%m-%d)-x-bookmarks.md"
+
 # --- Mark as reviewed AFTER successful delivery ---
 log "Marking $new_count bookmarks as reviewed..."
 

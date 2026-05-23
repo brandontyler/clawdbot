@@ -277,4 +277,9 @@ if [ -n "$DISCORD_TOKEN" ]; then
   echo "Discord: sent $sent message(s)"
 fi
 
+# --- Save to vault ---
+VAULT_DIR="$HOME/vault/50-daily/$(date +%Y/%m)"
+mkdir -p "$VAULT_DIR"
+cp "$DIGEST_FILE" "$VAULT_DIR/$(date +%Y-%m-%d)-x-digest.md"
+
 cat "$DIGEST_FILE"

@@ -391,4 +391,10 @@ else
 fi
 
 log "Done. Log: $LOGFILE"
+
+# --- Save to vault ---
+VAULT_DIR="$HOME/vault/50-daily/$(date +%Y/%m)"
+mkdir -p "$VAULT_DIR"
+cp "$DIGEST_FILE" "$VAULT_DIR/$(date +%Y-%m-%d)-fire-jobs.md"
+
 cat "$DIGEST_FILE"

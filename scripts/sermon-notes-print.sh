@@ -76,3 +76,19 @@ else
   log "Retry sent to $PRINT_EMAIL via gog"
 fi
 post_discord "🖨️ Sermon notes sent to printer: **$TITLE** ($((PDF_SIZE / 1024))KB)"
+
+# --- Save to vault ---
+VAULT_DIR="$HOME/vault/20-areas/faith"
+mkdir -p "$VAULT_DIR"
+cat > "$VAULT_DIR/$(date +%Y-%m-%d)-sermon.md" << VAULT_EOF
+---
+type: sermon
+date: $(date +%Y-%m-%d)
+tags: [sermon, denton-bible]
+---
+# Sermon Notes — $(date +%Y-%m-%d)
+
+**Title:** $TITLE
+**Source:** $ARTICLE_URL
+**PDF:** $PDF_URL
+VAULT_EOF
