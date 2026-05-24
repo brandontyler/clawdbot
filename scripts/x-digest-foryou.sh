@@ -138,8 +138,10 @@ Brandon wants to see:
 - MCP servers, tool integrations, agent architectures
 - AWS news and services (Amazon Connect, Bedrock, Lambda, new launches) — Brandon works at AWS
 - SpaceX launches, milestones, engineering achievements
-- Tesla, FSD, robotaxi news and progress
-- @elonmusk — ONLY include when it's about SpaceX, Tesla, Neuralink, xAI, or engineering. Skip political takes, culture war, government/DOGE commentary, and casual replies.
+- Tesla, FSD, robotaxi, Boring Company news and progress
+- @elonmusk — ONLY include when it's about SpaceX, Tesla, Neuralink, xAI, Boring Company, or engineering. Skip political takes, culture war, government/DOGE commentary, and casual replies.
+- @SawyerMerritt — breaking Tesla/SpaceX news. Only his biggest posts (he posts a lot too).
+- ENGAGEMENT RULE: For high-volume posters (Elon, Sawyer, Boris Cherny), only surface their top 1-2 posts — the ones with unusually high engagement relative to their normal. If Elon averages 50K likes, only include 100K+ posts. If Sawyer averages 2K, only include 5K+.
 - ALWAYS include anything from @karpathy (Andrej Karpathy) when it's about AI, models, or tech — score 9+
 - @bcherny (Boris Cherny, Claude Code creator) — include his best stuff but he tweets a lot, only score 8+ when it's a real tip or insight
 
