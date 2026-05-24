@@ -158,7 +158,8 @@ Reply ONLY with a JSON array of integers. Example: [8,2,7,1,9,3,5]
 Tweets:
 ${tweets_text}"
 
-  timeout 60 kiro-cli chat --no-interactive --wrap never "$prompt" 2>&1 | \
+  # Run from $HOME so kiro-cli picks up ~/.kiro/agents/default.json
+  timeout 60 bash -c "cd \$HOME && kiro-cli chat --no-interactive --wrap never \"\$1\"" -- "$prompt" 2>&1 | \
     sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1
 }
 

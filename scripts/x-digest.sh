@@ -124,7 +124,7 @@ Tweets:
 $(echo -e "$numbered")"
 
   local scores
-  scores=$(timeout 45 kiro-cli chat --no-interactive --wrap never "$prompt" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1)
+  scores=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "$prompt" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1)
 
   if [ -z "$scores" ]; then
     # Model failed — pass everything through (graceful degradation)

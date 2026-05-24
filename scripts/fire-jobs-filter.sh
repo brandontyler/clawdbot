@@ -54,8 +54,8 @@ Scoring:
 CRITICAL: Jobs outside 75mi of Denton MUST score 2 or below regardless of role match.
 Output ONLY JSON lines, one per job."
 
-# Run kiro-cli with positional arg (exits cleanly)
-RAW=$(timeout 120 kiro-cli chat --trust-tools= --wrap never "$PROMPT" 2>/dev/null)
+# Run kiro-cli from $HOME so it picks up ~/.kiro/agents/default.json
+RAW=$(cd "$HOME" && timeout 120 kiro-cli chat --trust-tools= --wrap never "$PROMPT" 2>/dev/null)
 
 # Strip ANSI codes and extract JSON lines
 echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}' | while IFS= read -r line; do
