@@ -136,7 +136,8 @@ Brandon wants to see:
 - Agent skills (SKILL.md files) — what's popular, what are people installing and using
 - What's happening in AI — latest breakthroughs, new tools, what people are excited about
 - MCP servers, tool integrations, agent architectures
-- AWS services (Amazon Connect, Bedrock) when relevant
+- AWS news and services (Amazon Connect, Bedrock, Lambda, new launches) — Brandon works at AWS
+- SpaceX launches, milestones, engineering achievements
 - ALWAYS include anything from @karpathy (Andrej Karpathy) when it's about AI, models, or tech — score 9+
 - @bcherny (Boris Cherny, Claude Code creator) — include his best stuff but he tweets a lot, only score 8+ when it's a real tip or insight
 
