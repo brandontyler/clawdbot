@@ -23,7 +23,42 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOGFILE"; }
 
 log "=== Production Jobs Search — $TODAY ==="
 
-# --- Source 1: X/Twitter crew calls ---
+# --- Source 1: LinkedIn (primary — best coverage for production jobs) ---
+log "Searching LinkedIn for DFW production jobs..."
+
+# Search 1: Film/TV specific titles
+LINKEDIN_HTML=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%22production+coordinator%22+OR+%22production+assistant%22+OR+%22line+producer%22+OR+%22UPM%22+OR+%22post+production%22+OR+%22production+manager%22+%28film+OR+tv+OR+video+OR+media+OR+broadcast+OR+streaming+OR+entertainment+OR+studio+OR+creative%29&location=Dallas-Fort+Worth+Metroplex&f_TPR=r2592000&position=1&pageNum=0" \
+  -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
+  -H "Accept: text/html" 2>/dev/null)
+
+# Search 2: Broader Texas search for rarer film-specific roles
+LINKEDIN_HTML2=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%22set+PA%22+OR+%22office+PA%22+OR+%22production+secretary%22+OR+%22production+accountant%22+OR+%22assistant+director%22+OR+%22script+supervisor%22+OR+%22location+manager%22+film+tv&location=Texas%2C+United+States&f_TPR=r2592000&position=1&pageNum=0" \
+  -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
+  -H "Accept: text/html" 2>/dev/null)
+
+# Parse both searches
+for HTML_VAR in "$LINKEDIN_HTML" "$LINKEDIN_HTML2"; do
+  echo "$HTML_VAR" | python3 -c "
+import sys, re
+html = sys.stdin.read()
+titles = re.findall(r'base-search-card__title[^>]*>\s*([^<]+)', html)
+companies = re.findall(r'base-search-card__subtitle[^>]*>\s*([^<]+)', html)
+locations = re.findall(r'job-search-card__location[^>]*>\s*([^<]+)', html)
+links = re.findall(r'href=\"(https://www.linkedin.com/jobs/view/[^\"?]+)', html)
+for i in range(min(len(titles), 20)):
+    t = titles[i].strip() if i < len(titles) else ''
+    c = companies[i].strip() if i < len(companies) else ''
+    l = locations[i].strip() if i < len(locations) else ''
+    link = links[i] if i < len(links) else ''
+    if t:
+        print(f'li-{i}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
+" >> "$JOBS_FILE" 2>/dev/null
+done
+
+LI_COUNT=$(grep -c "linkedin" "$JOBS_FILE" 2>/dev/null || echo 0)
+log "  LinkedIn: found $LI_COUNT results"
+
+# --- Source 2: X/Twitter crew calls ---
 log "Searching X for DFW production crew calls..."
 TWITTER_RESULTS=$(bird search '"production manager" OR "production coordinator" OR "line producer" OR "UPM" OR "production assistant" OR "crew call" (Dallas OR DFW OR "Fort Worth" OR Texas OR "North Texas") (hiring OR job OR gig OR "crew call" OR apply OR paid)' -n 15 --json 2>/dev/null || echo "[]")
 
