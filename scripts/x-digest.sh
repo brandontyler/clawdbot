@@ -188,8 +188,8 @@ while IFS= read -r line; do
 
   included=0
   if [ -n "$candidates" ]; then
-    # LLM relevance filter — only for keyword/community topics (Tier 2)
-    if [[ "$name" == *"Community"* ]] && [ "$(echo "$candidates" | wc -l)" -gt 0 ]; then
+    # LLM relevance filter — applied to all topics for maximum signal
+    if [ "$(echo "$candidates" | wc -l)" -gt 0 ]; then
       candidates=$(score_relevance "$name" "$candidates")
     fi
 
