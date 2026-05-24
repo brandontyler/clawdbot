@@ -23,7 +23,47 @@ log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOGFILE"; }
 
 log "=== Production Jobs Search — $TODAY ==="
 
-# --- Source 1: LinkedIn (primary — best coverage for production jobs) ---
+# --- Source 1: Staff Me Up (primary — industry standard for film/TV crew) ---
+log "Searching Staff Me Up..."
+SMU_DATA=$(timeout 30 dev-browser --headless --timeout 25 <<'DEVEOF' 2>/dev/null
+const page = await browser.newPage();
+try {
+  await page.goto("https://app.staffmeup.com/jobs", { timeout: 15000 });
+  await new Promise(r => setTimeout(r, 6000));
+  const html = await page.content();
+  const match = html.match(/__NEXT_DATA__[^>]*>(.*?)<\/script/s);
+  if (match) console.log(match[1]);
+} catch(e) {}
+await page.close();
+DEVEOF
+)
+
+if [ -n "$SMU_DATA" ]; then
+  echo "$SMU_DATA" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    schemas = d['props']['pageProps']['jobSchemas']
+    for i, j in enumerate(schemas):
+        title = j.get('title', '')
+        company = j.get('hiringOrganization', {}).get('name', '')
+        loc = j.get('jobLocation', {}).get('address', {})
+        city = loc.get('addressLocality', '')
+        state = loc.get('addressRegion', '')
+        desc = j.get('description', '').replace('\n', ' ').replace('\t', ' ')[:150]
+        # Only include Texas jobs or remote
+        if state in ('TX', 'Texas', '') or 'remote' in desc.lower():
+            print(f'smu-{i}\tstaffmeup\t{company}\t{title} [{city}, {state}] — {desc}\thttps://app.staffmeup.com/jobs')
+except Exception as e:
+    pass
+" >> "$JOBS_FILE" 2>/dev/null
+  SMU_COUNT=$(grep -c "staffmeup" "$JOBS_FILE" 2>/dev/null || echo 0)
+  log "  Staff Me Up: found $SMU_COUNT Texas jobs"
+else
+  log "  Staff Me Up: login/fetch failed (will retry next run)"
+fi
+
+# --- Source 2: LinkedIn (broad coverage) ---
 log "Searching LinkedIn for DFW production jobs..."
 
 # Search 1: Film/TV specific titles
