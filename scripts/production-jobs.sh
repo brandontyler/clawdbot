@@ -107,9 +107,9 @@ else
     i=$((i + 1))
   done < "$JOBS_FILE"
 
-  PROMPT="You are filtering job postings for Corban Tyler (Brandon's son).
+  PROMPT="You are filtering job postings for Nathan Tyler (Brandon's son).
 
-CORBAN'S PROFILE:
+NATHAN'S PROFILE:
 - Wants to work in film/TV/video PRODUCTION MANAGEMENT
 - Located in DFW (Dallas-Fort Worth, Texas)
 - Has some experience, looking for entry-to-mid level
