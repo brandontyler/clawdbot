@@ -178,34 +178,22 @@ else
   i=1
   while IFS=$'\t' read -r jid source poster title url; do
     [ -z "$jid" ] && continue
-    JOB_LIST="${JOB_LIST}${i}. [${source}] ${title}\n"
+    [ "$i" -gt 25 ] && break
+    clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-100)
+    JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}
+"
     i=$((i + 1))
   done < "$JOBS_FILE"
 
-  PROMPT="You are filtering job postings for Nathan Tyler (Brandon's son).
+  PROMPT="Filter jobs for Nathan Tyler. DFW film/TV/video production management.
+Score 1-5. Only 3+ if CONFIRMED DFW or Texas. Manufacturing=1. Unknown location=2.
+5=film/media production in DFW. 4=media role in DFW. 3=production in Texas. 2=unclear. 1=irrelevant.
+Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
-NATHAN'S PROFILE:
-- Wants to work in film/TV/video PRODUCTION MANAGEMENT
-- Located in DFW (Dallas-Fort Worth, Texas)
-- Has some experience, looking for entry-to-mid level
-- Target roles: Production Manager, Production Coordinator, Line Producer, UPM (Unit Production Manager), Production Assistant (PA), Assistant Production Manager
-- Also interested in: Set PA, Office PA, Production Secretary, Production Accountant, Post-Production Coordinator
-- Open to: film, TV, streaming, commercial, corporate video, music video, live events
-- NOT interested in: acting, camera/grip/electric (unless production dept), sales, marketing, unrelated industries
+${JOB_LIST}"
 
-Score each 1-5:
-5 = Production management role in DFW
-4 = Related production role in DFW, or production management in Texas
-3 = Tangentially related (media, events) in DFW
-2 = Wrong location or only loosely related
-1 = Not relevant at all
+  RAW=$(cd "$HOME" && timeout 60 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
 
-Reply ONLY with JSON lines: {\"idx\":<number>,\"score\":<1-5>,\"reason\":\"<brief>\"}
-
-Jobs:
-$(echo -e "$JOB_LIST")"
-
-  RAW=$(cd "$HOME" && timeout 60 kiro-cli chat --trust-tools= --wrap never "$PROMPT" 2>/dev/null)
   SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
 
   # Build digest
