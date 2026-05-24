@@ -138,6 +138,8 @@ Brandon wants to see:
 - MCP servers, tool integrations, agent architectures
 - AWS news and services (Amazon Connect, Bedrock, Lambda, new launches) — Brandon works at AWS
 - SpaceX launches, milestones, engineering achievements
+- Tesla, FSD, robotaxi news and progress
+- @elonmusk — he posts a LOT, only include his most significant tweets (10K+ likes or major announcements). Skip his casual replies and political takes.
 - ALWAYS include anything from @karpathy (Andrej Karpathy) when it's about AI, models, or tech — score 9+
 - @bcherny (Boris Cherny, Claude Code creator) — include his best stuff but he tweets a lot, only score 8+ when it's a real tip or insight
 
