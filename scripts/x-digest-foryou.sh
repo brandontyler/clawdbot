@@ -129,26 +129,27 @@ score_tweets() {
 
   local prompt="You are filtering tweets from Brandon's X 'For You' feed for his daily digest.
 
-Brandon's interests (score HIGH):
-- Agent skills (SKILL.md files, reusable coding agent skills, ClawHub, npx skills add)
-- Claude Code / Kiro CLI tips, workflows, multi-agent patterns
-- AWS services (especially Amazon Connect, Bedrock, Lambda)
-- Personal AI assistants (OpenClaw, Hermes, always-on agents)
-- MCP servers and tool integrations
-- Software engineering best practices, architecture
-- AI/ML breakthroughs that are practical (not hype)
-- Firefighter career info (North Texas departments, hiring, TCFP)
+Brandon wants to see:
+- Claude Code best practices — how to use it better, tips, workflows, what power users are doing
+- Kiro CLI best practices — how people are using it, tips, what's new
+- How people are using AI to solve REAL problems (not hype, actual use cases)
+- Agent skills (SKILL.md files) — what's popular, what are people installing and using
+- What's happening in AI — latest breakthroughs, new tools, what people are excited about
+- MCP servers, tool integrations, agent architectures
+- AWS services (Amazon Connect, Bedrock) when relevant
 
 Score LOW (1-3):
-- Crypto/token promotions, memecoins
-- Generic motivational content
-- Celebrity gossip, politics
+- Crypto/token promotions, memecoins, trading
+- Generic motivational/hustle content
+- Celebrity gossip, politics, culture war
 - Ads/promoted content
-- Non-English content Brandon can't read
-- Pure entertainment (sports highlights, memes) unless exceptionally relevant
-- Retweets of content he's likely already seen
+- Non-English content
+- Pure entertainment (sports, memes)
+- Retweets without added commentary
+- Courses/giveaways/engagement bait
+- Company drama or stock price speculation
 
-Score each tweet 1-10 for how useful/actionable it is for Brandon's daily reading.
+Score each tweet 1-10. A 10 is something Brandon would stop scrolling to read and maybe act on. A 7 is solid, worth including. Below 7 is noise.
 Reply ONLY with a JSON array of integers. Example: [8,2,7,1,9,3,5]
 
 Tweets:
