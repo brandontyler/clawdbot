@@ -137,6 +137,7 @@ Brandon wants to see:
 - What's happening in AI — latest breakthroughs, new tools, what people are excited about
 - MCP servers, tool integrations, agent architectures
 - AWS services (Amazon Connect, Bedrock) when relevant
+- ALWAYS include anything from @karpathy (Andrej Karpathy) — score 9+ regardless of topic
 
 Score LOW (1-3):
 - Crypto/token promotions, memecoins, trading
