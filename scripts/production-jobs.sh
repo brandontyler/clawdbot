@@ -209,6 +209,44 @@ done
 NEOGOV_COUNT=$(grep -c "neogov" "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  GovernmentJobs: found $NEOGOV_COUNT results"
 
+# --- Source 4: Texas Film Commission Job Hotline (official state film jobs) ---
+log "Searching Texas Film Commission hotline..."
+curl -sL "https://gov.texas.gov/film/hotline/crew" \
+  -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64)" 2>/dev/null | \
+  python3 -c "
+import sys, re
+html = sys.stdin.read()
+links = re.findall(r'<a[^>]*href=\"([^\"]*hotline-job/crew/[^\"]+)\"[^>]*>(.*?)</a>', html, re.S)
+for url, text in links:
+    title = re.sub(r'<[^>]+>', '', text).strip()
+    if not title:
+        continue
+    jid = 'tfc-' + url.split('/')[-1][:20]
+    full_url = url if url.startswith('http') else 'https://gov.texas.gov' + url
+    print(f'{jid}\ttfc\tTexas Film Commission\t{title}\t{full_url}')
+" >> "$JOBS_FILE" 2>/dev/null
+
+TFC_COUNT=$(grep -c "tfc" "$JOBS_FILE" 2>/dev/null || echo 0)
+log "  Texas Film Commission: found $TFC_COUNT results"
+
+# --- Source 5: Dallas Producers Association Job Board ---
+log "Searching Dallas Producers Association..."
+curl -s "https://www.dallasproducers.org/jobs" \
+  -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64)" 2>/dev/null | \
+  python3 -c "
+import sys, re
+html = sys.stdin.read()
+# Extract job items: title in c-jobitem__head, company in c-jobitem__companyname, link in job-board/
+items = re.findall(r'href=\"(/job-board/[^\"]+)\".*?c-jobitem__head\">([^<]+).*?c-jobitem__companyname\">([^<]+)', html, re.S)
+for url, title, company in items:
+    jid = 'dpa-' + url.split('/')[-1][:20]
+    full_url = 'https://www.dallasproducers.org' + url
+    print(f'{jid}\tdpa\t{company.strip()}\t{title.strip()} [DFW]\t{full_url}')
+" >> "$JOBS_FILE" 2>/dev/null
+
+DPA_COUNT=$(grep -c "dpa" "$JOBS_FILE" 2>/dev/null || echo 0)
+log "  Dallas Producers Association: found $DPA_COUNT results"
+
 # --- Total ---
 TOTAL=$(wc -l < "$JOBS_FILE" 2>/dev/null || echo 0)
 log "Total raw results: $TOTAL"
