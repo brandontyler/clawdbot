@@ -91,7 +91,7 @@ try:
         state = loc.get('addressRegion', '')
         desc = j.get('description', '').replace('\n', ' ').replace('\t', ' ')[:150]
         # Only include Texas jobs or remote
-        if state in ('TX', 'Texas', '') or 'remote' in desc.lower():
+        if state in ('TX', 'Texas') or 'remote' in desc.lower() or 'dallas' in desc.lower() or 'fort worth' in desc.lower() or 'dfw' in desc.lower():
             print(f'smu-{i}\tstaffmeup\t{company}\t{title} [{city}, {state}] — {desc}\thttps://app.staffmeup.com/jobs')
 except Exception as e:
     pass
@@ -157,29 +157,34 @@ echo "$TWITTER_RESULTS" | jq -r '.[] | "\(.id)\ttwitter\t\(.author.username)\t\(
 # --- Source 2: Craigslist DFW ---
 log "Searching Craigslist DFW..."
 
-# TV/Film/Video section
-CL_TFR=$(curl -s "https://dallas.craigslist.org/search/tfr#search=1~list~0~0" \
+# TV/Film/Video section (new HTML format)
+curl -s "https://dallas.craigslist.org/search/tfr" \
   -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64)" 2>/dev/null | \
-  grep -oP 'href="/[^"]*" [^>]*class="posting-title"[^>]*>.*?</a>' | \
-  grep -i "production\|producer\|coordinator\|PA\b\|assistant\|manager\|crew" | \
-  sed 's/.*href="//;s/" .*//' | head -10)
-
-for url in $CL_TFR; do
-  title=$(curl -s "https://dallas.craigslist.org${url}" -H "User-Agent: Mozilla/5.0" 2>/dev/null | grep -oP '<title>[^<]+' | sed 's/<title>//' | head -1)
-  [ -n "$title" ] && printf '%s\tcraigslist\t%s\t%s\thttps://dallas.craigslist.org%s\n' "cl-$(echo "$url" | grep -oP '\d+')" "craigslist" "$title" "$url" >> "$JOBS_FILE"
-done
+  python3 -c "
+import sys, re
+html = sys.stdin.read()
+# New format: <a href=\"URL\"><div class=\"title\">TITLE</div>
+pairs = re.findall(r'<a href=\"(https://dallas\.craigslist\.org/[^\"]+\.html)\">\s*<div class=\"title\">([^<]+)', html)
+keywords = ['production', 'producer', 'coordinator', 'assistant', 'director', 'crew', 'film', 'video', 'tv', 'shoot', 'set', 'camera', 'grip', 'gaffer']
+for url, title in pairs:
+    if any(k in title.lower() for k in keywords):
+        jid = 'cl-' + url.split('/')[-1].replace('.html','')
+        print(f'{jid}\tcraigslist\tcraigslist\t{title.strip()}\t{url}')
+" >> "$JOBS_FILE" 2>/dev/null
 
 # Crew gigs section
-CL_CWG=$(curl -s "https://dallas.craigslist.org/search/cwg#search=1~list~0~0" \
+curl -s "https://dallas.craigslist.org/search/cwg" \
   -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64)" 2>/dev/null | \
-  grep -oP 'href="/[^"]*" [^>]*class="posting-title"[^>]*>.*?</a>' | \
-  grep -i "production\|producer\|coordinator\|film\|video\|tv\|shoot\|set" | \
-  sed 's/.*href="//;s/" .*//' | head -10)
-
-for url in $CL_CWG; do
-  title=$(curl -s "https://dallas.craigslist.org${url}" -H "User-Agent: Mozilla/5.0" 2>/dev/null | grep -oP '<title>[^<]+' | sed 's/<title>//' | head -1)
-  [ -n "$title" ] && printf '%s\tcraigslist\t%s\t%s\thttps://dallas.craigslist.org%s\n' "cl-$(echo "$url" | grep -oP '\d+')" "craigslist" "$title" "$url" >> "$JOBS_FILE"
-done
+  python3 -c "
+import sys, re
+html = sys.stdin.read()
+pairs = re.findall(r'<a href=\"(https://dallas\.craigslist\.org/[^\"]+\.html)\">\s*<div class=\"title\">([^<]+)', html)
+keywords = ['production', 'producer', 'coordinator', 'film', 'video', 'tv', 'shoot', 'set', 'camera', 'grip', 'gaffer', 'PA', 'director']
+for url, title in pairs:
+    if any(k in title.lower() for k in keywords) or 'PA' in title:
+        jid = 'cl-' + url.split('/')[-1].replace('.html','')
+        print(f'{jid}\tcraigslist\tcraigslist\t{title.strip()}\t{url}')
+" >> "$JOBS_FILE" 2>/dev/null
 
 CL_COUNT=$(grep -c "craigslist" "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  Craigslist: found $CL_COUNT results"
