@@ -235,7 +235,7 @@ else
 
   PROMPT="Filter jobs for Nathan Tyler. DFW film/TV/video production management. Dream role: 1st AD (First Assistant Director) on set.
 Score 1-5. Only 3+ if CONFIRMED DFW or Texas AND clearly film/TV/video/media industry.
-REJECT (score 1): manufacturing, garment, athletic wear, food production, industrial, retail, construction, warehouse, automotive. These are NOT film production.
+REJECT (score 1): manufacturing, garment, athletic wear, food production, industrial, retail, construction, warehouse, automotive, packaging, distribution, printing, logistics, data entry. These are NOT film production. Companies like Veritiv, Rebel Athletic, Variosystems, Adecco (staffing) = score 1.
 5=1st AD or assistant director on film/TV set. 5=film/media production management role. 4=video/creative/media production role. 3=production-adjacent in entertainment/media. 2=unclear industry. 1=non-media production or irrelevant.
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
