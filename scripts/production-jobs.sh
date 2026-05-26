@@ -238,10 +238,10 @@ else
     i=$((i + 1))
   done < "$JOBS_FILE"
 
-  PROMPT="Filter jobs for Nathan Tyler. DFW film/TV/video production management. Dream role: 1st AD (First Assistant Director) on set.
-Score 1-5. Only 3+ if CONFIRMED DFW or Texas AND clearly film/TV/video/media industry.
-REJECT (score 1): manufacturing, garment, athletic wear, food production, industrial, retail, construction, warehouse, automotive, packaging, distribution, printing, logistics, data entry. These are NOT film production. Companies like Veritiv, Rebel Athletic, Variosystems, Adecco (staffing) = score 1.
-5=1st AD or assistant director on film/TV set. 5=film/media production management role. 4=video/creative/media production role. 3=production-adjacent in entertainment/media. 2=unclear industry. 1=non-media production or irrelevant.
+  PROMPT="Filter jobs for Nathan Tyler. ONLY DFW/Texas film/TV/video production jobs. Dream role: 1st AD (First Assistant Director) on set.
+Score 1-5. HARD RULE: If the job is NOT in DFW, Dallas, Fort Worth, North Texas, or Texas — score 1. NO EXCEPTIONS. Idaho=1. California=1. New York=1. Remote-only with no TX presence=1.
+ALSO REJECT (score 1): manufacturing, garment, athletic wear, food production, industrial, retail, construction, warehouse, automotive, packaging, distribution, printing, logistics, data entry. These are NOT film production. Companies like Veritiv, Rebel Athletic, Variosystems, Adecco (staffing) = score 1.
+5=1st AD or assistant director on film/TV set IN DFW. 5=film/media production management IN DFW. 4=video/creative/media production role IN DFW. 3=production-adjacent in entertainment/media IN Texas. 2=unclear if in Texas. 1=not in Texas OR not media/film.
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
 ${JOB_LIST}"
