@@ -40,8 +40,9 @@ elif [[ "$TODAY" < "$WEEK3_START" ]]; then
 • Complete Claude Code developer training
 • Complete Agent Skills course
 • Study MCP spec (modelcontextprotocol.io)
-• Study community exam guide (github.com/daronyondem/claude-architect-exam-guide)"
-  FOCUS="Multi-agent orchestration (27%), tool parameter design (18%), error recovery, HITL"
+• Study community exam guide (github.com/daronyondem/claude-architect-exam-guide)
+• Do practice questions (Skilljar) — identify weak spots early"
+  FOCUS="Multi-agent orchestration (27%), tool parameter design (18%), error recovery, HITL. KEY: tools=actions, resources=read-only. Never build a super-agent — use specialized agents."
 elif [[ "$TODAY" < "$WEEK4_START" ]]; then
   WEEK=3
   DAY=$(( ( $(date -d "$TODAY" +%s) - $(date -d "$WEEK3_START" +%s) ) / 86400 + 1 ))
@@ -49,8 +50,10 @@ elif [[ "$TODAY" < "$WEEK4_START" ]]; then
   TASKS="• Finish all 13 Anthropic Academy courses
 • Review Claude Code docs (skills, hooks, subagents, worktrees)
 • Study prompt engineering best practices
-• Study context management and RAG patterns"
-  FOCUS="Claude Code config (20%), prompt engineering (20%), context/reliability (15%)"
+• Study context management and RAG patterns
+• Study ANTI-PATTERNS: super-agent trap, prompt-only solutions, assuming shared context, lost-in-the-middle
+• Do more practice questions — focus on weak areas from Week 2"
+  FOCUS="Claude Code config (20%), prompt engineering (20%), context/reliability (15%). KEY: deterministic > probabilistic. Fix root causes, not symptoms. Simplest solution wins."
 else
   WEEK=4
   DAY=$(( ( $(date -d "$TODAY" +%s) - $(date -d "$WEEK4_START" +%s) ) / 86400 + 1 ))
