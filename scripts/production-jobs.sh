@@ -2,11 +2,14 @@
 # production-jobs.sh — Daily DFW film/TV/video production job search
 #
 # Sources:
-#   1. X/Twitter crew calls (bird search)
-#   2. Craigslist DFW (tv/film/video + crew gigs sections)
-#   3. NeoGov/GovernmentJobs (city media departments)
-#   4. kiro-cli LLM filter for relevance
+#   1. Staff Me Up (industry standard for film/TV crew)
+#   2. LinkedIn (broad + 1st AD specific)
+#   3. X/Twitter crew calls (bird search)
+#   4. Craigslist DFW (tv/film/video + crew gigs sections)
+#   5. GovernmentJobs (city media departments)
+#   6. kiro-cli LLM filter for relevance
 #
+# Deduplication: DynamoDB (production-jobs-seen, 60-day TTL)
 # Delivery: Discord + email
 set -uo pipefail
 
@@ -16,10 +19,46 @@ TODAY=$(date +%Y-%m-%d)
 LOGFILE="/home/ubuntu/logs/production-jobs/$(date +%Y-%m-%d).log"
 JOBS_FILE=$(mktemp)
 DIGEST_FILE="/tmp/production-jobs-digest-${TODAY}.md"
+PROFILE="personal"
+REGION="us-east-1"
+DYNAMO_TABLE="production-jobs-seen"
+TTL_DAYS=60
+EXPIRES_AT=$(date -d "+${TTL_DAYS} days" +%s)
 
 mkdir -p "$(dirname "$LOGFILE")" /tmp
 
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOGFILE"; }
+
+# --- DynamoDB dedup setup ---
+DYNAMO_OK=0
+if aws dynamodb describe-table --table-name "$DYNAMO_TABLE" --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1; then
+  DYNAMO_OK=1
+else
+  log "Creating DynamoDB table $DYNAMO_TABLE..."
+  aws dynamodb create-table --table-name "$DYNAMO_TABLE" \
+    --attribute-definitions '[{"AttributeName":"job_id","AttributeType":"S"}]' \
+    --key-schema '[{"AttributeName":"job_id","KeyType":"HASH"}]' \
+    --billing-mode PAY_PER_REQUEST --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1
+  aws dynamodb update-time-to-live --table-name "$DYNAMO_TABLE" \
+    --time-to-live-specification "Enabled=true,AttributeName=expires_at" \
+    --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1
+  sleep 8 && DYNAMO_OK=1
+fi
+
+is_seen() {
+  [ "$DYNAMO_OK" -eq 0 ] && return 1
+  aws dynamodb get-item --table-name "$DYNAMO_TABLE" \
+    --key "{\"job_id\":{\"S\":\"$1\"}}" --projection-expression "job_id" \
+    --profile "$PROFILE" --region "$REGION" --output text 2>/dev/null | grep -q "$1"
+}
+
+mark_seen() {
+  [ "$DYNAMO_OK" -eq 0 ] && return
+  local clean_title=$(echo "$2" | tr -d '"' | cut -c1-200)
+  aws dynamodb put-item --table-name "$DYNAMO_TABLE" \
+    --item "{\"job_id\":{\"S\":\"$1\"},\"title\":{\"S\":\"$clean_title\"},\"source\":{\"S\":\"$3\"},\"found_date\":{\"S\":\"$TODAY\"},\"expires_at\":{\"N\":\"$EXPIRES_AT\"}}" \
+    --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1
+}
 
 log "=== Production Jobs Search — $TODAY ==="
 
@@ -66,18 +105,23 @@ fi
 # --- Source 2: LinkedIn (broad coverage) ---
 log "Searching LinkedIn for DFW production jobs..."
 
-# Search 1: Film/TV specific titles
-LINKEDIN_HTML=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%22production+coordinator%22+OR+%22production+assistant%22+OR+%22line+producer%22+OR+%22UPM%22+OR+%22post+production%22+OR+%22production+manager%22+%28film+OR+tv+OR+video+OR+media+OR+broadcast+OR+streaming+OR+entertainment+OR+studio+OR+creative%29&location=Dallas-Fort+Worth+Metroplex&f_TPR=r2592000&position=1&pageNum=0" \
+# Search 1: Film/TV production management + crew roles
+LINKEDIN_HTML=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%22production+coordinator%22+OR+%22production+assistant%22+OR+%22line+producer%22+OR+%22UPM%22+OR+%22post+production%22+OR+%22production+manager%22+OR+%222nd+AD%22+OR+%22second+assistant+director%22+OR+%22key+PA%22+OR+%22production+supervisor%22+%28film+OR+tv+OR+video+OR+media+OR+broadcast+OR+streaming+OR+entertainment+OR+studio+OR+creative+OR+set%29&location=Dallas-Fort+Worth+Metroplex&f_TPR=r2592000&position=1&pageNum=0" \
   -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
   -H "Accept: text/html" 2>/dev/null)
 
-# Search 2: Broader Texas search for rarer film-specific roles
-LINKEDIN_HTML2=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%22set+PA%22+OR+%22office+PA%22+OR+%22production+secretary%22+OR+%22production+accountant%22+OR+%22assistant+director%22+OR+%22script+supervisor%22+OR+%22location+manager%22+film+tv&location=Texas%2C+United+States&f_TPR=r2592000&position=1&pageNum=0" \
+# Search 2: 1st AD + assistant director + other film-specific roles
+LINKEDIN_HTML2=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%221st+AD%22+OR+%22first+assistant+director%22+OR+%22assistant+director%22+OR+%22set+PA%22+OR+%22office+PA%22+OR+%22production+secretary%22+OR+%22production+accountant%22+OR+%22script+supervisor%22+OR+%22location+manager%22+OR+%22key+PA%22+film+tv&location=Dallas-Fort+Worth+Metroplex&f_TPR=r2592000&position=1&pageNum=0" \
   -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
   -H "Accept: text/html" 2>/dev/null)
 
-# Parse both searches
-for HTML_VAR in "$LINKEDIN_HTML" "$LINKEDIN_HTML2"; do
+# Search 3: Broader Texas for 1st AD (rare role, cast wider net)
+LINKEDIN_HTML3=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%221st+AD%22+OR+%22first+assistant+director%22+OR+%22assistant+director%22+%28film+OR+tv+OR+set+OR+production+OR+studio%29&location=Texas%2C+United+States&f_TPR=r2592000&position=1&pageNum=0" \
+  -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
+  -H "Accept: text/html" 2>/dev/null)
+
+# Parse all searches
+for HTML_VAR in "$LINKEDIN_HTML" "$LINKEDIN_HTML2" "$LINKEDIN_HTML3"; do
   echo "$HTML_VAR" | python3 -c "
 import sys, re
 html = sys.stdin.read()
@@ -87,9 +131,11 @@ locations = re.findall(r'job-search-card__location[^>]*>\s*([^<]+)', html)
 links = re.findall(r'href=\"(https://www.linkedin.com/jobs/view/[^\"?]+)', html)
 for i in range(min(len(titles), 20)):
     t = titles[i].strip() if i < len(titles) else ''
-    c = companies[i].strip() if i < len(companies) else ''
+    c = companies[i].strip() if i < len(companies) else '-'
     l = locations[i].strip() if i < len(locations) else ''
     link = links[i] if i < len(links) else ''
+    if not c:
+        c = '-'
     if t:
         print(f'li-{i}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
 " >> "$JOBS_FILE" 2>/dev/null
@@ -100,7 +146,7 @@ log "  LinkedIn: found $LI_COUNT results"
 
 # --- Source 2: X/Twitter crew calls ---
 log "Searching X for DFW production crew calls..."
-TWITTER_RESULTS=$(bird search '"production manager" OR "production coordinator" OR "line producer" OR "UPM" OR "production assistant" OR "crew call" (Dallas OR DFW OR "Fort Worth" OR Texas OR "North Texas") (hiring OR job OR gig OR "crew call" OR apply OR paid)' -n 15 --json 2>/dev/null || echo "[]")
+TWITTER_RESULTS=$(bird search '"production manager" OR "production coordinator" OR "line producer" OR "UPM" OR "production assistant" OR "1st AD" OR "assistant director" OR "crew call" (Dallas OR DFW OR "Fort Worth" OR Texas OR "North Texas") (hiring OR job OR gig OR "crew call" OR apply OR paid)' -n 15 --json 2>/dev/null || echo "[]")
 
 TWITTER_COUNT=$(echo "$TWITTER_RESULTS" | jq 'length' 2>/dev/null || echo 0)
 log "  X: found $TWITTER_COUNT results"
@@ -180,14 +226,17 @@ else
     [ -z "$jid" ] && continue
     [ "$i" -gt 25 ] && break
     clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-100)
-    JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}
+    company=""
+    [ "$poster" != "-" ] && [ -n "$poster" ] && company=" @ ${poster}"
+    JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}${company}
 "
     i=$((i + 1))
   done < "$JOBS_FILE"
 
-  PROMPT="Filter jobs for Nathan Tyler. DFW film/TV/video production management.
-Score 1-5. Only 3+ if CONFIRMED DFW or Texas. Manufacturing=1. Unknown location=2.
-5=film/media production in DFW. 4=media role in DFW. 3=production in Texas. 2=unclear. 1=irrelevant.
+  PROMPT="Filter jobs for Nathan Tyler. DFW film/TV/video production management. Dream role: 1st AD (First Assistant Director) on set.
+Score 1-5. Only 3+ if CONFIRMED DFW or Texas AND clearly film/TV/video/media industry.
+REJECT (score 1): manufacturing, garment, athletic wear, food production, industrial, retail, construction, warehouse, automotive. These are NOT film production.
+5=1st AD or assistant director on film/TV set. 5=film/media production management role. 4=video/creative/media production role. 3=production-adjacent in entertainment/media. 2=unclear industry. 1=non-media production or irrelevant.
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
 ${JOB_LIST}"
@@ -205,6 +254,7 @@ ${JOB_LIST}"
   } > "$DIGEST_FILE"
 
   KEPT=0
+  SEEN_SKIPPED=0
   while IFS= read -r score_line; do
     [ -z "$score_line" ] && continue
     idx=$(echo "$score_line" | jq -r '.idx // 0' 2>/dev/null)
@@ -217,14 +267,47 @@ ${JOB_LIST}"
     [ -z "$JOB_LINE" ] && continue
     IFS=$'\t' read -r jid source poster title url <<< "$JOB_LINE"
 
+    # Dedup: skip if already seen
+    if is_seen "$jid"; then
+      SEEN_SKIPPED=$((SEEN_SKIPPED + 1))
+      continue
+    fi
+
+    # Fetch extra detail for LinkedIn jobs (public description snippet)
+    DETAIL=""
+    if [[ "$source" == "linkedin" ]] && [[ -n "$url" ]]; then
+      DETAIL=$(curl -sL "$url" \
+        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+        -H "Accept: text/html" 2>/dev/null | python3 -c "
+import sys, re, html
+page = sys.stdin.read()
+# Get description from meta or show-more section
+desc = ''
+m = re.search(r'<meta[^>]*name=\"description\"[^>]*content=\"([^\"]+)\"', page)
+if m:
+    desc = html.unescape(m.group(1)).strip()
+if not desc:
+    m = re.search(r'show-more-less-html__markup[^>]*>(.*?)</div', page, re.S)
+    if m:
+        desc = re.sub(r'<[^>]+>', ' ', m.group(1)).strip()
+# Clean and truncate
+desc = re.sub(r'\s+', ' ', desc)[:300]
+print(desc)
+" 2>/dev/null)
+    fi
+
     {
-      echo "**${title}**"
+      echo "${title}"
+      [ -n "$DETAIL" ] && echo "  ${DETAIL}"
       echo "Source: ${source} | Score: ${score}/5 | ${reason}"
       echo "${url}"
       echo ""
     } >> "$DIGEST_FILE"
+    mark_seen "$jid" "$title" "$source"
     KEPT=$((KEPT + 1))
   done <<< "$SCORES"
+
+  log "  Dedup: $SEEN_SKIPPED already-seen jobs skipped"
 
   {
     echo "---"
