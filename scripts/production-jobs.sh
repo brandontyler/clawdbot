@@ -271,8 +271,30 @@ else
     clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-100)
     company=""
     [ "$poster" != "-" ] && [ -n "$poster" ] && company=" @ ${poster}"
-    JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}${company}
+    # Fetch description snippet for LinkedIn jobs to help filter
+    desc_snippet=""
+    if [[ "$source" == "linkedin" ]] && [[ -n "$url" ]]; then
+      desc_snippet=$(curl -sL "$url" \
+        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+        -H "Accept: text/html" 2>/dev/null | python3 -c "
+import sys, re, html
+page = sys.stdin.read()
+m = re.search(r'<meta[^>]*name=\"description\"[^>]*content=\"([^\"]+)\"', page)
+if m:
+    d = html.unescape(m.group(1)).strip()
+    d = re.sub(r'\s+', ' ', d)[:150]
+    # Remove the 'Posted X. ' prefix
+    d = re.sub(r'^Posted [^.]+\.\s*', '', d)
+    print(d)
+" 2>/dev/null)
+    fi
+    if [ -n "$desc_snippet" ]; then
+      JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}${company} — ${desc_snippet}
 "
+    else
+      JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}${company}
+"
+    fi
     i=$((i + 1))
   done < "$JOBS_FILE"
 
