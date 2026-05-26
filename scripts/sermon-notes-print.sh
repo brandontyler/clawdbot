@@ -75,4 +75,28 @@ else
     --attach "$PDF_FILE" 2>&1
   log "Retry sent to $PRINT_EMAIL via gog"
 fi
-post_discord "🖨️ Sermon notes sent to printer: **$TITLE** ($((PDF_SIZE / 1024))KB)"
+
+# Generate sermon topic summary via kiro-cli
+log "Generating sermon summary..."
+PDF_TEXT=$(python3 -c "
+import PyPDF2, sys
+try:
+    reader = PyPDF2.PdfReader('$PDF_FILE')
+    text = ' '.join(page.extract_text() or '' for page in reader.pages[:3])
+    print(text[:1500])
+except: pass
+" 2>/dev/null | tr -d '"\\`$')
+SUMMARY=""
+if [ -n "$PDF_TEXT" ]; then
+  SUMMARY=$(cd "$HOME" && timeout 60 kiro-cli chat --no-interactive --wrap never "Summarize this sermon in 2-3 sentences. What is the main topic, key scripture, and one takeaway? Be concise.
+
+${PDF_TEXT}" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:" | tail -5 | head -3)
+fi
+
+if [ -n "$SUMMARY" ]; then
+  post_discord "🖨️ Sermon notes sent to printer: **$TITLE** ($((PDF_SIZE / 1024))KB)
+
+📝 ${SUMMARY}"
+else
+  post_discord "🖨️ Sermon notes sent to printer: **$TITLE** ($((PDF_SIZE / 1024))KB)"
+fi

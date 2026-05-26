@@ -66,7 +66,18 @@ MSG="🎓 **CCA Study Reminder — Day ${DAY}, ${TITLE}**
 
 ${TASKS}
 
-🎯 Focus: ${FOCUS}
+🎯 Focus: ${FOCUS}"
+
+# Add a dynamic study tip via kiro-cli
+TIP=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "You are a study coach for the Claude Certified Architect (CCA-F) exam. Give ONE specific, actionable study tip for today. Context: Week ${WEEK}, Day ${DAY}. Topic area: ${FOCUS}. Keep it to 1-2 sentences. Be specific — reference a concept, API method, or pattern they should practice." 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:\|^>" | head -2)
+
+if [ -n "$TIP" ]; then
+  MSG="${MSG}
+
+💡 Tip: ${TIP}"
+fi
+
+MSG="${MSG}
 
 _Week ${WEEK}/4 | Exam: 60 MCQ, 120 min, proctored, 720/1000 to pass_"
 
