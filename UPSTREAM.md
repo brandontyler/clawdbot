@@ -131,20 +131,7 @@ If the running gateway keeps restoring it, stop the gateway first, edit
 Non-upstream pins that should be removed once the underlying issue is fixed.
 Revisit on every sync — stale workarounds become sludge.
 
-### `unrun@0.2.37` override (added 2026-05-13, tracked in beads `p-tze`)
-
-`package.json` `pnpm.overrides` pins `unrun` to `0.2.37`. Upstream
-[`unrun@0.2.38`](https://www.npmjs.com/package/unrun/v/0.2.38) shipped a broken
-tarball missing the `dist/` folder (declared in `files`, not included in the
-published archive), which breaks `tsdown`'s build. `0.2.37` is the last known
-good version and satisfies `tsdown`'s `^0.2.37` range. A fixed `0.3.0` exists
-but is a minor bump — defer until we're ready to validate.
-
-Remove when: (a) upstream republishes `0.2.38` with `dist/` included, or
-(b) we bump `tsdown` to a version that accepts `unrun@^0.3.0`.
-
-Check: `npm pack unrun@0.2.38 && tar -tzf unrun-0.2.38.tgz | grep -c '^package/dist/'`
-— should return >0 once fixed.
+_(none active)_
 
 ## Post-Sync Checklist
 
