@@ -57,8 +57,8 @@ SEARCHES=(
   "https://www.linkedin.com/jobs/search?keywords=%22AI+agent%22+OR+%22OpenClaw%22+OR+%22personal+AI+assistant%22+OR+%22agent+architect%22+OR+%22AI+automation%22+%28consultant+OR+setup+OR+deploy+OR+configure+OR+freelance%29&f_TPR=r604800&f_WT=2&position=1&pageNum=0"
   # AI/LLM engineer roles (remote only)
   "https://www.linkedin.com/jobs/search?keywords=%22AI+agent%22+OR+%22LLM+engineer%22+OR+%22AI+architect%22+OR+%22prompt+engineer%22+%28Claude+OR+Anthropic+OR+Bedrock+OR+OpenAI%29&location=United+States&f_TPR=r604800&f_WT=2&position=1&pageNum=0"
-  # OpenClaw/Hermes specific (any)
-  "https://www.linkedin.com/jobs/search?keywords=%22OpenClaw%22+OR+%22Hermes+Agent%22+OR+%22AI+assistant+setup%22+OR+%22agent+deployment%22&f_TPR=r604800&position=1&pageNum=0"
+  # OpenClaw/Hermes specific (remote)
+  "https://www.linkedin.com/jobs/search?keywords=%22OpenClaw%22+OR+%22Hermes+Agent%22+OR+%22AI+assistant+setup%22+OR+%22agent+deployment%22&f_TPR=r604800&f_WT=2&position=1&pageNum=0"
   # DFW local AI/automation roles
   "https://www.linkedin.com/jobs/search?keywords=%22AI+agent%22+OR+%22AI+automation%22+OR+%22AI+architect%22+OR+%22machine+learning%22+OR+%22generative+AI%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
 )
