@@ -336,5 +336,12 @@ if [ -n "$DISCORD_TOKEN" ]; then
   log "Discord: sent $sent message(s)"
 fi
 
+# Email digest
+TODAY_LABEL=$(date '+%a %b %d, %Y')
+gog gmail send -a brandon.tyler@gmail.com \
+  --to "brandon.tyler@gmail.com" \
+  --subject "📱 X Digest — $TODAY_LABEL" \
+  --body "$(cat "$DIGEST_FILE")" 2>/dev/null && log "Email sent" || log "Email failed"
+
 log "Done. Digest: $DIGEST_FILE"
 cat "$DIGEST_FILE"
