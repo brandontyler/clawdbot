@@ -140,7 +140,8 @@ done < "$JOBS_FILE"
 PROMPT="Filter jobs for Brandon Tyler. He's an AWS engineer in Denton, TX who builds AI agent systems (OpenClaw, Hermes, kiro-cli) and wants consulting/freelance/full-time opportunities helping others set up personal AI assistants, agent automation, or AI executive assistant systems.
 Score 1-5. HARD RULE: Must be REMOTE or in DFW/North Texas/Denton area. If the job requires relocation or is on-site in NYC/LA/SF/etc — score 1. NO EXCEPTIONS.
 5=remote AI agent setup/consulting/deployment role. 4=remote AI architect or LLM engineer that fits his skills. 3=remote or DFW-area related AI/automation role. 2=unclear if remote. 1=requires relocation or irrelevant.
-Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
+Also estimate salary range based on title, company, and seniority level.
+Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\",\"pay\":\"<estimated range like 150-200K or 75-100/hr>\"}
 
 ${JOB_LIST}"
 
@@ -161,6 +162,7 @@ while IFS= read -r score_line; do
   idx=$(echo "$score_line" | jq -r '.idx // 0' 2>/dev/null)
   score=$(echo "$score_line" | jq -r '.score // 0' 2>/dev/null)
   reason=$(echo "$score_line" | jq -r '.reason // ""' 2>/dev/null)
+  pay=$(echo "$score_line" | jq -r '.pay // ""' 2>/dev/null)
   [ "$score" -lt 3 ] 2>/dev/null && continue
 
   JOB_LINE=$(sed -n "${idx}p" "$JOBS_FILE")
@@ -171,6 +173,7 @@ while IFS= read -r score_line; do
 
   {
     echo "${title}"
+    [ -n "$pay" ] && [ "$pay" != "null" ] && echo "  💰 Est: ${pay}"
     echo "Source: ${source} | Score: ${score}/5 | ${reason}"
     echo "${url}"
     echo ""
