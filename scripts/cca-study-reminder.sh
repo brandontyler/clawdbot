@@ -72,12 +72,31 @@ ${TASKS}
 🎯 Focus: ${FOCUS}"
 
 # Add a dynamic study tip via kiro-cli
-TIP=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "You are a study coach for the Claude Certified Architect (CCA-F) exam. Give ONE specific, actionable study tip for today. Context: Week ${WEEK}, Day ${DAY}. Topic area: ${FOCUS}. Keep it to 1-2 sentences. Be specific — reference a concept, API method, or pattern they should practice." 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:\|^>" | head -2)
+TRACKER="$HOME/code/personal/clawdbot/scripts/cca-study-tracker.json"
+PROGRESS=$(python3 -c "
+import json
+with open('$TRACKER') as f:
+    d = json.load(f)
+done = sum(1 for c in d['courses'].values() if c['status'] == 'done')
+total = len(d['courses'])
+not_started = [k.replace('_',' ').title() for k,v in d['courses'].items() if v['status'] == 'not_started']
+print(f'Progress: {done}/{total} courses done.')
+if not_started:
+    print(f'Next up: {not_started[0]}')
+" 2>/dev/null)
+
+TIP=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "You are a study coach for the Claude Certified Architect (CCA-F) exam. Give ONE specific, actionable study tip for today. Context: Week ${WEEK}, Day ${DAY}. Topic area: ${FOCUS}. ${PROGRESS}. Keep it to 1-2 sentences. Be specific — reference a concept, API method, or pattern they should practice." 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:\|^>" | head -2)
 
 if [ -n "$TIP" ]; then
   MSG="${MSG}
 
 💡 Tip: ${TIP}"
+fi
+
+if [ -n "$PROGRESS" ]; then
+  MSG="${MSG}
+
+📊 ${PROGRESS}"
 fi
 
 MSG="${MSG}
