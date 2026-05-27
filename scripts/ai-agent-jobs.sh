@@ -59,6 +59,8 @@ SEARCHES=(
   "https://www.linkedin.com/jobs/search?keywords=%22AI+agent%22+OR+%22LLM+engineer%22+OR+%22AI+architect%22+OR+%22prompt+engineer%22+%28Claude+OR+Anthropic+OR+Bedrock+OR+OpenAI%29&location=United+States&f_TPR=r604800&f_WT=2&position=1&pageNum=0"
   # OpenClaw/Hermes specific (remote)
   "https://www.linkedin.com/jobs/search?keywords=%22OpenClaw%22+OR+%22Hermes+Agent%22+OR+%22AI+assistant+setup%22+OR+%22agent+deployment%22&f_TPR=r604800&f_WT=2&position=1&pageNum=0"
+  # Contact center AI / voice bot / telecom + AI (remote)
+  "https://www.linkedin.com/jobs/search?keywords=%22contact+center+AI%22+OR+%22voice+bot%22+OR+%22conversational+AI%22+OR+%22Amazon+Connect%22+%28architect+OR+engineer+OR+consultant+OR+lead%29&location=United+States&f_TPR=r604800&f_WT=2&position=1&pageNum=0"
   # DFW local AI/automation roles
   "https://www.linkedin.com/jobs/search?keywords=%22AI+agent%22+OR+%22AI+automation%22+OR+%22AI+architect%22+OR+%22machine+learning%22+OR+%22generative+AI%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
 )
@@ -137,10 +139,24 @@ while IFS=$'\t' read -r jid source poster title url; do
   i=$((i + 1))
 done < "$JOBS_FILE"
 
-PROMPT="Filter jobs for Brandon Tyler. He's an AWS engineer in Denton, TX who builds AI agent systems (OpenClaw, Hermes, kiro-cli) and wants consulting/freelance/full-time opportunities helping others set up personal AI assistants, agent automation, or AI executive assistant systems.
-Score 1-5. HARD RULE: Must be REMOTE or in DFW/North Texas/Denton area. If the job requires relocation or is on-site in NYC/LA/SF/etc — score 1. NO EXCEPTIONS.
-5=remote AI agent setup/consulting/deployment role. 4=remote AI architect or LLM engineer that fits his skills. 3=remote or DFW-area related AI/automation role. 2=unclear if remote. 1=requires relocation or irrelevant.
-Also estimate salary range based on title, company, and seniority level.
+PROMPT="Filter jobs for Brandon Tyler. Match against his FULL background:
+
+CURRENT: AWS Solutions Architect — Amazon Connect specialist, telecom/contact center engineering
+AI SKILLS: Builds production AI agent systems daily — OpenClaw, Hermes Agent, kiro-cli headless, Claude/Bedrock
+WHAT HE BUILT: 12+ automated LLM-powered jobs (job search, email triage, X digest, finance automation, calendar mgmt), multi-agent Discord routing, MCP integrations, voice agent architecture (Dograh+Connect), systemd services on EC2
+CERTS: Claude Certified Architect (in progress), AWS experience
+TELECOM: Amazon Connect, contact flows, IVR, voice bots, SIP, telephony integration
+WANTS: Help people/companies set up AI agents as executive assistants, personal automation, or contact center AI. Consulting, freelance, or full-time.
+LOCATION: Denton, TX. MUST be REMOTE or DFW/North Texas. Will NOT relocate.
+
+Score 1-5:
+5 = Perfect fit: remote AI agent consulting/setup/deployment, or remote AI+telecom/contact center role
+4 = Strong fit: remote AI architect, LLM engineer, or automation role matching his skills
+3 = Good fit: remote AI/ML role or DFW-local tech role he could do
+2 = Unclear if remote or weak match
+1 = Requires relocation, irrelevant, or not matching his skills. NO EXCEPTIONS for on-site NYC/LA/SF.
+
+Also estimate salary range based on title, company, and seniority.
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\",\"pay\":\"<estimated range like 150-200K or 75-100/hr>\"}
 
 ${JOB_LIST}"
