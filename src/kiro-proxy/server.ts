@@ -299,18 +299,20 @@ async function attemptRecovery(
       const recovery = await manager.getOrCreate(sessionKey, cleanMessages, openclawSessionKey);
       recovery.managed.handle.sentMessageCount = messages.length;
 
-      let recoveryResolve: () => void;
+      let recoveryResolve: () => void = () => {};
       recovery.managed.promptLock = new Promise((r) => {
         recoveryResolve = r;
       });
 
       const parts: string[] = [];
       await recovery.session.prompt(safeRecoveryText, (text) => {
-        parts.push(text);
-        onChunk?.(text);
+        if (text) {
+          parts.push(text);
+          onChunk?.(text);
+        }
       });
       recovery.session.consecutiveErrors = 0;
-      recoveryResolve!();
+      recoveryResolve();
 
       return { ok: true, text: parts.join(""), promptUsed: safeRecoveryText };
     } catch (retryErr) {
@@ -342,18 +344,20 @@ async function attemptRecovery(
     const fallback = await manager.getOrCreate(sessionKey, fallbackMessages, openclawSessionKey);
     fallback.managed.handle.sentMessageCount = messages.length;
 
-    let fallbackResolve: () => void;
+    let fallbackResolve: () => void = () => {};
     fallback.managed.promptLock = new Promise((r) => {
       fallbackResolve = r;
     });
 
     const parts: string[] = [];
     await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
-      parts.push(text);
-      onChunk?.(text);
+      if (text) {
+        parts.push(text);
+        onChunk?.(text);
+      }
     });
     fallback.session.consecutiveErrors = 0;
-    fallbackResolve!();
+    fallbackResolve();
 
     return { ok: true, text: parts.join(""), promptUsed: FALLBACK_RECOVERY_PROMPT };
   } catch (fallbackErr) {
@@ -584,13 +588,41 @@ async function handleCompletions(
     let tFirstChunk = 0;
     const responseChunks: string[] = [];
     try {
-      const stopReason = await session.prompt(promptText, (text) => {
-        if (!tFirstChunk) {
-          tFirstChunk = performance.now();
-        }
-        responseChunks.push(text);
-        sseChunk(res, buildChunk(completionId, text));
+      // Wrap prompt in a first-token timeout: if kiro-cli produces no output
+      // within the timeout, the session is likely dead/stale. Kill and let the
+      // caller handle the error (which triggers a retry or fresh session).
+      // Scale timeout with context size: high-context sessions need more time
+      // for the model to process input before generating the first token.
+      const baseTimeoutMs = 30_000;
+      const ctxPct = session.lastContextPct || 0;
+      const FIRST_TOKEN_TIMEOUT_MS =
+        ctxPct > 40 ? baseTimeoutMs + Math.round(ctxPct * 1500) : baseTimeoutMs;
+      let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        firstTokenTimer = setTimeout(() => {
+          if (!tFirstChunk) {
+            log(
+              `🔴 FIRST-TOKEN TIMEOUT (${FIRST_TOKEN_TIMEOUT_MS / 1000}s): session=${sessionTag}… ctx=${session.lastContextPct.toFixed(1)}% — killing stale session`,
+            );
+            session.kill("first-token-timeout");
+            reject(new Error("first-token-timeout"));
+          }
+        }, FIRST_TOKEN_TIMEOUT_MS);
       });
+
+      const stopReason = await Promise.race([
+        session.prompt(promptText, (text) => {
+          if (!tFirstChunk) {
+            tFirstChunk = performance.now();
+            if (firstTokenTimer) clearTimeout(firstTokenTimer);
+          }
+          if (text) {
+            responseChunks.push(text);
+            sseChunk(res, buildChunk(completionId, text));
+          }
+        }),
+        timeoutPromise,
+      ]);
       session.consecutiveErrors = 0;
 
       // When the model hits its output token limit, append a visible notice
@@ -652,8 +684,10 @@ async function handleCompletions(
             if (!tFirstChunk) {
               tFirstChunk = performance.now();
             }
-            retryChunks.push(text);
-            sseChunk(res, buildChunk(completionId, text));
+            if (text) {
+              retryChunks.push(text);
+              sseChunk(res, buildChunk(completionId, text));
+            }
           });
           const retryResponse = retryChunks.join("");
           if (retryResponse.trim()) {
@@ -795,7 +829,9 @@ async function handleCompletions(
             if (!tFirstChunk) {
               tFirstChunk = performance.now();
             }
-            sseChunk(res, buildChunk(completionId, text));
+            if (text) {
+              sseChunk(res, buildChunk(completionId, text));
+            }
           },
         );
 
@@ -831,7 +867,7 @@ async function handleCompletions(
       log(
         `done: session=${sessionTag}… ctx=${session.lastContextPct.toFixed(0)}% errors=${session.consecutiveErrors} msgs=${body.messages.length}${clientDisconnected ? " (client disconnected)" : ""}`,
       );
-      resolvePromptLock!();
+      resolvePromptLock();
     }
 
     sseChunk(res, buildFinalChunk(completionId, "stop"));
@@ -842,7 +878,9 @@ async function handleCompletions(
     const resolveBlockLock = sessionResult.unlockPrompt ?? (() => {});
 
     try {
-      await session.prompt(promptText, (text) => parts.push(text));
+      await session.prompt(promptText, (text) => {
+        if (text) parts.push(text);
+      });
       session.consecutiveErrors = 0;
 
       // Detect kiro-cli inline corruption in blocking response.
@@ -889,7 +927,9 @@ async function handleCompletions(
         let retryText = "";
         try {
           const retryParts: string[] = [];
-          await session.prompt(promptText, (text) => retryParts.push(text));
+          await session.prompt(promptText, (text) => {
+            if (text) retryParts.push(text);
+          });
           retryText = retryParts.join("");
         } catch (retryErr) {
           log(formatErrorVerbose(retryErr, "empty retry threw (blocking)"));
@@ -1041,7 +1081,7 @@ async function handleCompletions(
     } finally {
       const tDone = performance.now();
       log(`timing: session=${sessionTag}… total=${Math.round(tDone - t0)}ms`);
-      resolveBlockLock!();
+      resolveBlockLock();
     }
 
     const fullText = parts.join("");

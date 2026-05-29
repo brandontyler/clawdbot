@@ -24,7 +24,7 @@ import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./
 import { ProgressReporter } from "./progress.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
 
-const DEFAULT_IDLE_SECS = 14400; // 4 hours — idle sessions hibernate (not killed), so context is preserved
+const DEFAULT_IDLE_SECS = 1800; // 30 minutes — short idle timeout prevents stale ACP pipes
 
 const HIBERNATE_PATH =
   process.env.KIRO_PROXY_HIBERNATE_PATH ??
@@ -218,39 +218,69 @@ export class SessionManager {
 
     if (existing && existing.session.alive) {
       // Wait for any in-flight prompt to finish before sending the next one.
-      await existing.promptLock;
-      // Detect history compaction: if the gateway pruned old messages, the array
-      // is now shorter than what we've already sent.  Send only the latest user
-      // message instead of an empty slice.
-      let newMessages: OpenAIMessage[];
-      if (messages.length < existing.handle.sentMessageCount) {
+      // Timeout after 120s to prevent infinite hangs when kiro-cli is zombie.
+      const PROMPT_LOCK_TIMEOUT_MS = 120_000;
+      const lockResult = await Promise.race([
+        existing.promptLock.then(() => "resolved" as const),
+        new Promise<"timeout">((r) => setTimeout(() => r("timeout"), PROMPT_LOCK_TIMEOUT_MS)),
+      ]);
+      if (lockResult === "timeout") {
         this.log(
-          `⚠️ history compaction detected: had=${existing.handle.sentMessageCount} now=${messages.length} session=${this.tag(sessionKey)} — sending latest message only`,
+          `🔴 promptLock timeout (${PROMPT_LOCK_TIMEOUT_MS / 1000}s): session=${this.tag(sessionKey)} — killing zombie session`,
         );
-        newMessages = messages.slice(-1);
+        this.resetSession(sessionKey, "prompt-lock-timeout");
+        // Fall through to create a fresh session below.
       } else {
-        newMessages = messages.slice(existing.handle.sentMessageCount);
+        // Detect history compaction: if the gateway pruned old messages, the array
+        // is now shorter than what we've already sent.  Send only the latest user
+        // message instead of an empty slice.
+        let newMessages: OpenAIMessage[];
+        if (messages.length < existing.handle.sentMessageCount) {
+          this.log(
+            `⚠️ history compaction detected: had=${existing.handle.sentMessageCount} now=${messages.length} session=${this.tag(sessionKey)} — sending latest message only`,
+          );
+          newMessages = messages.slice(-1);
+        } else {
+          newMessages = messages.slice(existing.handle.sentMessageCount);
+        }
+
+        // Guard: if the slice produced zero new messages but the request has user
+        // messages, the gateway likely reset its session (/new) while the proxy
+        // still holds the old sentMessageCount.  Kill the stale session and let
+        // the caller fall through to create a fresh one.
+        if (
+          newMessages.length === 0 &&
+          messages.length > 0 &&
+          messages.some((m) => m.role === "user")
+        ) {
+          this.log(
+            `⚠️ session desync: sentCount=${existing.handle.sentMessageCount} msgs=${messages.length} but newMsgs=0 — gateway likely reset. Killing stale session=${this.tag(sessionKey)}`,
+          );
+          this.resetSession(sessionKey, "desync-empty-slice");
+          // Fall through to the "create fresh session" path below.
+        } else {
+          const promptText = this.buildPromptFromMessages(newMessages);
+          existing.handle.sentMessageCount = messages.length;
+          existing.handle.lastTouchedAt = Date.now();
+          existing.session.lastTouchedAt = Date.now();
+          const rssKb = existing.session.getRssKb();
+          this.log(
+            `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
+          );
+          // Lock immediately so no concurrent request can slip through before
+          // the caller sets the real promptLock in the streaming path.
+          let unlockPrompt: () => void;
+          existing.promptLock = new Promise((r) => {
+            unlockPrompt = r;
+          });
+          return {
+            session: existing.session,
+            promptText,
+            managed: existing,
+            unlockPrompt: unlockPrompt!,
+          };
+        }
       }
-      const promptText = this.buildPromptFromMessages(newMessages);
-      existing.handle.sentMessageCount = messages.length;
-      existing.handle.lastTouchedAt = Date.now();
-      existing.session.lastTouchedAt = Date.now();
-      const rssKb = existing.session.getRssKb();
-      this.log(
-        `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
-      );
-      // Lock immediately so no concurrent request can slip through before
-      // the caller sets the real promptLock in the streaming path.
-      let unlockPrompt: () => void;
-      existing.promptLock = new Promise((r) => {
-        unlockPrompt = r;
-      });
-      return {
-        session: existing.session,
-        promptText,
-        managed: existing,
-        unlockPrompt: unlockPrompt!,
-      };
     }
 
     // Dead or non-existent session — create a fresh one.

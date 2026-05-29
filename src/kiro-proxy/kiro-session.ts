@@ -403,6 +403,11 @@ export class KiroSession {
         const kind = update.kind ?? "";
         const status = update.status ?? "";
         this.log(`tool: ${title} (${status || kind})`);
+        // Signal liveness to clear first-token timeout — tool_call means
+        // kiro-cli is alive and working, even if no text has been emitted yet.
+        if (this.chunkCallback) {
+          this.chunkCallback("");
+        }
         this.events.onToolCall?.(title, kind, status, true);
         break;
       }
