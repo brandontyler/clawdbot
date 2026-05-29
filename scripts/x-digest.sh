@@ -31,7 +31,8 @@ mkdir -p "$DIGEST_DIR"
 DATE_LABEL=$(date '+%A, %B %d %Y')
 TODAY=$(date +%Y-%m-%d)
 DIGEST_FILE="$DIGEST_DIR/digest-${TODAY}.md"
-SINCE=$(date -d "1 day ago" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+SINCE=$(date -d "3 days ago" +%Y-%m-%d 2>/dev/null || date -v-3d +%Y-%m-%d)
+MAX_AGE_HOURS=72
 EXPIRES_AT=$(date -d "+${TTL_DAYS} days" +%s 2>/dev/null || date -v+${TTL_DAYS}d +%s)
 
 # --- DynamoDB helpers ---
@@ -123,7 +124,7 @@ Tweets:
 $(echo -e "$numbered")"
 
   local scores
-  scores=$(timeout 45 kiro-cli chat --no-interactive --wrap never "$prompt" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1)
+  scores=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "$prompt" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1)
 
   if [ -z "$scores" ]; then
     # Model failed — pass everything through (graceful degradation)
@@ -171,12 +172,14 @@ while IFS= read -r line; do
 
   results=$(bird search "$query" -n "$FETCH_COUNT" --json 2>/dev/null || echo "[]")
 
-  # Filter by min_faves, sort by engagement, dedup within run
-  candidates=$(echo "$results" | jq -r --arg min "$min_faves" --slurpfile seen "$RUN_SEEN_FILE" '
+  # Filter by min_faves, max age, sort by engagement, dedup within run
+  cutoff_epoch=$(date -d "${MAX_AGE_HOURS} hours ago" +%s 2>/dev/null || date -v-${MAX_AGE_HOURS}H +%s)
+  candidates=$(echo "$results" | jq -r --arg min "$min_faves" --arg cutoff "$cutoff_epoch" --slurpfile seen "$RUN_SEEN_FILE" '
     ($seen[0] // [] | map(tostring)) as $seen_ids |
     [.[] |
       select(.likeCount >= ($min | tonumber)) |
-      select((.id | tostring) as $id | ($seen_ids | index($id)) | not)
+      select((.id | tostring) as $id | ($seen_ids | index($id)) | not) |
+      select((.createdAt | strptime("%a %b %d %H:%M:%S +0000 %Y") | mktime) >= ($cutoff | tonumber))
     ] |
     sort_by(-(.likeCount + .retweetCount * 3)) |
     .[] |
@@ -185,8 +188,8 @@ while IFS= read -r line; do
 
   included=0
   if [ -n "$candidates" ]; then
-    # LLM relevance filter — only for keyword/community topics (Tier 2)
-    if [[ "$name" == *"Community"* ]] && [ "$(echo "$candidates" | wc -l)" -gt 0 ]; then
+    # LLM relevance filter — applied to all topics for maximum signal
+    if [ "$(echo "$candidates" | wc -l)" -gt 0 ]; then
       candidates=$(score_relevance "$name" "$candidates")
     fi
 
@@ -247,7 +250,7 @@ gog gmail send -a brandon.tyler@gmail.com \
   > /dev/null 2>&1 && echo "Email sent via gog" || echo "Email send failed" >&2
 
 # --- Send notification to Discord ---
-DISCORD_CHANNEL="${DIGEST_DISCORD_CHANNEL:-1475513267433767014}"
+DISCORD_CHANNEL="${DIGEST_DISCORD_CHANNEL:-1503414103341797406}"
 DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
 if [ -n "$DISCORD_TOKEN" ]; then
   chunk=""

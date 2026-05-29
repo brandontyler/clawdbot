@@ -19,8 +19,8 @@ REGION="us-east-1"
 DYNAMO_TABLE="x-bookmark-seen"
 TTL_DAYS=30
 WORK_DIR="/tmp/x-bookmark-review"
-BIRD="/usr/local/bin/bird"
-DISCORD_CHANNEL="1475513267433767014"
+BIRD="/home/ubuntu/.local/bin/bird"
+DISCORD_CHANNEL="1503414103341797406"
 SEEN_DIR="$HOME/.local/share/x-bookmark-review"
 SEEN_FILE="$SEEN_DIR/seen.tsv"
 
@@ -89,27 +89,99 @@ done < "$new_ids" > "$new_bookmarks"
 new_count=$(wc -l < "$new_bookmarks" | xargs)
 log "$new_count new bookmarks to review"
 
-# --- Format Discord message ---
-msg="📑 **New Bookmarks** — $new_count new since last review"$'\n\n'
+# --- Format bookmark data for LLM analysis ---
+BOOKMARK_LIST=""
 idx=1
 
 while IFS= read -r tweet; do
   user=$(echo "$tweet" | jq -r '.author.username')
-  name=$(echo "$tweet" | jq -r '.author.name')
-  text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | cut -c1-200)
+  text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | tr -d '"\\`$' | cut -c1-250)
   likes=$(echo "$tweet" | jq -r '.likeCount')
   rts=$(echo "$tweet" | jq -r '.retweetCount')
-  tid=$(echo "$tweet" | jq -r '.id')
-  created=$(echo "$tweet" | jq -r '.createdAt')
-  cdt=$(TZ='America/Chicago' date -d "$created" '+%b %d, %l:%M %p CDT' 2>/dev/null || echo "$created")
 
-  msg+="${idx}. **@${user}** ($name) — ${likes} likes, ${rts} RTs — ${cdt}"$'\n'
-  msg+="   ${text}"$'\n'
-  msg+="   https://x.com/${user}/status/${tid}"$'\n\n'
+  BOOKMARK_LIST="${BOOKMARK_LIST}[${idx}] @${user} (${likes} likes, ${rts} RTs): ${text}
+"
   idx=$((idx + 1))
 done < "$new_bookmarks"
 
-msg+="_Reply with actions (e.g. \"task for 1,3\" or \"research 2\") — auto-reviewed in 24h_"
+# --- LLM categorization and scoring ---
+log "Analyzing bookmarks via kiro-cli..."
+
+PROMPT="Categorize and score these X bookmarks for Brandon Tyler (AWS engineer, AI/agents enthusiast, builds with kiro-cli/Claude, interested in SpaceX, Tesla, firefighting, film production).
+
+For each bookmark output a JSON line:
+{\"idx\":<N>,\"category\":\"<AI Tools|AI News|Dev Workflow|SpaceX/Tesla|Career|Other>\",\"action\":\"<try|research|task|read|skip>\",\"summary\":\"<1-line what it is and why it matters>\"}
+
+Actions:
+- try = install/use this tool or technique
+- research = dig deeper, could be valuable
+- task = create a bead/task for this
+- read = interesting but just read it
+- skip = low value, noise
+
+Be selective. Only 'try' or 'task' for genuinely useful things. Most should be 'read' or 'skip'.
+
+${BOOKMARK_LIST}"
+
+RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
+SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
+
+log "LLM returned $(echo "$SCORES" | grep -c '{' || echo 0) scores"
+
+# --- Build categorized Discord message ---
+msg=""
+# Process scores into categorized output
+msg=$(echo "$SCORES" | python3 -c "
+import sys, json
+
+categories = {}
+lines = sys.stdin.read().strip().split('\n')
+for line in lines:
+    if not line.strip():
+        continue
+    try:
+        d = json.loads(line)
+        idx = d.get('idx', 0)
+        cat = d.get('category', 'Other')
+        action = d.get('action', 'read')
+        summary = d.get('summary', '')
+        if action == 'skip':
+            continue
+        emoji = {'try': '🔧', 'task': '📋', 'research': '🔍', 'read': '📖'}.get(action, '•')
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(f'{emoji} {summary}')
+    except:
+        continue
+
+output = ''
+for cat in ['AI Tools', 'AI News', 'Dev Workflow', 'SpaceX/Tesla', 'Career', 'Other']:
+    if cat in categories and categories[cat]:
+        output += f'**{cat}**\n'
+        for item in categories[cat]:
+            output += f'{item}\n'
+        output += '\n'
+
+output += '_Legend: 🔧=try it 📋=create task 🔍=research 📖=read_'
+print(output)
+" 2>/dev/null)
+
+if [ -z "$msg" ]; then
+  # Fallback: raw list if LLM failed
+  log "WARN: LLM categorization failed, using raw format"
+  msg=""
+  idx=1
+  while IFS= read -r tweet; do
+    user=$(echo "$tweet" | jq -r '.author.username')
+    text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | cut -c1-150)
+    tid=$(echo "$tweet" | jq -r '.id')
+    msg+="${idx}. @${user}: ${text}
+   https://x.com/${user}/status/${tid}
+
+"
+    idx=$((idx + 1))
+  done < "$new_bookmarks"
+fi
 
 # --- Post to Discord FIRST (only mark seen after successful delivery) ---
 log "Posting to Discord #openclaw..."

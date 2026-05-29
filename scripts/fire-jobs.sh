@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # fire-jobs.sh — Daily North Texas firefighter job search
 # Sources:
-#   1. governmentjobs.com (NEOGOV) via CDP headless Chrome — real city job postings
+#   1. governmentjobs.com (NEOGOV) via dev-browser CLI — real city job postings
 #   2. firejobs.com — dedicated firefighter job board
+#   3. TCFP (Texas Commission on Fire Protection) — official state fire careers
+#   4. Craigslist DFW — bridge/holdover jobs (ER tech, fire watch, private EMS)
 # Dedupes via DynamoDB. Emails + SMS on new finds.
 set -uo pipefail
+
+
+# Kill ALL dev-browser daemons before starting (prevent memory pileup from orphans)
+# The daemon auto-starts when dev-browser CLI needs it, so this is safe.
+pkill -f "daemon.mjs" 2>/dev/null || true
+sleep 2
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="personal"
@@ -37,8 +45,8 @@ EXPIRES_AT=$(date -d "+${TTL_DAYS} days" +%s 2>/dev/null || date -v+${TTL_DAYS}d
 log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOGFILE"; }
 log_err() { echo "[$(date '+%H:%M:%S')] ERROR: $*" | tee -a "$LOGFILE" >&2; }
 
-# North TX cities for firejobs.com filtering
-NORTH_TX="denton|corinth|lake dallas|sanger|aubrey|pilot point|argyle|lewisville|flower mound|highland village|the colony|little elm|frisco|mckinney|allen|plano|prosper|celina|anna|carrollton|coppell|grapevine|southlake|keller|roanoke|fort worth|arlington|dallas|irving|grand prairie|mansfield|trophy club|crossroads"
+# Intelligent filtering via kiro-cli (replaces hardcoded city regex)
+FILTER_SCRIPT="$SCRIPT_DIR/fire-jobs-filter.sh"
 
 # --- DynamoDB ---
 DYNAMO_OK=0
@@ -73,15 +81,15 @@ mark_seen() {
 
 log "=== Fire Jobs Search: $DATE_LABEL ==="
 
-# --- Source 1: GovernmentJobs.com via CDP (primary) ---
-log "[1/2] GovernmentJobs.com (NEOGOV) via headless Chrome..."
-if curl -s http://localhost:9223/json/version > /dev/null 2>&1; then
-  log "  dev-browser on :9223 — connected"
+# --- Source 1: GovernmentJobs.com via dev-browser (primary) ---
+log "[1/4] GovernmentJobs.com (NEOGOV) via dev-browser..."
+if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
+  log "  dev-browser daemon — connected"
   neogov_tmp=$(mktemp)
-  timeout 600 node "$SCRIPT_DIR/scrape-neogov.mjs" > "$neogov_tmp" 2>> "$LOGFILE"
+  timeout 1800 bash "$SCRIPT_DIR/scrape-neogov.sh" > "$neogov_tmp" 2>> "$LOGFILE"
   neogov_exit=$?
   if [ "$neogov_exit" -eq 124 ]; then
-    log "  NEOGOV timed out at 300s — using partial results"
+    log "  NEOGOV timed out at 1800s — using partial results"
   elif [ "$neogov_exit" -ne 0 ]; then
     log_err "  NEOGOV scraper exited $neogov_exit"
   fi
@@ -101,20 +109,22 @@ if curl -s http://localhost:9223/json/version > /dev/null 2>&1; then
     [ -n "$location" ] && line_fmt="${line_fmt} — ${location}"
     [ -n "$salary" ] && line_fmt="${line_fmt} | ${salary}"
     [ -n "$type" ] && line_fmt="${line_fmt} | ${type}"
-    printf '%s\t%s\t%s\tgovernmentjobs\n' "$jid" "$line_fmt" "$url" >> "$JOBS_FILE"
+    # 5th column: best location info (parsed location or city slug fallback)
+    loc_ctx="${location:-$city}"
+    printf '%s\t%s\t%s\tgovernmentjobs\t%s\n' "$jid" "$line_fmt" "$url" "$loc_ctx" >> "$JOBS_FILE"
     log "  found: $title ($city)"
   done < "$neogov_tmp"
   rm -f "$neogov_tmp"
   neogov_count=$(grep -c 'governmentjobs' "$JOBS_FILE" 2>/dev/null || echo 0)
   log "  NEOGOV done: $neogov_count jobs (exit=$neogov_exit)"
 else
-  log_err "  dev-browser not running on :9223 — skipping NEOGOV"
+  log_err "  dev-browser daemon not running — skipping NEOGOV"
 fi
 
 # --- Source 2: firejobs.com (secondary) ---
 # Site uses <a class="block ..."> cards. We extract fields via python regex
 # since the HTML has no semantic tags (no <li>, <h3>, <p> wrappers for fields).
-log "[2/2] firejobs.com..."
+log "[2/4] firejobs.com..."
 fj_total_scraped=0
 fj_tx_found=0
 fj_north_tx=0
@@ -166,18 +176,13 @@ for slug, body in cards:
 " 2>/dev/null | while IFS=$'\t' read -r slug title dept city salary jtype; do
     [ -z "$slug" ] && continue
     fj_tx_found=$((fj_tx_found + 1))
-    city_lower=$(echo "$city" | tr '[:upper:]' '[:lower:]')
-    if ! echo "$city_lower" | grep -qiE "$NORTH_TX"; then
-      log "  skip: $title ($city) — not North TX"
-      continue
-    fi
     url="https://www.firejobs.com/jobs/${slug}"
     jid="fj-${slug}"
     line="${title} — ${dept}"
     [ -n "$city" ] && line="${line} (${city})"
     [ -n "$salary" ] && line="${line} | ${salary}"
     [ -n "$jtype" ] && line="${line} | ${jtype}"
-    printf '%s\t%s\t%s\tfirejobs\n' "$jid" "$line" "$url" >> "$JOBS_FILE"
+    printf '%s\t%s\t%s\tfirejobs\t%s\n' "$jid" "$line" "$url" "$city" >> "$JOBS_FILE"
     log "  found: $title ($city)"
   done
   page_jobs=$(echo "$html" | grep -oP 'href="/jobs/[^"]+' | grep -v 'new' | wc -l)
@@ -188,6 +193,107 @@ done
 fj_count=$(grep -c 'firejobs' "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  firejobs done: scraped $fj_total_scraped total listings, $fj_count North TX jobs"
 
+# --- Source 3: TCFP (Texas Commission on Fire Protection) ---
+log "[3/4] TCFP fire service careers..."
+if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
+  tcfp_tmp=$(mktemp)
+  timeout 60 bash "$SCRIPT_DIR/scrape-tcfp.sh" > "$tcfp_tmp" 2>> "$LOGFILE"
+  tcfp_exit=$?
+  if [ "$tcfp_exit" -ne 0 ]; then
+    log_err "  TCFP scraper exited $tcfp_exit"
+  fi
+  tcfp_count=0
+  while IFS= read -r line; do
+    title=$(echo "$line" | jq -r '.title // empty' 2>/dev/null)
+    city=$(echo "$line" | jq -r '.city // empty' 2>/dev/null)
+    dept=$(echo "$line" | jq -r '.department // empty' 2>/dev/null)
+    url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
+    salary=$(echo "$line" | jq -r '.salary // empty' 2>/dev/null)
+    jtype=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
+    [ -z "$title" ] && continue
+    # Create a stable job ID from city+dept+title
+    jid="tcfp-$(echo "${city}-${dept}-${title}" | md5sum | cut -c1-10)"
+    line_fmt="${title} — ${dept}"
+    [ -n "$city" ] && line_fmt="${line_fmt} (${city}, TX)"
+    [ -n "$salary" ] && line_fmt="${line_fmt} | ${salary}"
+    [ -n "$jtype" ] && line_fmt="${line_fmt} | ${jtype}"
+    loc_ctx="${city}, TX"
+    printf '%s\t%s\t%s\ttcfp\t%s\n' "$jid" "$line_fmt" "$url" "$loc_ctx" >> "$JOBS_FILE"
+    tcfp_count=$((tcfp_count + 1))
+  done < "$tcfp_tmp"
+  rm -f "$tcfp_tmp"
+  log "  TCFP done: $tcfp_count jobs"
+else
+  log_err "  dev-browser daemon not running — skipping TCFP"
+fi
+
+# --- Source 4: Craigslist DFW (bridge/holdover jobs) ---
+log "[4/4] Craigslist DFW (bridge jobs)..."
+if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
+  cl_tmp=$(mktemp)
+  timeout 300 bash "$SCRIPT_DIR/scrape-craigslist.sh" > "$cl_tmp" 2>> "$LOGFILE"
+  cl_exit=$?
+  if [ "$cl_exit" -ne 0 ]; then
+    log_err "  Craigslist scraper exited $cl_exit"
+  fi
+  cl_count=0
+  while IFS= read -r line; do
+    title=$(echo "$line" | jq -r '.title // empty' 2>/dev/null)
+    city=$(echo "$line" | jq -r '.city // empty' 2>/dev/null)
+    url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
+    [ -z "$title" ] && continue
+    jid="cl-$(echo "$url" | grep -oP '[0-9]{8,}' | tail -1)"
+    [ -z "$jid" ] || [ "$jid" = "cl-" ] && jid="cl-$(echo "$url" | md5sum | cut -c1-10)"
+    line_fmt="${title}"
+    [ -n "$city" ] && line_fmt="${line_fmt} (${city})"
+    printf '%s\t%s\t%s\tcraigslist\t%s\n' "$jid" "$line_fmt" "$url" "$city" >> "$JOBS_FILE"
+    cl_count=$((cl_count + 1))
+  done < "$cl_tmp"
+  rm -f "$cl_tmp"
+  log "  Craigslist done: $cl_count jobs"
+else
+  log_err "  dev-browser daemon not running — skipping Craigslist"
+fi
+
+# --- Intelligent Filter via kiro-cli ---
+pre_filter_count=$(grep -c . "$JOBS_FILE" 2>/dev/null || echo 0)
+pre_filter_count=${pre_filter_count//[^0-9]/}
+if [ "$pre_filter_count" -gt 0 ] && [ -x "$FILTER_SCRIPT" ]; then
+  log "Running kiro-cli intelligent filter on $pre_filter_count jobs..."
+  FILTERED_FILE=$(mktemp)
+  FILTER_RESULT=$("$FILTER_SCRIPT" "$JOBS_FILE" 2>> "$LOGFILE")
+  if [ -n "$FILTER_RESULT" ]; then
+    # Rebuild JOBS_FILE with only jobs that passed the filter (score 3+)
+    KEPT_FILE=$(mktemp)
+    echo "$FILTER_RESULT" | while IFS= read -r line; do
+      jid=$(echo "$line" | jq -r '.jid // empty' 2>/dev/null)
+      reason=$(echo "$line" | jq -r '.reason // empty' 2>/dev/null)
+      score=$(echo "$line" | jq -r '.score // 0' 2>/dev/null)
+      [ -z "$jid" ] && continue
+      # Find matching line in JOBS_FILE and keep it
+      match=$(grep "^${jid}	" "$JOBS_FILE" | head -1)
+      if [ -n "$match" ]; then
+        echo "$match" >> "$KEPT_FILE"
+        log "  ✅ [$score] $jid — $reason"
+      fi
+    done
+    # Replace JOBS_FILE with filtered version
+    if [ -s "$KEPT_FILE" ]; then
+      mv "$KEPT_FILE" "$JOBS_FILE"
+    else
+      rm -f "$KEPT_FILE"
+    fi
+    kept_count=$(grep -c . "$JOBS_FILE" 2>/dev/null || echo 0)
+    log "Filter result: $pre_filter_count → $kept_count jobs (kiro-cli scored 3+)"
+  else
+    log "  kiro-cli filter returned empty — keeping all jobs (fallback)"
+  fi
+  rm -f "$FILTERED_FILE"
+else
+  [ "$pre_filter_count" -eq 0 ] && log "No jobs to filter"
+  [ ! -x "$FILTER_SCRIPT" ] && log "Filter script not found — using all jobs"
+fi
+
 # --- Build digest ---
 total=$(grep -c . "$JOBS_FILE" 2>/dev/null | tail -1 || echo 0)
 total=${total//[^0-9]/}
@@ -196,7 +302,7 @@ log "Total jobs collected: $total"
 {
   echo "# 🚒 North Texas Firefighter Jobs — $DATE_LABEL"
   echo ""
-  echo "_Centered on Denton, TX | Sources: GovernmentJobs.com + FireJobs.com_"
+  echo "_Centered on Denton, TX | Sources: GovernmentJobs.com + FireJobs.com + TCFP + Craigslist DFW_"
   echo ""
 } > "$DIGEST_FILE"
 
@@ -206,7 +312,8 @@ if [ "$total" -eq 0 ]; then
 else
   cur_source=""
   seen_count=0
-  sort -t$'\t' -k4 "$JOBS_FILE" | while IFS=$'\t' read -r jid title url source; do
+  NEW_JOBS_TSV=$(mktemp)
+  sort -t$'\t' -k4 "$JOBS_FILE" | while IFS=$'\t' read -r jid title url source _location; do
     [ -z "$jid" ] && continue
     if is_seen "$jid"; then
       seen_count=$((seen_count + 1))
@@ -214,13 +321,15 @@ else
     fi
     if [ "$source" != "$cur_source" ]; then
       case "$source" in
-        governmentjobs) echo "## 🏛️ GovernmentJobs.com" ;; firejobs) echo "## 🔥 FireJobs.com" ;; esac >> "$DIGEST_FILE"
+        governmentjobs) echo "## 🏛️ GovernmentJobs.com" ;; firejobs) echo "## 🔥 FireJobs.com" ;; tcfp) echo "## 🧑‍🚒 TCFP (Texas Commission on Fire Protection)" ;; craigslist) echo "## 📋 Craigslist DFW (Bridge Jobs)" ;; esac >> "$DIGEST_FILE"
       echo "" >> "$DIGEST_FILE"
       cur_source="$source"
     fi
     echo "• **${title}**" >> "$DIGEST_FILE"
     echo "  ${url}" >> "$DIGEST_FILE"
     echo "" >> "$DIGEST_FILE"
+    # Save new job to TSV for personalized digest
+    grep "^${jid}	" "$JOBS_FILE" >> "$NEW_JOBS_TSV"
     mark_seen "$jid" "${title:0:200}" "$source"
     log "  NEW: [$source] $title"
     echo "1" >> "$NEWCOUNT_FILE"
@@ -236,6 +345,27 @@ log "Result: $total found, $new_count new"
 
 # --- Notify ---
 if [ "$new_count" -gt 0 ]; then
+  # Generate personalized digest via kiro-cli
+  DIGEST_SCRIPT="$SCRIPT_DIR/fire-jobs-digest.sh"
+  if [ -x "$DIGEST_SCRIPT" ] && [ -s "$NEW_JOBS_TSV" ]; then
+    log "Generating personalized digest via kiro-cli..."
+    PERSONALIZED=$("$DIGEST_SCRIPT" "$NEW_JOBS_TSV" 2>> "$LOGFILE")
+    if [ -n "$PERSONALIZED" ]; then
+      {
+        echo "# 🚒 North Texas Firefighter Jobs — $DATE_LABEL"
+        echo ""
+        echo "$PERSONALIZED"
+        echo ""
+        echo "---"
+        echo "_${total} postings found, ${new_count} new._"
+      } > "$DIGEST_FILE"
+      log "Personalized digest generated"
+    else
+      log "kiro-cli digest returned empty — using standard digest"
+    fi
+  fi
+  rm -f "$NEW_JOBS_TSV"
+
   body=$(cat "$DIGEST_FILE")
   # Email via gog (Google OAuth)
   if gog gmail send -a brandon.tyler@gmail.com \
@@ -249,7 +379,7 @@ if [ "$new_count" -gt 0 ]; then
   # Discord notification
   DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
   if [ -n "$DISCORD_TOKEN" ]; then
-    curl -s -X POST "https://discord.com/api/v10/channels/1475513267433767014/messages" \
+    curl -s -X POST "https://discord.com/api/v10/channels/1503414103341797406/messages" \
       -H "Authorization: Bot $DISCORD_TOKEN" \
       -H "Content-Type: application/json" \
       -d "{\"content\":$(echo "🚒 ${new_count} new firefighter job(s) in North TX. Check email." | jq -Rs .)}" > /dev/null
@@ -257,6 +387,7 @@ if [ "$new_count" -gt 0 ]; then
   fi
 else
   log "No new jobs — skipping notifications"
+  rm -f "$NEW_JOBS_TSV"
 fi
 
 log "Done. Log: $LOGFILE"
