@@ -228,9 +228,7 @@ export class SessionManager {
         this.log(
           `🔴 promptLock timeout (${PROMPT_LOCK_TIMEOUT_MS / 1000}s): session=${this.tag(sessionKey)} — killing zombie session`,
         );
-        existing.session.kill("prompt-lock-timeout");
-        this.sessions.delete(sessionKey);
-        this.cleanupSession(sessionKey);
+        this.resetSession(sessionKey, "prompt-lock-timeout");
         // Fall through to create a fresh session below.
       } else {
         // Detect history compaction: if the gateway pruned old messages, the array
@@ -258,9 +256,7 @@ export class SessionManager {
           this.log(
             `⚠️ session desync: sentCount=${existing.handle.sentMessageCount} msgs=${messages.length} but newMsgs=0 — gateway likely reset. Killing stale session=${this.tag(sessionKey)}`,
           );
-          existing.session.kill("desync-empty-slice");
-          this.sessions.delete(sessionKey);
-          this.cleanupSession(sessionKey);
+          this.resetSession(sessionKey, "desync-empty-slice");
           // Fall through to the "create fresh session" path below.
         } else {
           const promptText = this.buildPromptFromMessages(newMessages);
