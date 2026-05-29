@@ -1,0 +1,72 @@
+{
+  "started": "2026-05-27",
+  "target_exam_date": "2026-06-20",
+  "courses": {
+    "claude_101": {
+      "status": "in_progress",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "ai_fluency_framework": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "building_with_claude_api": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "intro_to_mcp": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "claude_code_developer": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "agent_skills": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "prompt_engineering": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "structured_output": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "tool_use": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "context_management": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "safety_guardrails": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "evaluation_testing": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    },
+    "production_deployment": {
+      "status": "not_started",
+      "url": "https://anthropic.skilljar.com"
+    }
+  },
+  "practice_exam": {
+    "status": "not_started",
+    "score": null
+  },
+  "real_exam": {
+    "status": "not_started",
+    "score": null
+  },
+  "study_log": [
+    {
+      "date": "2026-05-27",
+      "action": "Started Claude 101"
+    }
+  ]
+}
