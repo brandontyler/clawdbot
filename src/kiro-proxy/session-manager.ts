@@ -237,9 +237,31 @@ export class SessionManager {
         let newMessages: OpenAIMessage[];
         if (messages.length < existing.handle.sentMessageCount) {
           this.log(
-            `⚠️ history compaction detected: had=${existing.handle.sentMessageCount} now=${messages.length} session=${this.tag(sessionKey)} — sending latest message only`,
+            `⚠️ session reset detected (msgs=${messages.length} < sent=${existing.handle.sentMessageCount}), sending /chat new then replacing`,
           );
-          newMessages = messages.slice(-1);
+          // Send /chat new to clear kiro-cli's internal context before killing.
+          const killTimer = setTimeout(() => existing.session.kill("chat-new-timeout"), 5000);
+          let chatNewOk = false;
+          try {
+            await existing.session.prompt("/chat new", () => {});
+            clearTimeout(killTimer);
+            chatNewOk = true;
+          } catch (err) {
+            clearTimeout(killTimer);
+            this.log(`/chat new failed (process may be dead): ${String(err)}`);
+          }
+          if (chatNewOk) {
+            // Re-hibernate: the ACP session now has clean context on disk.
+            existing.session.lastContextPct = 0;
+            this.hibernateSession(sessionKey, existing.session, "session-reset");
+          } else {
+            // /chat new failed - don't hibernate the bloated session. Kill it
+            // so next request creates a completely fresh one.
+            existing.session.kill("session-reset-failed");
+            this.sessions.delete(sessionKey);
+            this.cleanupSession(sessionKey);
+          }
+          return this.streamResponse(res, sessionKey, messages);
         } else {
           newMessages = messages.slice(existing.handle.sentMessageCount);
         }
