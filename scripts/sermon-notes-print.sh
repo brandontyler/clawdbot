@@ -10,7 +10,7 @@ PRINT_EMAIL="Brandon.Tyler@hpeprint.com"
 FROM="noreply@tylerbtt.email.connect.aws"
 PROFILE="personal"
 REGION="us-east-1"
-DISCORD_CHANNEL="1475513267433767014"
+DISCORD_CHANNEL="1503414103341797406"
 PROJECT_DIR="$HOME/code/personal/clawdbot"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
