@@ -77,4 +77,24 @@ Agent Skills Builders | from:obra OR from:nutlope OR from:nichochar OR from:matt
 # Tier 2: Community — actual skill releases and discoveries, not generic "AI agent" posts
 Agent Skills Community | ("SKILL.md" OR "npx skills add" OR "claude skills" OR ClawHub OR "agent skill" OR "coding skill") min_faves:50 lang:en -filter:replies -filter:retweets -anime -course -free | 50 | 5
 
+# === HERMES AGENT ===
+# Tier 1: Multi-agent framework thought leaders (verified active posters)
+#   jxnl — Jason Liu, instructor/structured output (agent infra, 50K followers)
+#   swyx — Shawn Wang, AI Engineer (latent.space, agent orchestration)
+#   HarrisonChase — Harrison Chase, LangChain/LangGraph (multi-agent pioneer)
+#   AndrewYNg — Andrew Ng, AI Fund (agent workflows)
+Hermes & Agent Frameworks | from:jxnl OR from:swyx OR from:HarrisonChase OR from:AndrewYNg (agent OR multi-agent OR orchestration OR framework OR workflow) | 20 | 5
+# Tier 2: Community — multi-agent orchestration, agent protocols, Hermes mentions
+Hermes Community | ("multi-agent" OR "agent orchestration" OR "agent protocol" OR "ACP" OR "agent framework" OR "Hermes agent") min_faves:50 lang:en -filter:replies -filter:retweets -crypto -web3 -blockchain | 50 | 5
+
+# === AI CONSULTING / VIBE CODING ===
+# Brandon's consulting niche — AI-augmented development, vibe coding, agent-assisted workflows
+# Tier 1: Key voices in the AI consulting/freelance space
+#   itsolelehmann — Ole Lehmann (AI workflows, skills, anti-sycophancy)
+#   raborenstein — Riley Brown (AI dev workflows, practical agent use)
+#   levelsio — Pieter Levels (indie hacker, AI products, revenue transparency)
+AI Consulting Leaders | from:itsolelehmann OR from:raborenstein OR from:levelsio (AI OR agent OR workflow OR consulting OR "vibe coding" OR revenue) | 20 | 5
+# Tier 2: Community — people talking about making money with AI agents (English only)
+AI Consulting Community | ("AI consulting" OR "vibe coding" OR "AI freelance" OR "agent workflow" OR "AI side business" OR "AI agency") min_faves:200 lang:en -filter:replies -filter:retweets -course -free -giveaway | 200 | 5
+
 # === PARIS TRIP (removed — trip complete) ===
