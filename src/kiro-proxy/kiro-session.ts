@@ -436,7 +436,8 @@ export class KiroSession {
       }
       return;
     }
-    // Silently ignore other _kiro.dev/* notifications (e.g. commands/available)
+    // Log other _kiro.dev/* notifications for discovery
+    this.log(`ext-notification: ${method} ${JSON.stringify(params).slice(0, 500)}`);
   }
 
   /** Send ACP session/cancel to interrupt an in-flight prompt. */
