@@ -234,7 +234,7 @@ export class SessionManager {
         // Detect history compaction: if the gateway pruned old messages, the array
         // is now shorter than what we've already sent.  Send only the latest user
         // message instead of an empty slice.
-        let newMessages: OpenAIMessage[];
+        let newMessages: OpenAIMessage[] = [];
         if (messages.length < existing.handle.sentMessageCount) {
           this.log(
             `⚠️ session reset detected (msgs=${messages.length} < sent=${existing.handle.sentMessageCount}), sending /chat new then replacing`,
@@ -261,7 +261,10 @@ export class SessionManager {
             this.sessions.delete(sessionKey);
             this.cleanupSession(sessionKey);
           }
-          return this.streamResponse(res, sessionKey, messages);
+          // Session was reset - remove from active sessions and fall through
+          // to create a fresh one below.
+          this.sessions.delete(sessionKey);
+          this.cleanupSession(sessionKey);
         } else {
           newMessages = messages.slice(existing.handle.sentMessageCount);
         }
