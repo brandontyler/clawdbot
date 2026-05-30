@@ -437,7 +437,11 @@ export class KiroSession {
       return;
     }
     // Log other _kiro.dev/* notifications for discovery
-    this.log(`ext-notification: ${method} ${JSON.stringify(params).slice(0, 500)}`);
+    if (method === "_kiro.dev/commands/available") {
+      this.log(`ext-notification: ${method} ${JSON.stringify(params)}`);
+    } else {
+      this.log(`ext-notification: ${method} ${JSON.stringify(params).slice(0, 300)}`);
+    }
   }
 
   /** Send ACP session/cancel to interrupt an in-flight prompt. */
