@@ -60,6 +60,77 @@ function extractText(content: unknown): string {
 }
 
 /**
+ * Native kiro-cli slash commands as advertised in `_kiro.dev/commands/available`
+ * (kiro-cli v2.2.2). Commands the OpenClaw gateway intercepts upstream
+ * (/new, /reset, /compact, /model, /think, /usage, /help, /mcp, /sessions,
+ * /restart, /stop, /session, /status, /unfocus, /acp) never reach the proxy
+ * and are intentionally absent from this list.
+ */
+const KIRO_NATIVE_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  "/agent",
+  "/chat",
+  "/clear",
+  "/code",
+  "/context",
+  "/feedback",
+  "/guide",
+  "/hooks",
+  "/knowledge",
+  "/paste",
+  "/plan",
+  "/prompts",
+  "/quit",
+  "/reply",
+  "/tools",
+]);
+
+/**
+ * If the message body is a kiro-cli native slash command (after stripping
+ * the gateway's metadata envelope), return the bare command (with optional
+ * trailing args). Otherwise return null.
+ *
+ * The gateway wraps Discord messages in JSON metadata blocks and
+ * `<<<EXTERNAL_UNTRUSTED_CONTENT>>>` fences before forwarding. kiro-cli's
+ * command parser only fires when `/` is at position 0, so `/clear` buried
+ * inside the envelope is silently treated as plain text.
+ */
+export function extractKiroSlashCommand(text: string): string | null {
+  if (!text) {
+    return null;
+  }
+  // Strip JSON code fences (```json ... ```)
+  let stripped = text.replace(/```(?:json)?\s*[\s\S]*?```/g, " ");
+  // Strip fence markers — keep inner content, fences are single-line tokens
+  stripped = stripped.replace(/<<<EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>/g, "");
+  stripped = stripped.replace(/<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>/g, "");
+  // Strip common envelope headers
+  stripped = stripped.replace(
+    /^(Conversation info \(untrusted metadata\):|Sender \(untrusted metadata\):|Reply target [^\n]*:|Untrusted context [^\n]*:|Source: External|UNTRUSTED Discord [^\n]*|---)\s*$/gm,
+    "",
+  );
+  // Collapse whitespace and pull non-empty lines
+  const lines = stripped
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) {
+    return null;
+  }
+  // The user's actual message is typically the last non-empty line
+  // (or appears multiple times — same content, so taking last is safe).
+  const candidate = lines[lines.length - 1];
+  const match = /^(\/[a-z][a-z0-9-]*)(?:\s+(.*))?$/i.exec(candidate);
+  if (!match) {
+    return null;
+  }
+  const cmd = match[1].toLowerCase();
+  if (!KIRO_NATIVE_SLASH_COMMANDS.has(cmd)) {
+    return null;
+  }
+  return match[2] ? `${cmd} ${match[2].trim()}` : cmd;
+}
+
+/**
  * Extract a Discord channel ID from an OpenClaw session key.
  * Session keys look like: agent:main:discord:channel:1475216992956059698
  */
@@ -620,8 +691,25 @@ export class SessionManager {
    * gateway are dropped because kiro-cli builds its own context from the
    * project's `.kiro/` config.  Forwarding them would inject the shared
    * workspace memory/persona into every channel (cross-contamination).
+   *
+   * Special case: if the latest user message body (after stripping the
+   * gateway's metadata envelope) is a kiro-cli native slash command,
+   * forward ONLY the bare command so kiro-cli's command parser sees `/`
+   * at position 0.  Otherwise the command is buried inside metadata and
+   * gets treated as plain text by kiro-cli.
    */
   private buildPromptFromMessages(messages: OpenAIMessage[]): string {
+    // Try the slash-command fast-path on the latest user message.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m?.role === "user") {
+        const bare = extractKiroSlashCommand(extractText(m.content));
+        if (bare) {
+          return bare;
+        }
+        break;
+      }
+    }
     const parts: string[] = [];
     for (const msg of messages) {
       if (msg.role === "user") {
