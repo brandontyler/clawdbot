@@ -80,6 +80,20 @@ DEVEOF
 if [ -n "$SMU_DATA" ]; then
   echo "$SMU_DATA" | python3 -c "
 import sys, json
+DFW_CITIES = {'dallas','fort worth','ft. worth','ft worth','plano','frisco','mckinney','irving','arlington','denton','garland','mesquite','richardson','lewisville','allen','carrollton','grand prairie','rowlett','wylie','flower mound','addison','coppell','southlake','colleyville','grapevine','euless','bedford','hurst','haltom city','keller','roanoke','mansfield','desoto','cedar hill','duncanville','farmers branch','the colony','little elm','rockwall','burleson','cleburne','sherman','watauga','saginaw','crowley','benbrook','white settlement','university park','highland park','addison','prosper','melissa','anna','celina','aubrey','argyle','justin','sachse','murphy','parker','fairview','sunnyvale','seagoville','glenn heights','ovilla','red oak','waxahachie','midlothian','ennis','terrell','forney','kaufman','heath','royse city','fate','caddo mills','greenville','sulphur springs','sherman','denison','gainesville','decatur','bridgeport','springtown','azle','weatherford','aledo','granbury','glen rose','stephenville','northeast tarrant','north dallas','dfw'}
+NON_DFW_TX = {'san antonio','houston','austin','el paso','corpus christi','lubbock','amarillo','waco','galveston','mcallen','midland','odessa','killeen','tyler','beaumont','abilene','laredo','brownsville','college station','san marcos','round rock','pflugerville','cedar park','georgetown','katy','sugar land','the woodlands','spring','cypress','pearland','league city','baytown','conroe','huntsville','nacogdoches','lufkin','longview','marshall','texarkana','victoria','del rio','eagle pass','harlingen','edinburg','mission','pharr','san benito','kingsville','port arthur','orange'}
+
+def is_dfw(city, desc):
+    c = (city or '').lower()
+    d = (desc or '').lower()
+    if any(x in c for x in DFW_CITIES):
+        return True
+    if any(x in c for x in NON_DFW_TX):
+        return False
+    if 'dfw' in d or 'dallas' in d or 'fort worth' in d or 'ft. worth' in d or 'ft worth' in d or 'north texas' in d or 'dallas-fort worth' in d or 'dallas/fort worth' in d:
+        return True
+    return False
+
 try:
     d = json.loads(sys.stdin.read())
     schemas = d['props']['pageProps']['jobSchemas']
@@ -90,14 +104,17 @@ try:
         city = loc.get('addressLocality', '')
         state = loc.get('addressRegion', '')
         desc = j.get('description', '').replace('\n', ' ').replace('\t', ' ')[:150]
-        # Only include Texas jobs or remote
-        if state in ('TX', 'Texas') or 'remote' in desc.lower() or 'dallas' in desc.lower() or 'fort worth' in desc.lower() or 'dfw' in desc.lower():
-            print(f'smu-{i}\tstaffmeup\t{company}\t{title} [{city}, {state}] — {desc}\thttps://app.staffmeup.com/jobs')
+        # DFW-only: must be in TX (or remote with DFW mention) AND match DFW city/keywords
+        if state not in ('TX', 'Texas') and 'remote' not in desc.lower():
+            continue
+        if not is_dfw(city, desc):
+            continue
+        print(f'smu-{i}\tstaffmeup\t{company}\t{title} [{city}, {state}] — {desc}\thttps://app.staffmeup.com/jobs')
 except Exception as e:
     pass
 " >> "$JOBS_FILE" 2>/dev/null
   SMU_COUNT=$(grep -c "staffmeup" "$JOBS_FILE" 2>/dev/null || echo 0)
-  log "  Staff Me Up: found $SMU_COUNT Texas jobs"
+  log "  Staff Me Up: found $SMU_COUNT DFW jobs"
 else
   log "  Staff Me Up: login/fetch failed (will retry next run)"
 fi
@@ -124,6 +141,9 @@ LINKEDIN_HTML3=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%221st+
 for HTML_VAR in "$LINKEDIN_HTML" "$LINKEDIN_HTML2" "$LINKEDIN_HTML3"; do
   echo "$HTML_VAR" | python3 -c "
 import sys, re
+NON_DFW_TX = {'san antonio','houston','austin','el paso','corpus christi','lubbock','amarillo','waco','galveston','mcallen','midland','odessa','killeen','tyler,','beaumont','abilene','laredo','brownsville','college station','san marcos','round rock','pflugerville','cedar park','georgetown','katy','sugar land','the woodlands','spring,','cypress,','pearland','league city','baytown','conroe','huntsville','nacogdoches','lufkin','longview','marshall','texarkana','victoria','del rio','eagle pass','harlingen','edinburg','mission,','pharr','san benito','kingsville','port arthur','orange,'}
+DFW_HINTS = ('dallas','fort worth','ft. worth','ft worth','plano','frisco','mckinney','irving','arlington','denton','garland','mesquite','richardson','lewisville','allen,','carrollton','grand prairie','rowlett','wylie','flower mound','coppell','southlake','colleyville','grapevine','euless','bedford','hurst','haltom','keller','roanoke','mansfield','desoto','cedar hill','duncanville','farmers branch','the colony','little elm','rockwall','burleson','cleburne','sherman','watauga','saginaw','crowley','benbrook','dfw','north texas','dallas-fort worth','dallas/fort worth')
+
 html = sys.stdin.read()
 titles = re.findall(r'base-search-card__title[^>]*>\s*([^<]+)', html)
 companies = re.findall(r'base-search-card__subtitle[^>]*>\s*([^<]+)', html)
@@ -136,8 +156,13 @@ for i in range(min(len(titles), 20)):
     link = links[i] if i < len(links) else ''
     if not c:
         c = '-'
-    if t:
-        print(f'li-{i}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
+    if not t:
+        continue
+    # Drop explicitly non-DFW Texas cities. Keep ambiguous (empty, 'Texas, United States', remote) — LLM will judge.
+    loc_lower = l.lower()
+    if any(x in loc_lower for x in NON_DFW_TX) and not any(x in loc_lower for x in DFW_HINTS):
+        continue
+    print(f'li-{i}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
 " >> "$JOBS_FILE" 2>/dev/null
 done
 
@@ -298,10 +323,25 @@ if m:
     i=$((i + 1))
   done < "$JOBS_FILE"
 
-  PROMPT="Filter jobs for Nathan Tyler. ONLY DFW/Texas film/TV/video production jobs. Dream role: 1st AD (First Assistant Director) on set.
-Score 1-5. HARD RULE: If the job is NOT in DFW, Dallas, Fort Worth, North Texas, or Texas — score 1. NO EXCEPTIONS. Idaho=1. California=1. New York=1. Remote-only with no TX presence=1.
+  PROMPT="Filter jobs for Nathan Tyler. ONLY DFW film/TV/video production jobs. Dream role: 1st AD (First Assistant Director) on set.
+
+HARD RULE — DFW ONLY: The job MUST be in the Dallas-Fort Worth metroplex. Score 1 for ANYTHING else, including:
+- Other Texas cities: San Antonio, Houston, Austin, El Paso, Corpus Christi, Lubbock, Waco, Beaumont, Tyler, Longview, etc. → score 1
+- Other states: California, New York, Idaho, Florida, etc. → score 1
+- Remote-only with no DFW/Dallas/Fort Worth presence → score 1
+
+DFW means: Dallas, Fort Worth, Plano, Frisco, McKinney, Irving, Arlington, Denton, Garland, Mesquite, Richardson, Lewisville, Allen, Carrollton, Grand Prairie, Rowlett, Wylie, Flower Mound, Coppell, Southlake, Colleyville, Grapevine, Mansfield, DeSoto, Cedar Hill, The Colony, Little Elm, Rockwall, Burleson, Sherman, Haltom City, Keller, Watauga, Crowley, Benbrook, etc. — North Texas metro only.
+
 ALSO REJECT (score 1): manufacturing, garment, athletic wear, food production, industrial, retail, construction, warehouse, automotive, packaging, distribution, printing, logistics, data entry. These are NOT film production. Companies like Veritiv, Rebel Athletic, Variosystems, Adecco (staffing) = score 1.
-5=1st AD or assistant director on film/TV set IN DFW. 5=film/media production management IN DFW. 4=video/creative/media production role IN DFW. 3=production-adjacent in entertainment/media IN Texas. 2=unclear if in Texas. 1=not in Texas OR not media/film.
+
+Scoring (DFW-only):
+5 = 1st AD or assistant director on film/TV set IN DFW
+5 = film/media production management IN DFW
+4 = video/creative/media production role IN DFW
+3 = production-adjacent in entertainment/media IN DFW
+2 = unclear if in DFW (location ambiguous, but mentions DFW-related signals)
+1 = NOT in DFW, OR not media/film
+
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
 ${JOB_LIST}"
