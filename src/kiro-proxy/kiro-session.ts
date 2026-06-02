@@ -142,6 +142,15 @@ export class KiroSession {
   /** Set during an active prompt() call; null otherwise. */
   private chunkCallback: ChunkCallback | null = null;
 
+  /**
+   * Set to true the moment the child process exits, regardless of who killed
+   * it.  We can't rely on `proc.killed` alone because Node only flips that flag
+   * when WE call `proc.kill()`; an external `kill <pid>` leaves it false until
+   * `exitCode` is populated, which races with the next incoming request.  This
+   * flag is the authoritative liveness check (see `get alive`).
+   */
+  private dead = false;
+
   acpSessionId = "";
   lastTouchedAt = Date.now();
   sentMessageCount = 0;
@@ -165,6 +174,15 @@ export class KiroSession {
     this.client = client;
     this.log = log;
     this.events = events;
+
+    // Mark the session dead the instant the OS reports the child gone.
+    // Without this, `alive` lies after an external kill (proc.killed stays
+    // false) and the next incoming request tries to prompt a corpse, surfacing
+    // as "ACP connection closed" → "consecutive errors" → auto-reset.
+    this.proc.once("exit", (code, signal) => {
+      this.dead = true;
+      this.log(`process exited: code=${code} signal=${signal}`);
+    });
   }
 
   /** Spawn kiro, perform ACP handshake, and return a ready-to-use session. */
@@ -484,7 +502,7 @@ export class KiroSession {
   }
 
   get alive(): boolean {
-    return !this.proc.killed && this.proc.exitCode === null;
+    return !this.dead && !this.proc.killed && this.proc.exitCode === null;
   }
 
   get pid(): number | undefined {
