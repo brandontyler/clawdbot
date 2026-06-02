@@ -255,11 +255,10 @@ export class SessionManager {
             existing.session.lastContextPct = 0;
             this.hibernateSession(sessionKey, existing.session, "session-reset");
           } else {
-            // /chat new failed - don't hibernate the bloated session. Kill it
-            // so next request creates a completely fresh one.
-            existing.session.kill("session-reset-failed");
-            this.sessions.delete(sessionKey);
-            this.cleanupSession(sessionKey);
+            // /chat new failed - don't hibernate the bloated session. Reset it
+            // so next request creates a completely fresh one (also clears the
+            // stale hibernated entry that snapshotAll() may have written).
+            this.resetSession(sessionKey, "session-reset-failed");
           }
           // Session was reset - remove from active sessions and fall through
           // to create a fresh one below.
