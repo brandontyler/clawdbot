@@ -112,3 +112,24 @@ systemctl --user restart openclaw-gateway
 ```
 
 The gateway depends on the proxy (configured via `Requires=kiro-proxy.service`).
+
+## Deferred Restart (from Discord)
+
+**CRITICAL:** When running as a Discord agent, restarting the proxy kills your own
+ACP session mid-response. Always use a deferred restart so the Discord reply
+delivers before the proxy goes down.
+
+```bash
+# Deferred proxy restart (30s delay — enough for response delivery)
+(sleep 30 && systemctl --user restart kiro-proxy) &
+
+# Deferred full restart (proxy + gateway)
+(sleep 30 && systemctl --user restart kiro-proxy && sleep 5 && systemctl --user restart openclaw-gateway) &
+```
+
+After issuing the deferred restart, finish your Discord response immediately.
+The session will drop after ~30s and reconnect automatically when the proxy
+comes back up (2-3 seconds). No manual intervention needed.
+
+**Never** run `systemctl --user restart kiro-proxy` synchronously from a Discord
+agent session — it will hang and the response will never deliver.
