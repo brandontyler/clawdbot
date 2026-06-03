@@ -1,0 +1,9 @@
+[Unit]
+Description=Run finance bill-pay reminder Fridays at 9:00 AM Central
+
+[Timer]
+OnCalendar=Fri *-*-* 09:00:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

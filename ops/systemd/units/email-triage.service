@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Email Triage (important unread emails)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/email-triage.sh
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.16.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal

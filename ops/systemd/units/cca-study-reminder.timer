@@ -1,0 +1,9 @@
+[Unit]
+Description=CCA Study Reminder Timer (weekday mornings)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

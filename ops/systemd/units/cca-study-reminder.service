@@ -1,0 +1,7 @@
+[Unit]
+Description=CCA Study Daily Reminder
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/code/personal/clawdbot/scripts/cca-study-reminder.sh
+Environment=HOME=/home/ubuntu

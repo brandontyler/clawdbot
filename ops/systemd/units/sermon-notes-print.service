@@ -1,0 +1,11 @@
+[Unit]
+Description=Sunday sermon notes auto-print
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/sermon-notes-print.sh
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.16.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal

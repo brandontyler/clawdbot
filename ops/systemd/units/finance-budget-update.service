@@ -1,0 +1,11 @@
+[Unit]
+Description=Finance Budget Auto-Update (Kiro CLI headless)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/code/personal/finances/finance-budget-update.sh
+WorkingDirectory=/home/ubuntu/code/personal/finances
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+MemoryMax=800M
+TimeoutStartSec=1800

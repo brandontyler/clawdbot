@@ -1,0 +1,11 @@
+[Unit]
+Description=Personal Memo CEO (daily Gmail/Calendar/Drive briefing via Kiro CLI)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/code/personal/memo/personal-memo-ceo.sh
+WorkingDirectory=/home/ubuntu/code/personal/memo
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+MemoryMax=800M
+TimeoutStartSec=900

@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenClaw Gateway (EC2)
+After=network-online.target kiro-proxy.service
+Wants=network-online.target
+Requires=kiro-proxy.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStartPre=/home/ubuntu/openclaw/scripts/verify-gateway-dist.sh
+ExecStartPre=/bin/sleep 5
+ExecStart=/home/ubuntu/openclaw/run-gateway.sh --verbose --force --port 18800 --bind loopback
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

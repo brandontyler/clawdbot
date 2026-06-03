@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily X Bookmark Review
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p /tmp/x-bookmark-review
+ExecStart=/home/ubuntu/openclaw/scripts/x-bookmark-review.sh
+StandardOutput=append:/home/ubuntu/logs/x-bookmark-review/cron.log
+StandardError=append:/home/ubuntu/logs/x-bookmark-review/cron.log
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin

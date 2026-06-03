@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily upstream sync check for clawdbot
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/upstream-sync-check.sh
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal

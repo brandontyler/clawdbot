@@ -1,0 +1,15 @@
+[Unit]
+Description=Kiro CLI Proxy for OpenClaw
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/home/ubuntu/openclaw/run-kiro-proxy.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

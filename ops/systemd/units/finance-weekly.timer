@@ -1,0 +1,9 @@
+[Unit]
+Description=Run weekly finance digest, Sundays at 6:00 PM Central
+
+[Timer]
+OnCalendar=Sun *-*-* 18:00:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

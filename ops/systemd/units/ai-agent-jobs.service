@@ -1,0 +1,7 @@
+[Unit]
+Description=Daily AI Agent Consultant Job Search
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/code/personal/clawdbot/scripts/ai-agent-jobs.sh
+Environment=HOME=/home/ubuntu

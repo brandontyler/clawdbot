@@ -1,0 +1,9 @@
+[Unit]
+Description=Run firefighter job search daily at 2:00 AM Central
+
+[Timer]
+OnCalendar=*-*-* 01:45:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

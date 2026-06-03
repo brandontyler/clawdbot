@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily North Texas Firefighter Job Search
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/fire-jobs.sh
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.16.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+MemoryMax=800M
+CPUQuota=100%

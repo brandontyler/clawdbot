@@ -1,0 +1,15 @@
+[Unit]
+Description=Dev Browser Daemon (headless Chromium)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ubuntu/.local/bin/dev-browser --headless status
+ExecStop=/home/ubuntu/.local/bin/dev-browser stop
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

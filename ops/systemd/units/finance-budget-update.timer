@@ -1,0 +1,9 @@
+[Unit]
+Description=Run finance budget update daily at 10:00 PM Central
+
+[Timer]
+OnCalendar=*-*-* 22:00:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

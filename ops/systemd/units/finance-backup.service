@@ -1,0 +1,15 @@
+[Unit]
+Description=Nightly backup of finances.db + secrets to S3
+Documentation=file:///home/ubuntu/code/personal/finances/backup-finances.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/code/personal/finances/backup-finances.sh
+WorkingDirectory=/home/ubuntu/code/personal/finances
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal

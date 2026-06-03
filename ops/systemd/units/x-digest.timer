@@ -1,0 +1,9 @@
+[Unit]
+Description=Run X (Twitter) daily digest at 6:00 AM Central
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

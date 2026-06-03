@@ -1,0 +1,12 @@
+[Unit]
+Description=Run finance backup nightly at 03:00 Central
+Documentation=file:///home/ubuntu/code/personal/finances/backup-finances.sh
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/Chicago
+RandomizedDelaySec=300
+Persistent=true
+Unit=finance-backup.service
+
+[Install]
+WantedBy=timers.target

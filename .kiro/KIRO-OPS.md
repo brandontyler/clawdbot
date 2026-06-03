@@ -133,3 +133,45 @@ comes back up (2-3 seconds). No manual intervention needed.
 
 **Never** run `systemctl --user restart kiro-proxy` synchronously from a Discord
 agent session — it will hang and the response will never deliver.
+
+## Systemd Units (managed via `ops/systemd/`)
+
+All `.service` and `.timer` files used on this EC2 box are committed to
+`ops/systemd/units/`. The installer keeps the live `~/.config/systemd/user/`
+directory in sync with the repo.
+
+### Common operations
+
+```bash
+# Show what would change vs the live state (dry-run)
+./ops/install-systemd-units.sh --dry-run
+
+# See unified diff for any changed units
+./ops/install-systemd-units.sh --diff
+
+# Apply changes (copies + daemon-reload)
+./ops/install-systemd-units.sh
+
+# First-time setup on a fresh box: install + enable all timers
+./ops/install-systemd-units.sh --enable
+```
+
+### Editing a unit
+
+Edit the file under `ops/systemd/units/`, then run the installer to push it
+live. Don't edit `~/.config/systemd/user/*` directly — they'll get overwritten
+on the next install run, and the change will never be in git.
+
+### gog.env (secrets — not in git)
+
+Several services (`fire-jobs`, `email-triage`, etc.) read `GOG_KEYRING_PASSWORD`
+via `EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env`.
+
+On a fresh box:
+```bash
+cp ops/systemd/gog.env.example ~/.config/systemd/user/gog.env
+chmod 600 ~/.config/systemd/user/gog.env
+# Edit and put the real keyring password
+```
+
+The real `gog.env` is gitignored. `gog.env.example` (committed) is a placeholder.

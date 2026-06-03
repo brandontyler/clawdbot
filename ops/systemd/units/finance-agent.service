@@ -1,0 +1,11 @@
+[Unit]
+Description=Autonomous Finance Agent
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/code/personal/finances/finance-agent.sh
+WorkingDirectory=/home/ubuntu/code/personal/finances
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+MemoryMax=500M
+TimeoutStartSec=300

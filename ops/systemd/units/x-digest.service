@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily X/Twitter Digest (For You + LLM filter)
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/mkdir -p /tmp/x-digest
+ExecStart=/home/ubuntu/openclaw/scripts/x-digest-foryou.sh
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
+StandardOutput=append:/home/ubuntu/logs/x-digest/cron.log
+StandardError=append:/home/ubuntu/logs/x-digest/cron.log
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.16.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
