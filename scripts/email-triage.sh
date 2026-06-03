@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# email-triage.sh — Surfaces important unread emails via Discord
+# email-triage.sh — Daily inbox status + importance triage
 #
-# Strategy:
-#   1. Pull unread emails from last 24h (Primary + Updates, skip Promotions/Social/Spam)
-#   2. kiro-cli scores each by sender + subject for importance
-#   3. Only high-scoring emails (≥8) get surfaced to Discord
+# Each morning posts a Discord report with:
+#   • Total unread count (Primary + Updates, no Promotions/Social/Spam)
+#   • Last 24h vs older breakdown
+#   • Oldest unread age
+#   • Items worth attention (LLM-scored ≥ THRESHOLD)
+#   • Cleanup/noise counts
 #
 # Dependencies: gog, kiro-cli, jq, curl
 # Auth: GOG_KEYRING_PASSWORD env var
@@ -14,126 +16,205 @@ source ~/.profile
 
 DISCORD_CHANNEL="${EMAIL_DISCORD_CHANNEL:-1503414103341797406}"
 DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
-THRESHOLD=8
+THRESHOLD=6        # surface emails scoring this or higher
+MAX_PULL=200       # how many unread to scan for stats
+MAX_SCORE=50       # how many newest unread to send through the LLM
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
-# --- Pull unread emails (last 24h, Primary + Updates) ---
-log "Pulling unread emails from last 24h..."
-EMAILS_JSON=$(gog gmail list -a brandon.tyler@gmail.com -j \
-  "is:unread newer_than:1d -category:promotions -category:social -in:spam" 2>/dev/null)
+# --- Pull all unread (Primary + Updates, no Promotions/Social/Spam) ---
+log "Pulling up to $MAX_PULL unread emails..."
+EMAILS_JSON=$(gog gmail list -a brandon.tyler@gmail.com -j --max "$MAX_PULL" \
+  "is:unread -category:promotions -category:social -in:spam" 2>/dev/null)
 
 if [ -z "$EMAILS_JSON" ]; then
-  log "No emails or gog failed"
+  log "No emails returned or gog failed"
   exit 0
 fi
 
-# Extract sender + subject for each thread
+# --- Inbox stats: total, last-24h, oldest-age ---
+STATS=$(python3 <(cat <<'PY'
+import sys, json, datetime
+d = json.load(sys.stdin)
+threads = d.get('threads', [])
+total = len(threads)
+now = datetime.datetime.now()
+last_24h = 0
+oldest = None
+for t in threads:
+    date = t.get('date', '')
+    try:
+        ts = datetime.datetime.strptime(date[:16], '%Y-%m-%d %H:%M')
+        if (now - ts).total_seconds() < 86400:
+            last_24h += 1
+        if oldest is None or ts < oldest:
+            oldest = ts
+    except Exception:
+        pass
+older = total - last_24h
+oldest_str = oldest.strftime('%Y-%m-%d') if oldest else '?'
+days_old = (now - oldest).days if oldest else 0
+print(f'{total}|{last_24h}|{older}|{oldest_str}|{days_old}')
+PY
+) <<< "$EMAILS_JSON")
+
+IFS='|' read -r TOTAL LAST24 OLDER OLDEST_DATE OLDEST_DAYS <<< "$STATS"
+log "Inbox: total=$TOTAL, 24h=$LAST24, older=$OLDER, oldest=$OLDEST_DATE (${OLDEST_DAYS}d)"
+
+if [ "$TOTAL" -eq 0 ]; then
+  log "Inbox zero — nothing to report"
+  # Still send a positive confirmation so Brandon knows the script ran
+  if [ -n "$DISCORD_TOKEN" ]; then
+    PAYLOAD=$(jq -n --arg c "📧 **Email Status**
+
+✅ Inbox zero — no unread emails." '{content: $c}')
+    curl -s -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
+      -H "Authorization: Bot $DISCORD_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "$PAYLOAD" > /dev/null
+  fi
+  exit 0
+fi
+
+# --- Build threads list for LLM (newest first, capped at MAX_SCORE) ---
 THREADS=$(echo "$EMAILS_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 threads = d.get('threads', [])
-for i, t in enumerate(threads):
+for i, t in enumerate(threads[:${MAX_SCORE}]):
     sender = t.get('from', '?')
     subject = t.get('subject', '?')
-    date = t.get('date', '?')
-    labels = t.get('labels', [])
-    is_primary = 'CATEGORY_PERSONAL' in labels or not any(l.startswith('CATEGORY_') for l in labels)
-    cat = 'PRIMARY' if is_primary else 'UPDATES'
-    print(f'{i+1}. [{cat}] From: {sender} | Subject: {subject} | Date: {date}')
+    date = t.get('date', '?')[:16]
+    print(f'{i+1}. From: {sender} | Subject: {subject} | Date: {date}')
 " 2>/dev/null)
 
-COUNT=$(echo "$THREADS" | grep -c '^[0-9]' || echo 0)
-log "Found $COUNT unread threads"
-
-if [ "$COUNT" -eq 0 ]; then
-  log "No unread emails — nothing to triage"
-  exit 0
-fi
-
-# --- LLM scoring ---
-log "Scoring $COUNT emails via kiro-cli..."
+SCORE_COUNT=$(echo "$THREADS" | grep -c '^[0-9]' || echo 0)
+log "Scoring $SCORE_COUNT emails via kiro-cli..."
 
 PROMPT="You are triaging Brandon's email inbox. Score each email 1-10 for importance/urgency.
 
-SCORE 8-10 (SURFACE — needs attention):
-- From a real person Brandon knows (family, church friends, colleagues)
-- Asks Brandon to DO something (reply, RSVP, sign, pay, decide)
-- Time-sensitive (appointment, deadline, expiring offer that matters)
-- Money that needs action (payment failed, bill due, refund issue)
+SCORE 8-10 (URGENT — needs prompt action):
+- Real human family/friend/colleague asking for response
+- Time-sensitive money issue (failed payment, urgent bill)
 - Kids' school requiring parent action
-- Amazon Subscribe & Save price changes (he reviews these)
+- Medical/insurance/legal requiring action
 
-SCORE 4-7 (SKIP — informational, can wait):
-- Automated notifications that don't need action
-- Job alerts (handled by separate system)
-- Shipping confirmations
-- App/service notifications
+SCORE 6-7 (WORTH ATTENTION — should look at):
+- Bills/statements he should review
+- Real human emails (even if not urgent)
+- Account changes requiring verification
+- Amazon Subscribe & Save price changes
+- Receipts for unfamiliar purchases
+
+SCORE 4-5 (CAN WAIT — informational):
+- Shipping confirmations, app notifications
+- Order receipts for known purchases
 - Newsletters he subscribed to
+- Automated reports
 
-SCORE 1-3 (IGNORE — noise):
-- Marketing/sales emails that slipped past Gmail filters
-- Duplicate alerts
-- Emails from Brandon to himself (automated sends)
-- Generic automated reports with no action needed
+SCORE 1-3 (NOISE — likely cleanup):
+- Marketing/sales that slipped past filters
+- Duplicate alerts, automated noise
+- Emails from Brandon to himself (automation)
 
 Emails:
 ${THREADS}
 
-Reply ONLY with a JSON array of integers. Example: [3,8,2,9,4]"
+Reply ONLY with a JSON array of integers, one per email, in order. Example: [3,8,2,9,4]"
 
-SCORES=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1 | \
-  sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1)
+SCORES_RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1 | \
+  sed 's/\x1b\[[0-9;]*m//g')
+SCORES=$(echo "$SCORES_RAW" | grep -oP '\[[\d,\s]+\]' | head -1)
 
 if [ -z "$SCORES" ]; then
-  log "WARN: LLM scoring failed — skipping triage"
-  exit 0
+  log "WARN: LLM scoring failed — reporting stats only"
+  SCORES="[]"
 fi
-
 log "Scores: $SCORES"
 
-# --- Build digest of important emails ---
-IMPORTANT=$(echo "$EMAILS_JSON" | python3 -c "
+# --- Build digest message ---
+DIGEST=$(python3 <(cat <<'PY'
 import sys, json
 
-scores_str = '''${SCORES}'''
-scores = json.loads(scores_str)
+total = int(sys.argv[1])
+last24 = int(sys.argv[2])
+older = int(sys.argv[3])
+oldest_date = sys.argv[4]
+oldest_days = int(sys.argv[5])
+scores_str = sys.argv[6]
+threshold = int(sys.argv[7])
+
+try:
+    scores = json.loads(scores_str) if scores_str and scores_str != '[]' else []
+except Exception:
+    scores = []
 
 d = json.load(sys.stdin)
 threads = d.get('threads', [])
 
-results = []
+out = []
+out.append("📧 **Email Status**")
+out.append("")
+out.append(f"📥 Unread: **{total}**" + (f" (capped, may be more)" if total >= 200 else ""))
+out.append(f"   Last 24h: {last24} | Older: {older}")
+if oldest_days >= 1:
+    out.append(f"   Oldest: {oldest_date} ({oldest_days}d ago)")
+out.append("")
+
+attention = []
+cleanup_count = 0
+noise_count = 0
+unscored_count = max(0, total - len(scores))
+
 for i, t in enumerate(threads):
     if i >= len(scores):
         break
-    if scores[i] >= ${THRESHOLD}:
-        sender = t.get('from', '?')
-        subject = t.get('subject', '?')
-        date = t.get('date', '?')
-        results.append(f'• **{sender}** — {subject} ({date})')
+    s = scores[i]
+    sender = t.get('from', '?')
+    subject = t.get('subject', '?')
+    date = t.get('date', '')[:10]
+    if len(subject) > 80:
+        subject = subject[:77] + '...'
+    if s >= 8:
+        attention.append(f"⭐ **{sender}** — {subject} ({date})")
+    elif s >= threshold:
+        attention.append(f"• {sender} — {subject} ({date})")
+    elif s <= 3:
+        noise_count += 1
+    else:
+        cleanup_count += 1
 
-if results:
-    print('📧 **Emails needing attention:**\n')
-    print('\n'.join(results))
+if attention:
+    out.append(f"⭐ **Worth attention ({len(attention)}):**")
+    out.extend(attention)
+    out.append("")
 else:
-    print('')
-" 2>/dev/null)
+    out.append("✅ Nothing scored as needing attention")
+    out.append("")
 
-if [ -z "$IMPORTANT" ]; then
-  log "No important emails found (all scored below $THRESHOLD)"
-  exit 0
-fi
+if cleanup_count > 0 or noise_count > 0 or unscored_count > 0:
+    parts = []
+    if cleanup_count: parts.append(f"{cleanup_count} can wait")
+    if noise_count: parts.append(f"{noise_count} noise")
+    if unscored_count: parts.append(f"{unscored_count} unscored")
+    out.append(f"🗑️  Rest: " + " | ".join(parts))
 
-IMPORTANT_COUNT=$(echo "$IMPORTANT" | grep -c "^•" || echo 0)
-log "Surfacing $IMPORTANT_COUNT important emails"
+print('\n'.join(out))
+PY
+) "$TOTAL" "$LAST24" "$OLDER" "$OLDEST_DATE" "$OLDEST_DAYS" "$SCORES" "$THRESHOLD" <<< "$EMAILS_JSON")
 
 # --- Send to Discord ---
-if [ -n "$DISCORD_TOKEN" ] && [ -n "$IMPORTANT" ]; then
+if [ -n "$DISCORD_TOKEN" ] && [ -n "$DIGEST" ]; then
+  # Discord message limit is 2000 chars — truncate if needed
+  if [ ${#DIGEST} -gt 1990 ]; then
+    DIGEST="${DIGEST:0:1987}..."
+  fi
+  PAYLOAD=$(echo "$DIGEST" | jq -Rs '{content: .}')
   curl -s -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
     -H "Authorization: Bot $DISCORD_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"content\":$(echo "$IMPORTANT" | jq -Rs .)}" > /dev/null
-  log "Discord: sent email triage"
+    -d "$PAYLOAD" > /dev/null
+  log "Discord: sent inbox status"
 fi
 
 log "Done"
