@@ -69,7 +69,7 @@ for url in "${SEARCHES[@]}"; do
   curl -sL "$url" \
     -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
     -H "Accept: text/html" 2>/dev/null | python3 -c "
-import sys, re
+import sys, re, hashlib
 html = sys.stdin.read()
 titles = re.findall(r'base-search-card__title[^>]*>\s*([^<]+)', html)
 companies = re.findall(r'base-search-card__subtitle[^>]*>\s*([^<]+)', html)
@@ -81,8 +81,14 @@ for i in range(min(len(titles), 15)):
     l = locations[i].strip() if i < len(locations) else ''
     link = links[i] if i < len(links) else ''
     if not c: c = '-'
-    if t:
-        print(f'li-{i}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
+    if not t: continue
+    # Stable id from LinkedIn job URL (last numeric segment), fallback to title+company hash
+    m = re.search(r'/jobs/view/(\d+)', link)
+    if m:
+        jid = 'li-' + m.group(1)
+    else:
+        jid = 'li-' + hashlib.md5((t + c).encode()).hexdigest()[:10]
+    print(f'{jid}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
 " >> "$JOBS_FILE" 2>/dev/null
 done
 
@@ -93,13 +99,17 @@ log "  LinkedIn: found $LI_COUNT results"
 log "Searching Upwork..."
 curl -sL "https://www.upwork.com/nx/search/jobs/?q=OpenClaw%20OR%20%22AI%20agent%22%20setup%20OR%20%22personal%20AI%20assistant%22&sort=recency" \
   -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" 2>/dev/null | python3 -c "
-import sys, re
+import sys, re, hashlib
 html = sys.stdin.read()
 titles = re.findall(r'class=\"job-tile-title\"[^>]*>.*?<a[^>]*>([^<]+)', html, re.S)
 if not titles:
     titles = re.findall(r'\"title\":\"([^\"]+)\"', html)
 for i, t in enumerate(titles[:10]):
-    print(f'uw-{i}\tupwork\t-\t{t.strip()}\thttps://www.upwork.com/nx/search/jobs/?q=OpenClaw+AI+agent')
+    title = t.strip()
+    if not title: continue
+    # Stable id from title hash so the same posting isn't re-shown across days
+    jid = 'uw-' + hashlib.md5(title.encode()).hexdigest()[:10]
+    print(f'{jid}\tupwork\t-\t{title}\thttps://www.upwork.com/nx/search/jobs/?q=OpenClaw+AI+agent')
 " >> "$JOBS_FILE" 2>/dev/null
 
 UW_COUNT=$(grep -c "upwork" "$JOBS_FILE" 2>/dev/null || echo 0)
