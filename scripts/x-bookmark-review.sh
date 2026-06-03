@@ -95,88 +95,97 @@ idx=1
 
 while IFS= read -r tweet; do
   user=$(echo "$tweet" | jq -r '.author.username')
-  text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | tr -d '"\\`$' | cut -c1-250)
-  likes=$(echo "$tweet" | jq -r '.likeCount')
-  rts=$(echo "$tweet" | jq -r '.retweetCount')
+  text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | tr -d '"\\`$' | cut -c1-300)
 
-  BOOKMARK_LIST="${BOOKMARK_LIST}[${idx}] @${user} (${likes} likes, ${rts} RTs): ${text}
+  BOOKMARK_LIST="${BOOKMARK_LIST}[${idx}] @${user}: ${text}
 "
   idx=$((idx + 1))
 done < "$new_bookmarks"
 
-# --- LLM categorization and scoring ---
-log "Analyzing bookmarks via kiro-cli..."
+# --- LLM summarization (one line per bookmark) ---
+log "Summarizing bookmarks via kiro-cli..."
 
-PROMPT="Categorize and score these X bookmarks for Brandon Tyler (AWS engineer, AI/agents enthusiast, builds with kiro-cli/Claude, interested in SpaceX, Tesla, firefighting, film production).
+PROMPT="For each X bookmark below, write one short factual line describing what the post is about — name tools, people, claims, or topics. Do not editorialize. Do not categorize. Do not recommend actions.
 
-For each bookmark output a JSON line:
-{\"idx\":<N>,\"category\":\"<AI Tools|AI News|Dev Workflow|SpaceX/Tesla|Career|Other>\",\"action\":\"<try|research|task|read|skip>\",\"summary\":\"<1-line what it is and why it matters>\"}
+Output exactly one JSON object per line, one per bookmark, in the form:
+{\"idx\": <N>, \"summary\": \"<one short factual line>\"}
 
-Actions:
-- try = install/use this tool or technique
-- research = dig deeper, could be valuable
-- task = create a bead/task for this
-- read = interesting but just read it
-- skip = low value, noise
-
-Be selective. Only 'try' or 'task' for genuinely useful things. Most should be 'read' or 'skip'.
-
+Bookmarks:
 ${BOOKMARK_LIST}"
 
 RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
-SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
+SUMMARIES_JSON=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]*"idx"[^}]*\}')
 
-log "LLM returned $(echo "$SCORES" | grep -c '{' || echo 0) scores"
+llm_count=$(echo "$SUMMARIES_JSON" | grep -c '{' || echo 0)
+log "LLM returned ${llm_count} summaries (expected ${new_count})"
 
-# --- Build categorized Discord message ---
-msg=""
-# Process scores into categorized output
-msg=$(echo "$SCORES" | python3 -c "
-import sys, json
+# --- Build numbered Discord message ---
+# Pass tweet data + LLM summaries into python; emit a clean numbered list.
+# Fallback to raw tweet text for any bookmark the LLM missed — never drop one.
+TWEET_INPUT=$(mktmp)
+cat "$new_bookmarks" > "$TWEET_INPUT"
 
-categories = {}
-lines = sys.stdin.read().strip().split('\n')
-for line in lines:
-    if not line.strip():
+msg=$(python3 - "$TWEET_INPUT" <<EOF
+import json, sys
+
+tweet_path = sys.argv[1]
+summaries_raw = """${SUMMARIES_JSON}"""
+
+# Parse LLM summaries into a {idx: summary} dict
+summaries = {}
+for line in summaries_raw.strip().split("\n"):
+    line = line.strip()
+    if not line:
         continue
     try:
         d = json.loads(line)
-        idx = d.get('idx', 0)
-        cat = d.get('category', 'Other')
-        action = d.get('action', 'read')
-        summary = d.get('summary', '')
-        if action == 'skip':
-            continue
-        emoji = {'try': '🔧', 'task': '📋', 'research': '🔍', 'read': '📖'}.get(action, '•')
-        if cat not in categories:
-            categories[cat] = []
-        categories[cat].append(f'{emoji} {summary}')
-    except:
+        idx = int(d.get("idx", 0))
+        summary = d.get("summary", "").strip()
+        if idx and summary:
+            summaries[idx] = summary
+    except Exception:
         continue
 
-output = ''
-for cat in ['AI Tools', 'AI News', 'Dev Workflow', 'SpaceX/Tesla', 'Career', 'Other']:
-    if cat in categories and categories[cat]:
-        output += f'**{cat}**\n'
-        for item in categories[cat]:
-            output += f'{item}\n'
-        output += '\n'
+# Build the numbered list. If LLM missed an item, fall back to truncated tweet text.
+output_lines = []
+with open(tweet_path) as f:
+    for i, raw in enumerate(f, start=1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            t = json.loads(raw)
+        except Exception:
+            continue
+        user = t.get("author", {}).get("username", "unknown")
+        tid = t.get("id", "")
+        url = f"https://x.com/{user}/status/{tid}"
+        summary = summaries.get(i)
+        if not summary:
+            # Fallback: first 200 chars of the tweet itself
+            text = (t.get("text") or "").replace("\n", " ").strip()
+            summary = (text[:200] + "...") if len(text) > 200 else text
+            if not summary:
+                summary = "(no text)"
+        output_lines.append(f"[{i}] @{user} — {summary}")
+        output_lines.append(f"    {url}")
+        output_lines.append("")
 
-output += '_Legend: 🔧=try it 📋=create task 🔍=research 📖=read_'
-print(output)
-" 2>/dev/null)
+print("\n".join(output_lines).rstrip())
+EOF
+)
 
 if [ -z "$msg" ]; then
-  # Fallback: raw list if LLM failed
-  log "WARN: LLM categorization failed, using raw format"
+  # Last-resort fallback: pure raw list with no LLM at all
+  log "WARN: python builder produced no output, using raw fallback"
   msg=""
   idx=1
   while IFS= read -r tweet; do
     user=$(echo "$tweet" | jq -r '.author.username')
-    text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | cut -c1-150)
+    text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | cut -c1-200)
     tid=$(echo "$tweet" | jq -r '.id')
-    msg+="${idx}. @${user}: ${text}
-   https://x.com/${user}/status/${tid}
+    msg+="[${idx}] @${user} — ${text}
+    https://x.com/${user}/status/${tid}
 
 "
     idx=$((idx + 1))
