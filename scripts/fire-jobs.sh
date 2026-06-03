@@ -5,6 +5,7 @@
 #   2. firejobs.com — dedicated firefighter job board
 #   3. TCFP (Texas Commission on Fire Protection) — official state fire careers
 #   4. Craigslist DFW — bridge/holdover jobs (ER tech, fire watch, private EMS)
+#   5. publicsafetyanswers.com — fire/police hiring platform (catches Haltom City, etc)
 # Dedupes via DynamoDB. Emails + SMS on new finds.
 set -uo pipefail
 
@@ -82,7 +83,7 @@ mark_seen() {
 log "=== Fire Jobs Search: $DATE_LABEL ==="
 
 # --- Source 1: GovernmentJobs.com via dev-browser (primary) ---
-log "[1/4] GovernmentJobs.com (NEOGOV) via dev-browser..."
+log "[1/5] GovernmentJobs.com (NEOGOV) via dev-browser..."
 if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
   log "  dev-browser daemon — connected"
   neogov_tmp=$(mktemp)
@@ -124,7 +125,7 @@ fi
 # --- Source 2: firejobs.com (secondary) ---
 # Site uses <a class="block ..."> cards. We extract fields via python regex
 # since the HTML has no semantic tags (no <li>, <h3>, <p> wrappers for fields).
-log "[2/4] firejobs.com..."
+log "[2/5] firejobs.com..."
 fj_total_scraped=0
 fj_tx_found=0
 fj_north_tx=0
@@ -194,7 +195,7 @@ fj_count=$(grep -c 'firejobs' "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  firejobs done: scraped $fj_total_scraped total listings, $fj_count North TX jobs"
 
 # --- Source 3: TCFP (Texas Commission on Fire Protection) ---
-log "[3/4] TCFP fire service careers..."
+log "[3/5] TCFP fire service careers..."
 if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
   tcfp_tmp=$(mktemp)
   timeout 60 bash "$SCRIPT_DIR/scrape-tcfp.sh" > "$tcfp_tmp" 2>> "$LOGFILE"
@@ -228,7 +229,7 @@ else
 fi
 
 # --- Source 4: Craigslist DFW (bridge/holdover jobs) ---
-log "[4/4] Craigslist DFW (bridge jobs)..."
+log "[4/5] Craigslist DFW (bridge jobs)..."
 if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
   cl_tmp=$(mktemp)
   timeout 300 bash "$SCRIPT_DIR/scrape-craigslist.sh" > "$cl_tmp" 2>> "$LOGFILE"
@@ -254,6 +255,36 @@ if /home/ubuntu/.local/bin/dev-browser status > /dev/null 2>&1; then
 else
   log_err "  dev-browser daemon not running — skipping Craigslist"
 fi
+
+# --- Source 5: publicsafetyanswers.com (fire/police hiring platform) ---
+log "[5/5] publicsafetyanswers.com..."
+psa_tmp=$(mktemp)
+timeout 180 bash "$SCRIPT_DIR/scrape-publicsafety.sh" > "$psa_tmp" 2>> "$LOGFILE"
+psa_exit=$?
+if [ "$psa_exit" -eq 124 ]; then
+  log "  publicsafetyanswers.com timed out at 180s — using partial results"
+elif [ "$psa_exit" -ne 0 ]; then
+  log_err "  publicsafetyanswers.com scraper exited $psa_exit"
+fi
+psa_count=0
+while IFS= read -r line; do
+  title=$(echo "$line" | jq -r '.title // empty' 2>/dev/null)
+  url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
+  city=$(echo "$line" | jq -r '.city // empty' 2>/dev/null)
+  closes=$(echo "$line" | jq -r '.closes // empty' 2>/dev/null)
+  desc=$(echo "$line" | jq -r '.description // empty' 2>/dev/null | tr '\t\n' '  ' | cut -c1-300)
+  [ -z "$title" ] && continue
+  [ -z "$url" ] && continue
+  # Stable job id from city slug + closes date (so a re-opened cycle gets a fresh id)
+  jid="psa-${city}-${closes}"
+  line_fmt="${title}"
+  [ -n "$closes" ] && line_fmt="${line_fmt} (closes ${closes})"
+  [ -n "$desc" ] && line_fmt="${line_fmt} | ${desc}"
+  printf '%s\t%s\t%s\tpublicsafetyanswers\t%s\n' "$jid" "$line_fmt" "$url" "$city" >> "$JOBS_FILE"
+  psa_count=$((psa_count + 1))
+done < "$psa_tmp"
+rm -f "$psa_tmp"
+log "  publicsafetyanswers.com done: $psa_count jobs"
 
 # --- Intelligent Filter via kiro-cli ---
 pre_filter_count=$(grep -c . "$JOBS_FILE" 2>/dev/null || echo 0)
