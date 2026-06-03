@@ -737,27 +737,38 @@ async function handleCompletions(
         session.consecutiveEmptyResponses = 0;
       }
 
+      // Slash commands like `/clear` reset context server-side.  The
+      // `_kiro.dev/metadata` notification carrying the post-reset value can
+      // arrive a microtask AFTER `prompt()` resolves, so `lastContextPct`
+      // here may still hold the pre-reset number.  Suppress the warning and
+      // footer for these commands — showing a stale "38% context used"
+      // after a successful `/clear` makes the bot look like it's lying.
+      const isContextResetCommand = /^\/clear(\s|$)/i.test(promptText.trim());
+
       // Surface context usage warning so the user sees it in Discord.
-      if (session.lastContextPct >= 90) {
-        sseChunk(
-          res,
-          buildChunk(
-            completionId,
-            `\n\n🚨 Context window at ${Math.round(session.lastContextPct)}% — approaching auto-reset threshold (95%). Send \`/new\` now to avoid losing your session mid-task.`,
-          ),
-        );
-      } else if (session.lastContextPct >= 80) {
-        sseChunk(
-          res,
-          buildChunk(
-            completionId,
-            `\n\n⚠️ Context window at ${Math.round(session.lastContextPct)}%. Send \`/new\` soon to reset before it fills up.`,
-          ),
-        );
+      if (!isContextResetCommand) {
+        if (session.lastContextPct >= 90) {
+          sseChunk(
+            res,
+            buildChunk(
+              completionId,
+              `\n\n🚨 Context window at ${Math.round(session.lastContextPct)}% — approaching auto-reset threshold (95%). Send \`/new\` now to avoid losing your session mid-task.`,
+            ),
+          );
+        } else if (session.lastContextPct >= 80) {
+          sseChunk(
+            res,
+            buildChunk(
+              completionId,
+              `\n\n⚠️ Context window at ${Math.round(session.lastContextPct)}%. Send \`/new\` soon to reset before it fills up.`,
+            ),
+          );
+        }
       }
 
-      // Append context usage footer to every response.
-      if (session.lastContextPct > 0 && fullResponse.trim()) {
+      // Append context usage footer to every response (skip for context-reset
+      // commands — see comment above).
+      if (!isContextResetCommand && session.lastContextPct > 0 && fullResponse.trim()) {
         const pct = Math.round(session.lastContextPct);
         sseChunk(res, buildChunk(completionId, `\n\n-# 📊 ${pct}% context used`));
       }
