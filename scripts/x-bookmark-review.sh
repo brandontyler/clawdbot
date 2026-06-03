@@ -90,17 +90,57 @@ new_count=$(wc -l < "$new_bookmarks" | xargs)
 log "$new_count new bookmarks to review"
 
 # --- Format bookmark data for LLM analysis ---
+# Tweets whose visible text is just a t.co link (or near-empty) get enriched
+# via `bird read`, which follows the t.co and renders the destination as
+# plain text. This turns "@trq212 — only a t.co link" into "@trq212 —
+# Anthropic blog post: dynamic workflows in Claude Code...".
+is_thin_text() {
+  # Returns 0 (true) when the text is too thin to summarize:
+  # strip URLs + whitespace, check remaining char count.
+  local stripped
+  stripped=$(echo "$1" | sed -E 's#https?://[^ ]+##g' | tr -d '[:space:]')
+  [ "${#stripped}" -lt 30 ]
+}
+
+enrich_tweet() {
+  # Fetch expanded content via `bird read` (15s timeout, capped at 800 chars).
+  # Returns enriched text on stdout, or empty string on failure.
+  local user="$1" tid="$2"
+  local url="https://x.com/${user}/status/${tid}"
+  local enriched
+  enriched=$(timeout 15 "$BIRD" read "$url" --plain 2>/dev/null \
+    | tr '\n' ' ' | tr -s ' ' | tr -d '"\\`$' | cut -c1-800)
+  # Only return if we got something more substantive than the bare URL
+  if [ -n "$enriched" ] && [ "${#enriched}" -gt 50 ]; then
+    echo "$enriched"
+  fi
+}
+
 BOOKMARK_LIST=""
 idx=1
+enriched_count=0
 
 while IFS= read -r tweet; do
   user=$(echo "$tweet" | jq -r '.author.username')
+  tid=$(echo "$tweet" | jq -r '.id')
   text=$(echo "$tweet" | jq -r '.text' | tr '\n' ' ' | tr -d '"\\`$' | cut -c1-300)
+
+  # Enrich tweets whose visible text is too thin to summarize
+  if is_thin_text "$text"; then
+    log "  Bookmark [$idx] @$user is thin (${#text} chars) — fetching via bird read"
+    enriched=$(enrich_tweet "$user" "$tid")
+    if [ -n "$enriched" ]; then
+      text="$enriched"
+      enriched_count=$((enriched_count + 1))
+    fi
+  fi
 
   BOOKMARK_LIST="${BOOKMARK_LIST}[${idx}] @${user}: ${text}
 "
   idx=$((idx + 1))
 done < "$new_bookmarks"
+
+[ "$enriched_count" -gt 0 ] && log "Enriched ${enriched_count}/${new_count} thin bookmarks via bird read"
 
 # --- LLM summarization (one line per bookmark) ---
 log "Summarizing bookmarks via kiro-cli..."
