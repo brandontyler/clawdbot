@@ -95,6 +95,7 @@ def is_dfw(city, desc):
     return False
 
 try:
+    import re, hashlib
     d = json.loads(sys.stdin.read())
     schemas = d['props']['pageProps']['jobSchemas']
     for i, j in enumerate(schemas):
@@ -109,7 +110,17 @@ try:
             continue
         if not is_dfw(city, desc):
             continue
-        print(f'smu-{i}\tstaffmeup\t{company}\t{title} [{city}, {state}] — {desc}\thttps://app.staffmeup.com/jobs')
+        # Stable id: prefer schema url/identifier, fallback to title+company hash
+        url_field = j.get('url') or j.get('@id') or ''
+        id_field = j.get('identifier')
+        if isinstance(id_field, dict):
+            id_field = id_field.get('value', '')
+        m = re.search(r'(\d{6,})', str(url_field) + str(id_field or ''))
+        if m:
+            jid = 'smu-' + m.group(1)
+        else:
+            jid = 'smu-' + hashlib.md5((title + company + city).encode()).hexdigest()[:10]
+        print(f'{jid}\tstaffmeup\t{company}\t{title} [{city}, {state}] — {desc}\thttps://app.staffmeup.com/jobs')
 except Exception as e:
     pass
 " >> "$JOBS_FILE" 2>/dev/null
@@ -132,8 +143,8 @@ LINKEDIN_HTML2=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%221st+
   -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
   -H "Accept: text/html" 2>/dev/null)
 
-# Search 3: Broader Texas for 1st AD (rare role, cast wider net)
-LINKEDIN_HTML3=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%221st+AD%22+OR+%22first+assistant+director%22+OR+%22assistant+director%22+%28film+OR+tv+OR+set+OR+production+OR+studio%29&location=Texas%2C+United+States&f_TPR=r2592000&position=1&pageNum=0" \
+# Search 3: DFW-scoped, focused on 2nd AD / DGA / freelance / contract crew
+LINKEDIN_HTML3=$(curl -sL "https://www.linkedin.com/jobs/search?keywords=%222nd+AD%22+OR+%22second+assistant+director%22+OR+%22DGA%22+OR+%22freelance+production%22+OR+%22production+manager%22+OR+%22UPM%22+OR+%22line+producer%22+%28film+OR+tv+OR+commercial+OR+streaming+OR+broadcast%29&location=Dallas-Fort+Worth+Metroplex&f_TPR=r2592000&position=1&pageNum=0" \
   -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
   -H "Accept: text/html" 2>/dev/null)
 
@@ -162,7 +173,14 @@ for i in range(min(len(titles), 20)):
     loc_lower = l.lower()
     if any(x in loc_lower for x in NON_DFW_TX) and not any(x in loc_lower for x in DFW_HINTS):
         continue
-    print(f'li-{i}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
+    # Stable id from LinkedIn job URL (last numeric segment), fallback to title+company hash
+    import hashlib
+    m = re.search(r'/jobs/view/[^/?]*-(\d{8,})', link) or re.search(r'/jobs/view/(\d{8,})', link) or re.search(r'(\d{10,})', link)
+    if m:
+        jid = 'li-' + m.group(1)
+    else:
+        jid = 'li-' + hashlib.md5((t + c).encode()).hexdigest()[:10]
+    print(f'{jid}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
 " >> "$JOBS_FILE" 2>/dev/null
 done
 
@@ -276,6 +294,36 @@ log "  Dallas Producers Association: found $DPA_COUNT results"
 TOTAL=$(wc -l < "$JOBS_FILE" 2>/dev/null || echo 0)
 log "Total raw results: $TOTAL"
 
+# --- Reorder by source quality so the LLM sees the best-targeted DFW jobs first ---
+# Priority (lower = sent to LLM first):
+#   1=DPA (DFW-only)  2=SMU (already DFW-filtered)  3=TFC (TX film hotline)
+#   4=Craigslist DFW  5=NeoGov DFW cities  6=LinkedIn (noisy)  7=X (noisiest)
+if [ "$TOTAL" -gt 0 ]; then
+  SORTED=$(mktemp)
+  awk -F'\t' '{
+    src=$2
+    p=8
+    if (src=="dpa")        p=1
+    else if (src=="staffmeup") p=2
+    else if (src=="tfc")   p=3
+    else if (src=="craigslist") p=4
+    else if (src=="neogov") p=5
+    else if (src=="linkedin") p=6
+    else if (src=="twitter") p=7
+    print p"\t"$0
+  }' "$JOBS_FILE" | sort -k1,1n -s | cut -f2- > "$SORTED"
+  mv "$SORTED" "$JOBS_FILE"
+fi
+
+# Trusted DFW-only sources: bypass LLM, always include
+# Noisy sources (linkedin, twitter, tfc): require LLM filter
+is_trusted_source() {
+  case "$1" in
+    dpa|staffmeup|craigslist|neogov) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if [ "$TOTAL" -eq 0 ]; then
   log "No production jobs found today"
   {
@@ -285,14 +333,30 @@ if [ "$TOTAL" -eq 0 ]; then
     echo "Sources checked: X/Twitter, Craigslist DFW, GovernmentJobs"
   } > "$DIGEST_FILE"
 else
-  # --- LLM Filter ---
-  log "Filtering $TOTAL results via kiro-cli..."
+  # Split jobs into trusted (auto-include) and untrusted (LLM-filtered)
+  TRUSTED_FILE=$(mktemp)
+  UNTRUSTED_FILE=$(mktemp)
+  while IFS=$'\t' read -r jid source poster title url; do
+    [ -z "$jid" ] && continue
+    if is_trusted_source "$source"; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$jid" "$source" "$poster" "$title" "$url" >> "$TRUSTED_FILE"
+    else
+      printf '%s\t%s\t%s\t%s\t%s\n' "$jid" "$source" "$poster" "$title" "$url" >> "$UNTRUSTED_FILE"
+    fi
+  done < "$JOBS_FILE"
+
+  TRUSTED_COUNT=$(wc -l < "$TRUSTED_FILE")
+  UNTRUSTED_COUNT=$(wc -l < "$UNTRUSTED_FILE")
+  log "Trusted (DFW-curated): $TRUSTED_COUNT auto-included | Untrusted (broad sources): $UNTRUSTED_COUNT need LLM"
+
+  # --- LLM Filter (only on untrusted/broad sources) ---
+  log "Filtering $UNTRUSTED_COUNT broad-source results via kiro-cli..."
 
   JOB_LIST=""
   i=1
   while IFS=$'\t' read -r jid source poster title url; do
     [ -z "$jid" ] && continue
-    [ "$i" -gt 25 ] && break
+    [ "$i" -gt 100 ] && break
     clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-100)
     company=""
     [ "$poster" != "-" ] && [ -n "$poster" ] && company=" @ ${poster}"
@@ -321,7 +385,7 @@ if m:
 "
     fi
     i=$((i + 1))
-  done < "$JOBS_FILE"
+  done < "$UNTRUSTED_FILE"
 
   PROMPT="Filter jobs for Nathan Tyler. ONLY DFW film/TV/video production jobs. Dream role: 1st AD (First Assistant Director) on set.
 
@@ -346,7 +410,7 @@ Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
 ${JOB_LIST}"
 
-  RAW=$(cd "$HOME" && timeout 60 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
+  RAW=$(cd "$HOME" && timeout 240 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
 
   SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
 
@@ -360,6 +424,26 @@ ${JOB_LIST}"
 
   KEPT=0
   SEEN_SKIPPED=0
+
+  # First: auto-include trusted DFW-only sources (DPA, Craigslist DFW, Staff Me Up DFW, NeoGov DFW cities)
+  while IFS=$'\t' read -r jid source poster title url; do
+    [ -z "$jid" ] && continue
+    if is_seen "$jid"; then
+      SEEN_SKIPPED=$((SEEN_SKIPPED + 1))
+      continue
+    fi
+    {
+      echo "${title}"
+      echo "Source: ${source} (DFW-curated, auto-included)"
+      echo "${url}"
+      echo ""
+    } >> "$DIGEST_FILE"
+    mark_seen "$jid" "$title" "$source"
+    KEPT=$((KEPT + 1))
+  done < "$TRUSTED_FILE"
+  log "  Trusted auto-included: $KEPT (after dedup)"
+
+  # Then: LLM-filtered untrusted/broad sources
   while IFS= read -r score_line; do
     [ -z "$score_line" ] && continue
     idx=$(echo "$score_line" | jq -r '.idx // 0' 2>/dev/null)
@@ -367,8 +451,8 @@ ${JOB_LIST}"
     reason=$(echo "$score_line" | jq -r '.reason // ""' 2>/dev/null)
     [ "$score" -lt 3 ] 2>/dev/null && continue
 
-    # Get the original job data
-    JOB_LINE=$(sed -n "${idx}p" "$JOBS_FILE")
+    # Get the original job data from UNTRUSTED_FILE (LLM only saw untrusted jobs)
+    JOB_LINE=$(sed -n "${idx}p" "$UNTRUSTED_FILE")
     [ -z "$JOB_LINE" ] && continue
     IFS=$'\t' read -r jid source poster title url <<< "$JOB_LINE"
 
@@ -416,10 +500,11 @@ print(desc)
 
   {
     echo "---"
-    echo "_${TOTAL} postings scanned, ${KEPT} relevant (score ≥ 3/5)_"
+    echo "_${TOTAL} postings scanned, ${KEPT} relevant (${TRUSTED_COUNT} trusted-DFW + LLM-filtered)_"
   } >> "$DIGEST_FILE"
 
   log "Filter result: $TOTAL → $KEPT jobs kept"
+  rm -f "$TRUSTED_FILE" "$UNTRUSTED_FILE"
 fi
 
 # --- Deliver ---
