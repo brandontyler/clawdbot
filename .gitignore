@@ -242,3 +242,7 @@ logs/
 kiro-proxy-routes.json
 client_secret*.json
 excalidraw.log
+
+# Local-only systemd env files (contain secrets — see ops/systemd/gog.env.example)
+ops/systemd/*.env
+ops/systemd/units/gog.env
