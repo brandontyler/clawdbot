@@ -4,26 +4,41 @@
 set -euo pipefail
 
 QUEUE_URL="https://sqs.us-east-1.amazonaws.com/035405309532/sms-inbound-queue"
-PROFILE="tylerbtt"
+# EC2 uses 'isengard' (instance role with cross-account access to the work account
+# SQS queue). Laptop uses 'tylerbtt' (mwinit-backed credential_process).
+PROFILE="${SMS_POLLER_AWS_PROFILE:-isengard}"
 REGION="us-east-1"
 ORIGIN="+18778495397"
 ALLOWED="+19405363405"
-PROJECT_DIR="$HOME/code/personal/clawdbot"
+PROJECT_DIR="${SMS_POLLER_PROJECT_DIR:-$HOME/openclaw}"
 BATCH_WINDOW=30
-DISCORD_CHANNEL="1457570910474211587"
+DISCORD_CHANNEL="${SMS_POLLER_DISCORD_CHANNEL:-1503414103341797406}"
+# Bot token is read from openclaw.json (single source of truth, no duplication)
+DISCORD_TOKEN="$(python3 -c "import json; print(json.load(open('$HOME/.openclaw/openclaw.json'))['channels']['discord']['token'])" 2>/dev/null || true)"
 
 aws_() { aws --profile "$PROFILE" --region "$REGION" "$@"; }
 
 post_discord() {
-  cd "$PROJECT_DIR"
-  node dist/index.js message send --channel discord --target "$DISCORD_CHANNEL" --message "$1" --silent 2>/dev/null || true
+  if [[ -z "$DISCORD_TOKEN" ]]; then
+    echo "[$(date '+%H:%M:%S')] WARN: no Discord token, skipping post" >&2
+    return 0
+  fi
+  # Direct Discord API call — bypasses the gateway's session lock.
+  curl -s -X POST "https://discord.com/api/v10/channels/${DISCORD_CHANNEL}/messages" \
+    -H "Authorization: Bot ${DISCORD_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(python3 -c 'import sys, json; print(json.dumps({"content": sys.argv[1]}))' "$1")" \
+    -o /dev/null -w "  discord http=%{http_code}\n" 2>&1 || true
 }
 
 today_bead() {
   local tag="notes-$(date +%Y-%m-%d)"
   local id
   cd "$PROJECT_DIR"
-  id=$(br list --json --no-auto-flush 2>/dev/null | jq -r ".[] | select(.title | contains(\"$tag\")) | .id" | head -1)
+  # br list --json returns {issues: [...], total, ...} — index into .issues
+  id=$(br list --json --no-auto-flush 2>/dev/null \
+       | jq -r ".issues[]? | select(.title | contains(\"$tag\")) | .id" \
+       | head -1)
   if [[ -z "$id" ]]; then
     id=$(br create "Commute $tag" -t task -p 3 -l notes --no-auto-flush --silent 2>/dev/null)
     echo "[$(date '+%H:%M:%S')] Created bead $id" >&2
