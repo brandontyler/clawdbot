@@ -799,6 +799,7 @@ async function handleCompletions(
       if (!isInvalidHistoryError(err)) {
         const hadPartial = responseChunks.length > 0;
         const detail = extractStreamErrorSummary(err);
+        const isFirstTokenTimeout = err instanceof Error && err.message === "first-token-timeout";
         if (hadPartial) {
           // Partial content already streamed — append error notice.
           sseChunk(
@@ -808,13 +809,32 @@ async function handleCompletions(
               `\n\n⚠️ Response interrupted — the model hit an internal error mid-stream.${detail} Please try again.`,
             ),
           );
-        } else {
-          // No content streamed yet — signal error via SSE error event so the
-          // gateway treats this as a model failure (not a valid empty response
-          // that triggers continuation/retry logic).
-          res.write(
-            `data: ${JSON.stringify({ error: { message: `Model error${detail}`, type: "server_error", code: "internal_error" } })}\n\n`,
+        } else if (isFirstTokenTimeout) {
+          // No first token in 60s. The proxy already killed the wedged ACP
+          // process; force a clean reset so the next request spawns fresh
+          // (don't leave a poisoned hibernated entry behind).
+          manager.resetSession(sessionKey, "first-token-timeout-visible");
+          // Emit a VISIBLE text chunk so the gateway treats this as a normal
+          // assistant turn and the user actually sees what happened in
+          // Discord. An SSE `error` event would be silently swallowed by the
+          // agent loop and surface as "✅ Done (1m, 0 tools)".
+          sseChunk(
+            res,
+            buildChunk(
+              completionId,
+              "⚠️ Upstream model provider stalled (60s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
+            ),
           );
+          sseChunk(res, buildFinalChunk(completionId));
+          sseDone(res);
+          resolvePromptLock();
+          return;
+        } else {
+          // Other model errors (no partial content) — emit a visible text
+          // chunk so the user sees the failure reason in Discord. Still call
+          // sseDone so the gateway closes the turn cleanly.
+          sseChunk(res, buildChunk(completionId, `⚠️ Model error${detail}. Please try again.`));
+          sseChunk(res, buildFinalChunk(completionId));
           sseDone(res);
           resolvePromptLock();
           return;
@@ -1075,6 +1095,34 @@ async function handleCompletions(
           res.end(JSON.stringify(completion));
           return;
         }
+      }
+
+      // First-token timeout in blocking mode: provider stalled. Reset and
+      // return a visible 200 so the user sees a friendly message in Discord
+      // instead of a generic 500. Symmetric with the streaming-path fix.
+      if (err instanceof Error && err.message === "first-token-timeout") {
+        manager.resetSession(sessionKey, "first-token-timeout-visible-blocking");
+        const completion: OpenAICompletion = {
+          id: completionId,
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: KIRO_MODEL_ID,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content:
+                  "⚠️ Upstream model provider stalled (60s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: estimateUsage(promptText, ""),
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(completion));
+        return;
       }
 
       res.writeHead(500, { "Content-Type": "application/json" });
