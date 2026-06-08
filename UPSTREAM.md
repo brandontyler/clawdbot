@@ -54,7 +54,6 @@ These don't exist upstream. If git tries to delete them during rebase, keep ours
 | `scripts/setup.sh`                                      | One-time machine bootstrap                                                                                                                             |
 | `scripts/sms-poller.sh`                                 | Poll SQS inbound SMS → Discord                                                                                                                         |
 | `scripts/sermon-notes-print.sh`                         | Sunday auto-print: scrape Denton Bible sermon notes PDF → HP ePrint via SES                                                                            |
-| `scripts/upstream-sync-check.sh`                        | Daily cron: sync reminder with feature/conflict analysis                                                                                               |
 | `scripts/verify-runtime-artifacts.mjs`                  | Post-build: verify extension dist-runtime output                                                                                                       |
 | `scripts/extract-x-cookies.ps1`                         | PowerShell DPAPI decryption of X/Twitter cookies                                                                                                       |
 | `scripts/refresh-x-cookies`                             | Bash wrapper for above                                                                                                                                 |
@@ -135,7 +134,6 @@ If the running gateway keeps restoring it, stop the gateway first, edit
 - [ ] `spinup oc --defer` restarts gateway/proxy
 - [ ] Test Discord message delivered
 - [ ] "Last synced" updated at top of this file
-- [ ] `scripts/upstream-sync-check.sh` patched files array matches this doc
 
 ## Why the Discord Hardening?
 

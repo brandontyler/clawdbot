@@ -51,7 +51,6 @@ systemctl --user start fire-jobs.service
 | `fire-jobs.timer` | 11:30 | 6:30am | North TX firefighter job search |
 | `x-digest.timer` | 11:00 | 6:00am | X/Twitter digest |
 | `x-bookmark-review.timer` | 11:15 | 6:15am | X bookmark review |
-| `upstream-sync.timer` | 13:00 | 8:00am | OpenClaw upstream sync |
 
 ## Dev-Browser
 

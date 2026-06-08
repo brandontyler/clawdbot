@@ -1,9 +1,0 @@
-[Unit]
-Description=Run upstream sync check daily at 8:00 AM Central
-
-[Timer]
-OnCalendar=*-*-* 08:00:00 America/Chicago
-Persistent=true
-
-[Install]
-WantedBy=timers.target

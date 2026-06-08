@@ -116,7 +116,6 @@ journalctl --user -u openclaw-gateway -f
 | `fire-jobs.timer` | 6:30am | North TX firefighter job search |
 | `x-digest.timer` | 6:00am | X/Twitter digest |
 | `x-bookmark-review.timer` | 6:15am | X bookmark review |
-| `upstream-sync.timer` | 8:00am | OpenClaw upstream sync |
 
 ### Key Differences from Laptop
 
