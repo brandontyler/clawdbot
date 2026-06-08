@@ -593,7 +593,7 @@ async function handleCompletions(
       // caller handle the error (which triggers a retry or fresh session).
       // Scale timeout with context size: high-context sessions need more time
       // for the model to process input before generating the first token.
-      const baseTimeoutMs = 60_000;
+      const baseTimeoutMs = 120_000;
       const ctxPct = session.lastContextPct || 0;
       const FIRST_TOKEN_TIMEOUT_MS =
         ctxPct > 40 ? baseTimeoutMs + Math.round(ctxPct * 1500) : baseTimeoutMs;
@@ -822,7 +822,7 @@ async function handleCompletions(
             res,
             buildChunk(
               completionId,
-              "⚠️ Upstream model provider stalled (60s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
+              "⚠️ Upstream model provider stalled (120s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
             ),
           );
           sseChunk(res, buildFinalChunk(completionId));
@@ -1113,7 +1113,7 @@ async function handleCompletions(
               message: {
                 role: "assistant",
                 content:
-                  "⚠️ Upstream model provider stalled (60s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
+                  "⚠️ Upstream model provider stalled (120s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
               },
               finish_reason: "stop",
             },
