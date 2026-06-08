@@ -1,9 +1,0 @@
-[Unit]
-Description=Daily Production Jobs Timer
-
-[Timer]
-OnCalendar=*-*-* 02:15:00 America/Chicago
-Persistent=true
-
-[Install]
-WantedBy=timers.target
