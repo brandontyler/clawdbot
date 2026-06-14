@@ -2,7 +2,7 @@
 # Sermon Notes Auto-Print
 # Scrapes Denton Bible's latest sermon notes PDF and emails it to HP ePrint.
 # Runs Sunday mornings via systemd timer.
-set -euo pipefail
+set -Eeuo pipefail
 
 BASE="https://dentonbible.org"
 PUB_URL="$BASE/media/publications/?category=this-week"
@@ -16,9 +16,39 @@ PROJECT_DIR="$HOME/code/personal/clawdbot"
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 post_discord() {
-  cd "$PROJECT_DIR"
-  node dist/index.js message send --channel discord --target "$DISCORD_CHANNEL" --message "$1" --silent 2>/dev/null || true
+  # Post directly via Discord REST API — same pattern x-digest-foryou.sh uses.
+  # Avoids the stale `node dist/index.js` path and the system openclaw CLI's
+  # missing-plugin warnings; both were silently failing pre-2026-06-14.
+  local msg="$1"
+  local token
+  token=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+  if [ -z "$token" ]; then
+    return 0
+  fi
+  curl -sS -o /dev/null -X POST \
+    "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
+    -H "Authorization: Bot $token" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg c "$msg" '{content: $c}')" || true
 }
+
+# Safety net: catch any unexpected non-zero exit (silent failures, broken pipes,
+# upstream HTML changes that bypass our explicit error branches) and post to
+# Discord so silent-fail-mode can't bite us again. Explicit error branches set
+# EXPECTED_FAIL=1 first to suppress double-posting.
+EXPECTED_FAIL=0
+on_unexpected_error() {
+  local exit_code=$?
+  local line=${BASH_LINENO[0]:-?}
+  local cmd=${BASH_COMMAND:-?}
+  if [ "$EXPECTED_FAIL" = "1" ]; then
+    return
+  fi
+  log "UNEXPECTED ERROR at line $line (exit $exit_code): $cmd"
+  post_discord "⚠️ Sermon notes print hit an unexpected error at line $line (exit $exit_code): \`$cmd\`"
+  exit "$exit_code"
+}
+trap on_unexpected_error ERR
 
 # Step 1: Get first article link from publications page
 log "Fetching $PUB_URL"
@@ -26,16 +56,22 @@ ARTICLE_PATH=$(curl -sL "$PUB_URL" | grep -oP 'href="/article/[^"]+' | head -1 |
 if [[ -z "$ARTICLE_PATH" ]]; then
   log "ERROR: No article found on publications page"
   post_discord "⚠️ Sermon notes print failed: no article found on publications page"
+  EXPECTED_FAIL=1
   exit 1
 fi
 ARTICLE_URL="$BASE$ARTICLE_PATH"
 log "Found article: $ARTICLE_URL"
 
 # Step 2: Get PDF link from article page
-PDF_URL=$(curl -sL "$ARTICLE_URL" | grep -oP 'https://s3\.amazonaws\.com/account-media/21140/uploaded/[^"]+\.pdf' | head -1)
+# Match both S3 URL styles:
+#   - path-style:           https://s3.amazonaws.com/account-media/21140/uploaded/...
+#   - virtual-hosted-style: https://account-media.s3.amazonaws.com/21140/uploaded/...
+# Denton Bible flipped from path-style to virtual-hosted-style sometime before 2026-06-14.
+PDF_URL=$(curl -sL "$ARTICLE_URL" | grep -oP 'https://(s3\.amazonaws\.com/account-media|account-media\.s3\.amazonaws\.com)/21140/uploaded/[^"]+\.pdf' | head -1)
 if [[ -z "$PDF_URL" ]]; then
   log "ERROR: No PDF found on $ARTICLE_URL"
   post_discord "⚠️ Sermon notes print failed: no PDF found at $ARTICLE_URL"
+  EXPECTED_FAIL=1
   exit 1
 fi
 log "Found PDF: $PDF_URL"
@@ -51,6 +87,7 @@ log "Downloaded PDF: ${PDF_SIZE} bytes"
 if (( PDF_SIZE < 1000 )); then
   log "ERROR: PDF too small (${PDF_SIZE} bytes), likely a bad download"
   post_discord "⚠️ Sermon notes print failed: PDF download was only ${PDF_SIZE} bytes"
+  EXPECTED_FAIL=1
   exit 1
 fi
 
