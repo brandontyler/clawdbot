@@ -593,7 +593,14 @@ async function handleCompletions(
       // caller handle the error (which triggers a retry or fresh session).
       // Scale timeout with context size: high-context sessions need more time
       // for the model to process input before generating the first token.
-      const baseTimeoutMs = 120_000;
+      //
+      // Cold-start vs warm: a session that has never streamed a token has to
+      // do workspace scan + skill discovery + memory load + steering files
+      // before the model can even start reasoning, so we give it 240s.  Once
+      // a session has streamed at least once we know the kiro-cli child is
+      // healthy and 180s is plenty.
+      const isFirstTurn = !session.hasStreamedFirstToken;
+      const baseTimeoutMs = isFirstTurn ? 240_000 : 180_000;
       const ctxPct = session.lastContextPct || 0;
       const FIRST_TOKEN_TIMEOUT_MS =
         ctxPct > 40 ? baseTimeoutMs + Math.round(ctxPct * 1500) : baseTimeoutMs;
@@ -602,7 +609,7 @@ async function handleCompletions(
         firstTokenTimer = setTimeout(() => {
           if (!tFirstChunk) {
             log(
-              `🔴 FIRST-TOKEN TIMEOUT (${FIRST_TOKEN_TIMEOUT_MS / 1000}s): session=${sessionTag}… ctx=${session.lastContextPct.toFixed(1)}% — killing stale session`,
+              `🔴 FIRST-TOKEN TIMEOUT (${FIRST_TOKEN_TIMEOUT_MS / 1000}s, ${isFirstTurn ? "cold" : "warm"}): session=${sessionTag}… ctx=${session.lastContextPct.toFixed(1)}% — killing stale session`,
             );
             session.kill("first-token-timeout");
             reject(new Error("first-token-timeout"));
@@ -615,6 +622,9 @@ async function handleCompletions(
           if (!tFirstChunk) {
             tFirstChunk = performance.now();
             if (firstTokenTimer) clearTimeout(firstTokenTimer);
+            // Flip the cold→warm flag for this session so future turns use
+            // the (tighter) warm-session timeout floor.
+            session.hasStreamedFirstToken = true;
           }
           if (text) {
             responseChunks.push(text);
@@ -822,7 +832,7 @@ async function handleCompletions(
             res,
             buildChunk(
               completionId,
-              "⚠️ Upstream model provider stalled (120s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
+              "⚠️ Upstream model provider stalled (180s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
             ),
           );
           sseChunk(res, buildFinalChunk(completionId));
@@ -1113,7 +1123,7 @@ async function handleCompletions(
               message: {
                 role: "assistant",
                 content:
-                  "⚠️ Upstream model provider stalled (120s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
+                  "⚠️ Upstream model provider stalled (180s with no first token). The session has been reset — please resend your message. This is usually a transient Kiro/Bedrock hiccup.",
               },
               finish_reason: "stop",
             },

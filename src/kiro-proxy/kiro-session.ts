@@ -163,6 +163,14 @@ export class KiroSession {
   promptStartedAt: number | null = null;
   /** True if this session was restored via loadSession (not freshly created). */
   wasLoaded = false;
+  /**
+   * True once this session has successfully streamed at least one first-token
+   * back to the gateway.  Used to apply a more generous timeout to the very
+   * first turn after a fresh ACP spawn (cold-start: workspace scan + skill
+   * discovery + memory load + steering files all happen before the model can
+   * reason).  Once flipped to true, the warm-session timeout floor applies.
+   */
+  hasStreamedFirstToken = false;
 
   private constructor(
     proc: ChildProcess,
