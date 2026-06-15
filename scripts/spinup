@@ -53,7 +53,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli accode-agent pwc infra-rcms-projects hermes; do
+  for sess in oc oc-cli hermes; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -292,6 +292,14 @@ PROXY_CMD="pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-r
 GATEWAY_CMD="AWS_PROFILE=personal pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback 2>&1 | $STRIP_BUILD | $STRIP | tee -a $(log_path openclaw-gateway)"
 KIRO_CLI_CMD="kiro-cli"
 
+# Excalidraw canvas server on :3000 — backs the global excalidraw MCP server
+# (~/.kiro/settings/mcp.json). Runs in the oc session so it autostarts with the
+# proxy/gateway and is available to every channel's Kiro, not just accode-agent.
+# The canvas pre-checks :3000 and exits cleanly if already bound, so a second
+# definition (e.g. accode-agent) safely no-ops.
+EXCALIDRAW_DIR=~/src/github.com/yctimlin/mcp_excalidraw
+EXCALIDRAW_CMD="PORT=3000 npm run canvas 2>&1 | tee -a $(log_path excalidraw-canvas)"
+
 if [[ "$TARGET" == "all" || "$TARGET" == "oc" ]]; then
   # Gracefully hibernate sessions before killing the proxy
   if curl -sf http://127.0.0.1:18801/sessions >/dev/null 2>&1; then
@@ -310,10 +318,16 @@ if [[ "$TARGET" == "all" || "$TARGET" == "oc" ]]; then
   tmux new-window -t oc -n gateway -c "$OC_DIR" "$GATEWAY_CMD"
   tmux set-option -w -t oc:gateway remain-on-exit on
   tag_pane oc oc:gateway.0 gateway "$GATEWAY_CMD"
-  SMS_POLLER_CMD="$OC_DIR/scripts/sms-poller.sh 2>&1 | tee -a $(log_path sms-poller)"
-  tmux new-window -t oc -n sms-poller -c "$OC_DIR" "$SMS_POLLER_CMD"
-  tmux set-option -w -t oc:sms-poller remain-on-exit on
-  tag_pane oc oc:sms-poller.0 sms-poller "$SMS_POLLER_CMD"
+  # Excalidraw canvas on :3000 for the global excalidraw MCP server.
+  tmux new-window -t oc -n excalidraw -c "$EXCALIDRAW_DIR" "$EXCALIDRAW_CMD"
+  tmux set-option -w -t oc:excalidraw remain-on-exit on
+  tag_pane oc oc:excalidraw.0 excalidraw "$EXCALIDRAW_CMD"
+  # sms-poller runs on EC2 (openclaw-server). Disabled on Mac to avoid SQS
+  # races where both boxes claim the same message.
+  # SMS_POLLER_CMD="$OC_DIR/scripts/sms-poller.sh 2>&1 | tee -a $(log_path sms-poller)"
+  # tmux new-window -t oc -n sms-poller -c "$OC_DIR" "$SMS_POLLER_CMD"
+  # tmux set-option -w -t oc:sms-poller remain-on-exit on
+  # tag_pane oc oc:sms-poller.0 sms-poller "$SMS_POLLER_CMD"
   # Keep the Mac awake while the bot is running. Dies with the tmux session.
   CAFFEINATE_CMD="caffeinate -dims"
   tmux new-window -t oc -n caffeinate -c "$OC_DIR" "$CAFFEINATE_CMD"
@@ -329,50 +343,15 @@ if [[ "$TARGET" == "all" || "$TARGET" == "oc-cli" ]]; then
   echo "  tmux attach -t oc-cli"
 fi
 
-# --- accode-agent session ---
-# accode-agent: AWS internal GitLab repo (Amazon Connect CoE accelerators).
-# Wired to Discord channel 1475211350291779594 (#accode-agent) via kiro-proxy-routes.json.
-# Also runs the excalidraw canvas server on :3000 (used by the excalidraw MCP skill).
-ACCODE_AGENT_DIR=~/src/ssh.code.aws.dev/proserve/amazon-connect-coe/accelerators/accode-agent
-EXCALIDRAW_DIR=~/src/github.com/yctimlin/mcp_excalidraw
-EXCALIDRAW_CMD="PORT=3000 npm run canvas 2>&1 | tee -a $(log_path excalidraw-canvas)"
-
-# Note: dev-browser no longer needs a tmux pane.
-# As of v0.2.x it is a Rust CLI (~/.cargo/bin/dev-browser) with an auto-spawning
-# background daemon. Scripts run via `dev-browser <<'EOF' ... EOF` from anywhere.
-
-if [[ "$TARGET" == "all" || "$TARGET" == "accode-agent" ]]; then
-  new_session accode-agent -n main -c "$ACCODE_AGENT_DIR" "$KIRO_CLI_CMD"
-  tag_pane accode-agent accode-agent:main.0 kiro-cli "$KIRO_CLI_CMD"
-  tmux new-window -t accode-agent -n excalidraw -c "$EXCALIDRAW_DIR" "$EXCALIDRAW_CMD"
-  tmux set-option -w -t accode-agent:excalidraw remain-on-exit on
-  tag_pane accode-agent "accode-agent:excalidraw.0" excalidraw "$EXCALIDRAW_CMD"
-  echo "  tmux attach -t accode-agent"
-fi
-
-# --- pwc session ---
-PWC_DIR=~/code/work/PwC
-
-if [[ "$TARGET" == "all" || "$TARGET" == "pwc" ]]; then
-  new_session pwc -n main -c "$PWC_DIR" "$KIRO_CLI_CMD"
-  tag_pane pwc pwc:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t pwc"
-fi
-
-# Note: sermon, realestate, travel-agent, lifegroup, finances, pi-agent
-# all run on the EC2 box now (i-0d3dbaec422e1461d). Their Discord channels
-# are routed via the EC2 kiro-proxy, not this Mac. Removed from spinup
-# 2026-05-16.
-
-# --- infra-rcms-projects session ---
-# Path doesn't exist on this Mac; kept for future reactivation.
-INFRA_RCMS_PROJECTS_DIR=~/code/work/infra-rcms-projects
-
-if [[ "$TARGET" == "all" || "$TARGET" == "infra-rcms-projects" ]]; then
-  new_session infra-rcms-projects -n main -c "$INFRA_RCMS_PROJECTS_DIR" "$KIRO_CLI_CMD"
-  tag_pane infra-rcms-projects infra-rcms-projects:main.0 kiro-cli "$KIRO_CLI_CMD"
-  echo "  tmux attach -t infra-rcms-projects"
-fi
+# Per-channel kiro-cli sessions (accode-agent, agent-architectures, pwc,
+# infra-rcms-projects) were removed 2026-06-09. Discord talks to agents the
+# kiro-proxy spawns itself (one per channel, parented to the proxy), so these
+# standalone interactive TUIs served no one — local interactive work is done in
+# Claude Code. Channel routing still lives in kiro-proxy-routes.json; nothing
+# about Discord delivery depended on these tmux sessions.
+#
+# Note: sermon, realestate, travel-agent, lifegroup, finances, pi-agent run on
+# the EC2 box (i-0d3dbaec422e1461d); their channels route via the EC2 kiro-proxy.
 
 # --- hermes session ---
 HERMES_DIR=~/code/personal/hermes
