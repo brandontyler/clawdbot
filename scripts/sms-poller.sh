@@ -51,7 +51,8 @@ send_sms() {
     --destination-phone-number "$1" \
     --origination-identity "$ORIGIN" \
     --message-body "$2" \
-    --message-type TRANSACTIONAL --no-cli-pager >/dev/null 2>&1
+    --message-type TRANSACTIONAL \
+    --configuration-set-name sms-default --no-cli-pager >/dev/null 2>&1
 }
 
 delete_msg() {

@@ -395,7 +395,6 @@ if [ "$new_count" -gt 0 ]; then
       log "kiro-cli digest returned empty — using standard digest"
     fi
   fi
-  rm -f "$NEW_JOBS_TSV"
 
   body=$(cat "$DIGEST_FILE")
   # Email via gog (Google OAuth)
@@ -407,15 +406,55 @@ if [ "$new_count" -gt 0 ]; then
   else
     log_err "Email send failed"
   fi
-  # Discord notification
+  # Discord notification — full summary, split into ≤1800-char chunks (Discord cap is 2000)
   DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
-  if [ -n "$DISCORD_TOKEN" ]; then
-    curl -s -X POST "https://discord.com/api/v10/channels/1503414103341797406/messages" \
+  DISCORD_CHANNEL="1503414103341797406"
+  if [ -n "$DISCORD_TOKEN" ] && [ -s "$NEW_JOBS_TSV" ]; then
+    send_discord() {
+      curl -s -X POST "https://discord.com/api/v10/channels/${DISCORD_CHANNEL}/messages" \
+        -H "Authorization: Bot $DISCORD_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -nc --arg c "$1" '{content:$c}')" > /dev/null
+    }
+    chunk="🚒 **${new_count} new firefighter job(s) — North TX** — ${DATE_LABEL}"
+    cur_source=""
+    sec=""
+    while IFS=$'\t' read -r jid title url source location; do
+      [ -z "$jid" ] && continue
+      if [ "$source" != "$cur_source" ]; then
+        case "$source" in
+          governmentjobs)      sec="🏛️ **GovernmentJobs.com**" ;;
+          firejobs)            sec="🔥 **FireJobs.com**" ;;
+          tcfp)                sec="🧑‍🚒 **TCFP**" ;;
+          craigslist)          sec="📋 **Craigslist DFW**" ;;
+          publicsafetyanswers) sec="🛡️ **PublicSafetyAnswers**" ;;
+          *)                   sec="**${source}**" ;;
+        esac
+        chunk="${chunk}"$'\n\n'"${sec}"
+        cur_source="$source"
+      fi
+      # Truncate over-long titles so a single job can't blow a chunk
+      short_title="${title:0:200}"
+      job_block=$'\n'"• **${short_title}**"$'\n'"<${url}>"
+      candidate="${chunk}${job_block}"
+      if [ ${#candidate} -gt 1800 ]; then
+        send_discord "$chunk"
+        chunk="${sec}${job_block}"
+      else
+        chunk="$candidate"
+      fi
+    done < <(sort -t$'\t' -k4 "$NEW_JOBS_TSV")
+    [ -n "$chunk" ] && send_discord "$chunk"
+    log "Discord summary sent (${new_count} jobs, with per-job links)"
+  elif [ -n "$DISCORD_TOKEN" ]; then
+    # Fallback if NEW_JOBS_TSV is missing for any reason
+    curl -s -X POST "https://discord.com/api/v10/channels/${DISCORD_CHANNEL}/messages" \
       -H "Authorization: Bot $DISCORD_TOKEN" \
       -H "Content-Type: application/json" \
       -d "{\"content\":$(echo "🚒 ${new_count} new firefighter job(s) in North TX. Check email." | jq -Rs .)}" > /dev/null
-    log "Discord notification sent"
+    log "Discord notification sent (fallback, no NEW_JOBS_TSV)"
   fi
+  rm -f "$NEW_JOBS_TSV"
 else
   log "No new jobs — skipping notifications"
   rm -f "$NEW_JOBS_TSV"

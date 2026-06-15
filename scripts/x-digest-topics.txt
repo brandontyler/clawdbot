@@ -98,3 +98,26 @@ AI Consulting Leaders | from:itsolelehmann OR from:raborenstein OR from:levelsio
 AI Consulting Community | ("AI consulting" OR "vibe coding" OR "AI freelance" OR "agent workflow" OR "AI side business" OR "AI agency") min_faves:200 lang:en -filter:replies -filter:retweets -course -free -giveaway | 200 | 5
 
 # === PARIS TRIP (removed — trip complete) ===
+
+# === AGENT EVALUATIONS (educational — learning the space) ===
+# Goal: learn how production agent-eval works — methodology + what frameworks ship.
+# Slanted toward TEACHERS who write essays/threads to explain, not vendor marketing.
+# Context: Brandon is on an AWS project mimicking what DeepEval does, so this is both
+# educational and adjacent-competitive intel.
+#
+# Tier 1: Teachers — people who consistently write to TEACH eval methodology.
+# All four verified active 2026-06-04 → 2026-06-13.
+#   HamelHusain — Hamel Husain, "Your AI Product Needs Evals" course author, parlance.com (very active)
+#   eugeneyan — Eugene Yan, applied scientist, deep evals essays (moderate, very high signal)
+#   sh_reya — Shreya Shankar, Berkeley PhD on LLM-ops + production evals (moderate)
+#   lateinteraction — Omar Khattab, DSPy author, programmatic eval methodology (moderate)
+# The keyword filter strips reply-noise and off-topic personal posts.
+Agent Eval Teachers | from:HamelHusain OR from:eugeneyan OR from:sh_reya OR from:lateinteraction (eval OR evaluation OR judge OR benchmark OR metric OR agent OR LLM OR test) min_faves:30 lang:en -filter:replies | 30 | 5
+#
+# Tier 2: Eval framework principals — what's actually shipping in DeepEval-adjacent tools.
+# Account-only (no keyword search) to avoid the aggregator/RAG-listicle noise that
+# floods broad "DeepEval" / "agent eval" keyword queries.
+#   deepeval — DeepEval framework official (very active, direct DeepEval-mimic intel)
+#   ankrgyl — Ankur Goyal, Braintrust founder (active, eval-platform competitor)
+# Note: @confident_ai (DeepEval parent) is quiet since April; @ragas_io is dead. Excluded.
+Agent Eval Frameworks | from:deepeval OR from:ankrgyl -filter:replies | 5 | 5
