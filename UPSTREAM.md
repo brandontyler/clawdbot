@@ -64,6 +64,7 @@ These don't exist upstream. If git tries to delete them during rebase, keep ours
 | `scripts/x-digest.sh`                                   | Daily X/Twitter digest via bird CLI + DynamoDB dedup                                                                                                   |
 | `scripts/x-digest-topics.txt`                           | Topic list for X digest                                                                                                                                |
 | `scripts/x-bookmark-review.sh`                          | Daily X bookmark review via bird CLI + DynamoDB dedup                                                                                                  |
+| `scripts/linkedin-post.py`                              | LinkedIn posting CLI (Open Permissions API: text/URL/image shares); symlinked to `~/.local/bin/linkedin`. Skill at `~/.kiro/skills/linkedin/`.         |
 | `kiro-proxy-routes.json`                                | Channel → cwd mapping (gitignored)                                                                                                                     |
 | `kiro-proxy-routes.example.json`                        | Template for above                                                                                                                                     |
 | `docs/kiro-proxy-plan.md`                               | Proxy design doc                                                                                                                                       |
