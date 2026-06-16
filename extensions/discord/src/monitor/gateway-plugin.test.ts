@@ -39,10 +39,13 @@ const { GatewayIntents, GatewayPlugin } = vi.hoisted(() => {
     heartbeatInterval?: NodeJS.Timeout;
     firstHeartbeatTimeout?: NodeJS.Timeout;
     ws?: unknown;
+    reconnectAttempts = 0;
 
     constructor(options?: unknown) {
       this.options = options;
     }
+
+    setupWebSocket(_resume?: boolean): void {}
 
     async registerClient(_client: unknown): Promise<void> {}
 

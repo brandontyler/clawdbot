@@ -9,7 +9,7 @@
 // Kept in a separate file so upstream gateway-plugin.ts can be synced cleanly.
 
 import { HttpsProxyAgent } from "https-proxy-agent";
-import type { DiscordAccountConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { DiscordAccountConfig } from "openclaw/plugin-sdk/config-types";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { ProxyAgent, fetch as undiciFetch } from "undici";

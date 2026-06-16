@@ -72,13 +72,16 @@ const {
     client: unknown;
     ws: unknown;
     isConnecting: boolean;
+    reconnectAttempts: number;
     constructor(options?: unknown, gatewayInfo?: unknown) {
       this.options = options;
       this.gatewayInfo = gatewayInfo;
       this.client = undefined;
       this.ws = undefined;
       this.isConnecting = false;
+      this.reconnectAttempts = 0;
     }
+    setupWebSocket(_resume?: boolean): void {}
     async registerClient(client: unknown) {
       baseRegisterClientSpy(client);
     }

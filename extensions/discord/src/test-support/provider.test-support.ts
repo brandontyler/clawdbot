@@ -502,6 +502,13 @@ vi.mock(buildDiscordSourceModuleId("monitor/gateway-plugin.js"), () => ({
   waitForDiscordGatewayPluginRegistration: () => undefined,
 }));
 
+// provider.ts uses createKiroGatewayPlugin (the fork's gateway hardening) as its
+// default gateway factory; stub it the same way as createDiscordGatewayPlugin so
+// the real KiroGatewayPlugin (which patches setupWebSocket) never instantiates.
+vi.mock(buildDiscordSourceModuleId("monitor/gateway-plugin-kiro.js"), () => ({
+  createKiroGatewayPlugin: () => ({ id: "gateway-plugin" }),
+}));
+
 vi.mock(buildDiscordSourceModuleId("monitor/listeners.js"), () => ({
   DiscordInteractionListener: function DiscordInteractionListener() {},
   DiscordMessageListener: function DiscordMessageListener() {},
