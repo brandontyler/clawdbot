@@ -107,7 +107,7 @@ function estimateUsage(
 // ─── Persistent corruption log ────────────────────────────────────────────────
 
 const CORRUPTION_LOG_DIR =
-  process.env.KIRO_PROXY_LOG_DIR ?? `${process.env.HOME}/code/personal/clawdbot/logs`;
+  process.env.KIRO_PROXY_LOG_DIR ?? `${process.env.HOME}/.openclaw/kiro-proxy-logs`;
 const CORRUPTION_LOG_PATH = `${CORRUPTION_LOG_DIR}/corruption-events.jsonl`;
 
 /** Kiro-cli emits this message inline in the response stream when its internal session corrupts. */

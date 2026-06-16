@@ -75,6 +75,6 @@ reset notice.
 Corruption events are logged to:
 
 - `/tmp/kiro-proxy.log` (tagged `🔴 CORRUPTION DIAG`)
-- `logs/corruption-events.jsonl` (structured, persistent)
+- `~/.openclaw/kiro-proxy-logs/corruption-events.jsonl` (structured, persistent; override dir with `KIRO_PROXY_LOG_DIR`)
 
 Session files can be inspected at `~/.kiro/sessions/cli/<session-id>.jsonl`.
