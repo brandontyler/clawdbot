@@ -112,26 +112,51 @@ systemctl --user restart openclaw-gateway
 
 The gateway depends on the proxy (configured via `Requires=kiro-proxy.service`).
 
-## Deferred Restart (from Discord)
+## Deferred Restart (from Discord) — ABSOLUTE RULE
 
-**CRITICAL:** When running as a Discord agent, restarting the proxy kills your own
-ACP session mid-response. Always use a deferred restart so the Discord reply
-delivers before the proxy goes down.
+🚨 **NEVER run `systemctl --user stop` or `systemctl --user restart` of
+`kiro-proxy` or `openclaw-gateway` synchronously from a project Discord
+channel.** This is not "slow" — it's an **outage**. The flow:
+
+1. Agent issues `systemctl restart kiro-proxy`
+2. Proxy SIGTERMs the agent's own ACP session mid-call
+3. Agent process dies before the start half of the restart can complete
+4. `Restart=always` does NOT cover manual stops/restarts → services stay DOWN
+5. All 8 project channels are silent until somebody manually starts them
+
+This happened 4 times on 2026-06-15 alone (bead `openclaw-gvm`). Use the
+deferred pattern, no exceptions:
 
 ```bash
-# Deferred proxy restart (30s delay — enough for response delivery)
+# Proxy only
 (sleep 30 && systemctl --user restart kiro-proxy) &
 
-# Deferred full restart (proxy + gateway)
-(sleep 30 && systemctl --user restart kiro-proxy && sleep 5 && systemctl --user restart openclaw-gateway) &
+# Full stack (proxy + gateway)
+(sleep 30 && systemctl --user restart kiro-proxy && \
+   sleep 5 && systemctl --user restart openclaw-gateway) &
 ```
 
-After issuing the deferred restart, finish your Discord response immediately.
-The session will drop after ~30s and reconnect automatically when the proxy
-comes back up (2-3 seconds). No manual intervention needed.
+After issuing the deferred restart, **finish your Discord reply immediately**.
+The session drops after ~30s and reconnects automatically when the proxy
+comes back (~3s). No manual intervention needed.
 
-**Never** run `systemctl --user restart kiro-proxy` synchronously from a Discord
-agent session — it will hang and the response will never deliver.
+The only restart sources that may be synchronous:
+- A shell run by Brandon directly
+- The `#hermes-kiro-ec2` bot (different profile, different gateway, not affected)
+
+## Don't "Maintain" hibernated.json — ABSOLUTE RULE
+
+🚨 **`~/.openclaw/state/kiro-proxy-hibernated.json` does not need cleanup.**
+It's a dict keyed by session key, one entry per channel that has ever been
+hibernated. Apparent "duplicates" between hibernated.json and live in-memory
+sessions are intentional cache layering (disk snapshot + live state showing
+the same key). Apparent "drift upward" after a restart is the proxy reloading
+all 8 hibernated entries from disk, which is correct.
+
+If a session genuinely needs to be evicted (channel deleted, route removed),
+the right tool is `scripts/remove-channel.sh <name>` — not hand-editing
+hibernated.json. Hand-editing this file from inside a project Discord channel
+is the most common cause of self-induced outages on this box.
 
 ## Systemd Units (managed via `ops/systemd/`)
 
