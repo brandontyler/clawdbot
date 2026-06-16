@@ -26,6 +26,7 @@ function makeSession(reply: string, alive = true): KiroSession {
       onChunk(reply);
       return "end_turn";
     },
+    setModel: vi.fn().mockResolvedValue(true),
     kill: vi.fn(),
   } as unknown as KiroSession;
 }
@@ -46,6 +47,7 @@ function makeManager(
       : vi.fn().mockResolvedValue({ session, promptText: "latest user message", managed }),
     shutdown: vi.fn(),
     resolveSessionKey: vi.fn().mockReturnValue("test-session-key"),
+    getKnownModels: vi.fn().mockReturnValue([]),
   } as unknown as SessionManager;
 }
 
@@ -138,6 +140,67 @@ describe("GET /v1/models", () => {
     const b = body as { data: Array<{ id: string }> };
     expect(b.data).toHaveLength(1);
     expect(b.data[0]?.id).toBe("kiro-default");
+  });
+});
+
+describe("model selection", () => {
+  function makeManagerWithSession(
+    session: KiroSession,
+    knownModels: Array<{ modelId: string; name: string }> = [],
+  ): SessionManager {
+    const managed = { session, handle: session, promptLock: Promise.resolve() };
+    return {
+      getOrCreate: vi
+        .fn()
+        .mockResolvedValue({ session, promptText: "latest user message", managed }),
+      shutdown: vi.fn(),
+      resolveSessionKey: vi.fn().mockReturnValue("test-session-key"),
+      getKnownModels: vi.fn().mockReturnValue(knownModels),
+    } as unknown as SessionManager;
+  }
+
+  it("lists discovered models alongside kiro-default", async () => {
+    const session = makeSession("ok");
+    baseUrl = await startServer(
+      makeManagerWithSession(session, [
+        { modelId: "claude-opus-4.8", name: "Opus 4.8" },
+        { modelId: "claude-sonnet-4.6", name: "Sonnet 4.6" },
+      ]),
+    );
+    const { status, body } = await testFetch(baseUrl, "/v1/models");
+    expect(status).toBe(200);
+    const ids = (body as { data: Array<{ id: string }> }).data.map((m) => m.id);
+    expect(ids).toContain("kiro-default");
+    expect(ids).toContain("claude-opus-4.8");
+    expect(ids).toContain("claude-sonnet-4.6");
+  });
+
+  it("switches model when a non-default model is requested", async () => {
+    const session = makeSession("ok");
+    baseUrl = await startServer(makeManagerWithSession(session));
+    await testFetch(baseUrl, "/v1/chat/completions", {
+      method: "POST",
+      body: {
+        model: "claude-opus-4.8",
+        stream: false,
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+    expect(vi.mocked(session.setModel)).toHaveBeenCalledWith("claude-opus-4.8");
+  });
+
+  it("does not switch model for the kiro-default sentinel", async () => {
+    const session = makeSession("ok");
+    baseUrl = await startServer(makeManagerWithSession(session));
+    await testFetch(baseUrl, "/v1/chat/completions", {
+      method: "POST",
+      body: {
+        model: "kiro-default",
+        stream: false,
+        messages: [{ role: "user", content: "Hi" }],
+      },
+    });
+    expect(vi.mocked(session.setModel)).not.toHaveBeenCalled();
   });
 });
 

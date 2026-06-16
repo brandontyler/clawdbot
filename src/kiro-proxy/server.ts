@@ -441,7 +441,13 @@ function handleHealth(res: ServerResponse): void {
   res.end(JSON.stringify({ status: "ok", service: "kiro-proxy" }));
 }
 
-function handleModels(res: ServerResponse): void {
+function handleModels(res: ServerResponse, manager: SessionManager): void {
+  const discovered = manager.getKnownModels().map((m) => ({
+    id: m.modelId,
+    object: "model",
+    created: 0,
+    owned_by: "kiro",
+  }));
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
@@ -453,6 +459,7 @@ function handleModels(res: ServerResponse): void {
           created: 0,
           owned_by: "kiro",
         },
+        ...discovered,
       ],
     }),
   );
@@ -555,6 +562,16 @@ async function handleCompletions(
     };
     res.end(JSON.stringify(completion));
     return;
+  }
+
+  // Per-request model selection: if the caller asked for a specific Kiro model
+  // (anything other than the sentinel kiro-default), switch the session to it
+  // via ACP before prompting. No-op when the model is already active/unknown.
+  if (body.model && body.model !== KIRO_MODEL_ID) {
+    const switched = await session.setModel(body.model);
+    if (switched) {
+      log(`model: session=${sessionTag}… → ${body.model}`);
+    }
   }
 
   if (wantStream) {
@@ -1130,7 +1147,7 @@ export function createKiroProxyServer(
     }
 
     if (method === "GET" && url === "/v1/models") {
-      handleModels(res);
+      handleModels(res, manager);
       return;
     }
 

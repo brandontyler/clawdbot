@@ -59,6 +59,8 @@ export type ChannelRoute = {
   cwd: string;
   /** Optional extra args for kiro-cli (appended after "acp"). */
   kiroArgs?: string[];
+  /** Optional Kiro model id to select for this channel (ACP session/set_model). */
+  model?: string;
   /** If true, sessions are never hibernated — always start fresh. */
   noHibernate?: boolean;
 };
@@ -94,6 +96,8 @@ export type KiroProxyOptions = {
    * Default: 14400 (4 hours)
    */
   sessionIdleSecs?: number;
+  /** Default Kiro model id applied to every session unless a route overrides it. */
+  model?: string;
   /** Emit debug logs to stderr. */
   verbose?: boolean;
 };

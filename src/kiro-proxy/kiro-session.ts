@@ -16,6 +16,9 @@ import {
   ClientSideConnection,
   PROTOCOL_VERSION,
   ndJsonStream,
+  type LoadSessionResponse,
+  type ModelInfo,
+  type NewSessionResponse,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionNotification,
@@ -123,6 +126,8 @@ export type KiroSessionOptions = {
   kiroArgs: string[];
   cwd: string;
   verbose: boolean;
+  /** Optional Kiro model id to select after the session handshake. */
+  model?: string;
 };
 
 export type KiroSessionEvents = {
@@ -154,6 +159,10 @@ export class KiroSession {
   promptStartedAt: number | null = null;
   /** True if this session was restored via loadSession (not freshly created). */
   wasLoaded = false;
+  /** Models advertised by the agent (from session/new or session/load). */
+  availableModels: ModelInfo[] = [];
+  /** Currently selected model id, if known. */
+  currentModelId = "";
 
   private constructor(
     proc: ChildProcess,
@@ -241,6 +250,7 @@ export class KiroSession {
     });
     session.acpSessionId = acpSession.sessionId;
     log(`session ready: ${acpSession.sessionId}`);
+    await session.applySessionConfig(acpSession, opts);
 
     return session;
   }
@@ -314,7 +324,7 @@ export class KiroSession {
 
     log(`loading ACP session: ${acpSessionId}`);
     try {
-      await client.loadSession({
+      const loaded = await client.loadSession({
         sessionId: acpSessionId,
         cwd: opts.cwd,
         mcpServers: [],
@@ -322,6 +332,7 @@ export class KiroSession {
       session.acpSessionId = acpSessionId;
       session.wasLoaded = true;
       log(`session loaded: ${acpSessionId}`);
+      await session.applySessionConfig(loaded, opts);
     } catch (err) {
       log(`loadSession failed (${String(err)}), falling back to newSession`);
       const acpSession = await client.newSession({
@@ -330,6 +341,7 @@ export class KiroSession {
       });
       session.acpSessionId = acpSession.sessionId;
       log(`fallback session ready: ${acpSession.sessionId}`);
+      await session.applySessionConfig(acpSession, opts);
     }
 
     return session;
@@ -437,6 +449,56 @@ export class KiroSession {
       return;
     }
     // Silently ignore other _kiro.dev/* notifications (e.g. commands/available)
+  }
+
+  /**
+   * Capture the agent's advertised model/mode catalogs from a session
+   * response and apply any requested overrides. Best-effort: failures are
+   * logged and never abort session creation.
+   */
+  private async applySessionConfig(
+    resp: NewSessionResponse | LoadSessionResponse,
+    opts: KiroSessionOptions,
+  ): Promise<void> {
+    if (resp.models) {
+      this.availableModels = resp.models.availableModels;
+      this.currentModelId = resp.models.currentModelId;
+    }
+    if (opts.model) {
+      await this.setModel(opts.model);
+    }
+  }
+
+  /**
+   * Switch the session's model via ACP (Kiro's session/set_model).
+   * Returns true if applied (or already active), false if the model is
+   * unknown or the call failed. Never throws.
+   */
+  async setModel(modelId: string): Promise<boolean> {
+    if (!modelId || !this.acpSessionId) {
+      return false;
+    }
+    if (modelId === this.currentModelId) {
+      return true;
+    }
+    if (
+      this.availableModels.length > 0 &&
+      !this.availableModels.some((m) => m.modelId === modelId)
+    ) {
+      this.log(`set_model skipped: "${modelId}" not in available models`);
+      return false;
+    }
+    try {
+      await this.client.unstable_setSessionModel({ sessionId: this.acpSessionId, modelId });
+      this.currentModelId = modelId;
+      this.log(`set_model: ${modelId}`);
+      return true;
+    } catch (err) {
+      this.log(
+        `set_model failed (${modelId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
   }
 
   /** Send ACP session/cancel to interrupt an in-flight prompt. */

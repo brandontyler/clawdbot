@@ -19,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import type { ModelInfo } from "@agentclientprotocol/sdk";
 import { checkContextAlert, clearContextAlerts } from "./alerts.js";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
 import { ProgressReporter } from "./progress.js";
@@ -135,6 +136,7 @@ export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly hibernated: Map<string, HibernatedSession>;
   private readonly reporters = new Map<string, ProgressReporter>();
+  private readonly knownModels = new Map<string, ModelInfo>();
   private readonly sessionOpts: KiroSessionOptions;
   private readonly channelRoutes: Record<string, ChannelRoute>;
   private readonly idleMs: number;
@@ -298,6 +300,7 @@ export class SessionManager {
           ...this.sessionOpts,
           cwd: route.cwd,
           kiroArgs: route.kiroArgs ?? this.sessionOpts.kiroArgs,
+          model: route.model ?? this.sessionOpts.model,
         }
       : this.sessionOpts;
 
@@ -306,6 +309,7 @@ export class SessionManager {
     }
 
     const session = await this.createOrLoadSession(sessionKey, sessionOpts);
+    this.recordKnownModels(session);
 
     this.log(
       `session ready: session=${this.tag(sessionKey)} pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
@@ -523,6 +527,18 @@ export class SessionManager {
       return undefined;
     }
     return { session: managed.session };
+  }
+
+  /** Cache the models a session's agent advertises (for /v1/models). */
+  private recordKnownModels(session: KiroSession): void {
+    for (const m of session.availableModels) {
+      this.knownModels.set(m.modelId, m);
+    }
+  }
+
+  /** Return the union of models advertised by Kiro sessions seen so far. */
+  getKnownModels(): ModelInfo[] {
+    return [...this.knownModels.values()];
   }
 
   /** Return diagnostic info for all active sessions. */

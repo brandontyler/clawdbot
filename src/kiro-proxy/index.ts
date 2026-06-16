@@ -57,7 +57,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
   }
 
   const manager = new SessionManager(
-    { kiroBin, kiroArgs, cwd, verbose },
+    { kiroBin, kiroArgs, cwd, verbose, model: opts.model },
     { channelRoutes: opts.channelRoutes, idleSecs, log },
   );
 

@@ -30,7 +30,8 @@ export function registerKiroProxyCli(program: Command): void {
     .option("--kiro-args <args...>", "Extra arguments to pass after 'acp'")
     .option("--cwd <dir>", "Working directory for kiro sessions", process.cwd())
     .option("--idle-secs <number>", "Seconds before an idle session is killed", "86400")
-    .option("--routes <path>", "JSON file mapping Discord channel IDs to {cwd, kiroArgs?}")
+    .option("--model <id>", "Default Kiro model id to select for every session")
+    .option("--routes <path>", "JSON file mapping Discord channel IDs to {cwd, kiroArgs?, model?}")
     .option("-v, --verbose", "Enable verbose logging", false)
     .addHelpText(
       "after",
@@ -113,6 +114,7 @@ Config (~/.openclaw/openclaw.json, JSON5):
           cwd: opts.cwd as string,
           channelRoutes,
           sessionIdleSecs: idleSecs,
+          model: opts.model as string | undefined,
           verbose: Boolean(opts.verbose),
         });
 
