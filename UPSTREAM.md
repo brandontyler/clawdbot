@@ -41,34 +41,35 @@ Generated files (`pnpm-lock.yaml`, `a2ui.bundle.*`): regenerate.
 
 These don't exist upstream. If git tries to delete them during rebase, keep ours.
 
-| File                                                    | Purpose                                                                      |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `src/kiro-proxy/`                                       | Proxy: server, session manager, ACP bridge, alerts, progress, cleanup, tests |
-| `src/cli/kiro-proxy-cli.ts`                             | CLI wiring for `openclaw kiro-proxy`                                         |
-| `extensions/discord/src/monitor/gateway-plugin-kiro.ts` | Flap detection, backoff — subclasses `ResilientGatewayPlugin`                |
-| `scripts/spinup`                                        | tmux session manager (symlinked from `~/bin/spinup`)                         |
-| `scripts/add-channel.sh`                                | Create Discord channel + proxy route + tmux session                          |
-| `scripts/remove-channel.sh`                             | Tear down a project channel                                                  |
-| `scripts/setup.sh`                                      | One-time machine bootstrap                                                   |
-| `scripts/sms-poller.sh`                                 | Poll SQS inbound SMS → Discord                                               |
-| `scripts/sermon-notes-print.sh`                         | Sunday auto-print: scrape Denton Bible sermon notes PDF → HP ePrint via SES  |
-| `scripts/upstream-sync-check.sh`                        | Daily cron: sync reminder with feature/conflict analysis                     |
-| `scripts/verify-runtime-artifacts.mjs`                  | Post-build: verify extension dist-runtime output                             |
-| `scripts/extract-x-cookies.ps1`                         | PowerShell DPAPI decryption of X/Twitter cookies                             |
-| `scripts/refresh-x-cookies`                             | Bash wrapper for above                                                       |
-| `scripts/scrape-neogov.mjs`                             | Headless Chrome scraper for government job postings                          |
-| `scripts/scrape-tcfp.mjs`                               | Headless Chrome scraper for TCFP fire service careers                        |
-| `scripts/fire-jobs.sh`                                  | Daily North Texas firefighter job search aggregator                          |
-| `scripts/x-digest.sh`                                   | Daily X/Twitter digest via bird CLI + DynamoDB dedup                         |
-| `scripts/x-digest-topics.txt`                           | Topic list for X digest                                                      |
-| `scripts/x-bookmark-review.sh`                          | Daily X bookmark review via bird CLI + DynamoDB dedup                        |
-| `kiro-proxy-routes.json`                                | Channel → cwd mapping (gitignored)                                           |
-| `kiro-proxy-routes.example.json`                        | Template for above                                                           |
-| `docs/kiro-proxy-plan.md`                               | Proxy design doc                                                             |
-| `docs/kiro-known-issues.md`                             | Known kiro-cli bugs and workarounds                                          |
-| `docs/setup.md`                                         | New-machine setup guide                                                      |
-| `.kiro/`                                                | Agent config, hooks, agent profiles (gitignored except tracked hooks)        |
-| `UPSTREAM.md`                                           | This file                                                                    |
+| File                                                         | Purpose                                                                                                                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/kiro-proxy/`                                            | Proxy: server, session manager, ACP bridge, alerts, progress, cleanup, tests                                                                     |
+| `src/cli/kiro-proxy-cli.ts`                                  | CLI wiring for `openclaw kiro-proxy`                                                                                                             |
+| `extensions/discord/src/monitor/gateway-plugin-kiro.ts`      | Flap detection, backoff, crash-safe metadata fetch — subclasses `ResilientGatewayPlugin`. **Imports upstream helpers** (see coupling note below) |
+| `extensions/discord/src/monitor/gateway-plugin-kiro.test.ts` | Tests for the above: happy path, transient-fallback, fire-and-forget crash safety, fallback re-fetch, timeout                                    |
+| `scripts/spinup`                                             | tmux session manager (symlinked from `~/bin/spinup`)                                                                                             |
+| `scripts/add-channel.sh`                                     | Create Discord channel + proxy route + tmux session                                                                                              |
+| `scripts/remove-channel.sh`                                  | Tear down a project channel                                                                                                                      |
+| `scripts/setup.sh`                                           | One-time machine bootstrap                                                                                                                       |
+| `scripts/sms-poller.sh`                                      | Poll SQS inbound SMS → Discord                                                                                                                   |
+| `scripts/sermon-notes-print.sh`                              | Sunday auto-print: scrape Denton Bible sermon notes PDF → HP ePrint via SES                                                                      |
+| `scripts/upstream-sync-check.sh`                             | Daily cron: sync reminder with feature/conflict analysis                                                                                         |
+| `scripts/verify-runtime-artifacts.mjs`                       | Post-build: verify extension dist-runtime output                                                                                                 |
+| `scripts/extract-x-cookies.ps1`                              | PowerShell DPAPI decryption of X/Twitter cookies                                                                                                 |
+| `scripts/refresh-x-cookies`                                  | Bash wrapper for above                                                                                                                           |
+| `scripts/scrape-neogov.mjs`                                  | Headless Chrome scraper for government job postings                                                                                              |
+| `scripts/scrape-tcfp.mjs`                                    | Headless Chrome scraper for TCFP fire service careers                                                                                            |
+| `scripts/fire-jobs.sh`                                       | Daily North Texas firefighter job search aggregator                                                                                              |
+| `scripts/x-digest.sh`                                        | Daily X/Twitter digest via bird CLI + DynamoDB dedup                                                                                             |
+| `scripts/x-digest-topics.txt`                                | Topic list for X digest                                                                                                                          |
+| `scripts/x-bookmark-review.sh`                               | Daily X bookmark review via bird CLI + DynamoDB dedup                                                                                            |
+| `kiro-proxy-routes.json`                                     | Channel → cwd mapping (gitignored)                                                                                                               |
+| `kiro-proxy-routes.example.json`                             | Template for above                                                                                                                               |
+| `docs/kiro-proxy-plan.md`                                    | Proxy design doc                                                                                                                                 |
+| `docs/kiro-known-issues.md`                                  | Known kiro-cli bugs and workarounds                                                                                                              |
+| `docs/setup.md`                                              | New-machine setup guide                                                                                                                          |
+| `.kiro/`                                                     | Agent config, hooks, agent profiles (gitignored except tracked hooks)                                                                            |
+| `UPSTREAM.md`                                                | This file                                                                                                                                        |
 
 ---
 
@@ -147,3 +148,25 @@ Long-running tasks through Discord cause missed heartbeats → gateway drops →
 resume fails → flapping. `ResilientGatewayPlugin` (in `gateway-plugin.ts`) fixes
 two @buape/carbon bugs; `KiroGatewayPlugin` (in `gateway-plugin-kiro.ts`) adds
 flap detection and exponential backoff. Kept in separate files, not PRed upstream.
+
+### Coupling note: gateway-plugin-kiro.ts → upstream gateway-metadata.ts
+
+`gateway-plugin-kiro.ts` is a Kiro-only file (never conflicts on rebase), but its
+`registerClient` deliberately mirrors upstream `OpenClawGatewayPlugin`
+(`gateway-plugin.ts`) and **imports three helpers from upstream
+`gateway-metadata.ts`**: `fetchDiscordGatewayInfoWithTimeout`,
+`resolveDiscordGatewayInfoTimeoutMs`, and `resolveGatewayInfoWithFallback`.
+
+This is intentional — it keeps our fork's metadata fetch on the same
+timeout + transient-fallback path as upstream, so a temporary DNS/network failure
+(e.g. `ENOTFOUND` on machine wake) falls back to the default gateway url and
+retries instead of throwing. The throw previously escaped the fire-and-forget
+`void plugin.registerClient(...)` call in `internal/client.ts` and crashed the
+whole gateway process.
+
+**On sync:** if upstream renames or changes the signature of any of those three
+`gateway-metadata.ts` exports, `gateway-plugin-kiro.ts` will fail to typecheck.
+Fix is to re-align our `registerClient`/`fetchGatewayInfo` with upstream's current
+`registerClientInternal`. The test file pins the behavior, so run
+`pnpm test extensions/discord/src/monitor/gateway-plugin-kiro.test.ts` after any
+gateway-related sync.

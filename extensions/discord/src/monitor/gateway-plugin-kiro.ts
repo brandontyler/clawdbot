@@ -4,10 +4,15 @@
 // - Flap detection: force fresh IDENTIFY after repeated rapid disconnects
 // - Exponential backoff with jitter on reconnect attempts
 // - "Resumed successfully" debug logging
-// - Safe gateway metadata fetch via fetchDiscordGatewayInfo (upstream improvement)
+//
+// Gateway metadata uses the same timeout + transient-fallback path as upstream's
+// OpenClawGatewayPlugin (fetchDiscordGatewayInfoWithTimeout + resolveGatewayInfoWithFallback),
+// and registerClient swallows the fire-and-forget rejection so a transient
+// lookup failure (e.g. ENOTFOUND on machine wake) cannot crash the gateway.
 //
 // Kept in a separate file so upstream gateway-plugin.ts can be synced cleanly.
 
+import type { APIGatewayBotInfo } from "discord-api-types/v10";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import type { DiscordAccountConfig } from "openclaw/plugin-sdk/config-types";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
@@ -15,7 +20,11 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import WebSocket from "ws";
 import * as discordGateway from "../internal/gateway.js";
-import { fetchDiscordGatewayInfo } from "./gateway-metadata.js";
+import {
+  fetchDiscordGatewayInfoWithTimeout,
+  resolveDiscordGatewayInfoTimeoutMs,
+  resolveGatewayInfoWithFallback,
+} from "./gateway-metadata.js";
 import { ResilientGatewayPlugin, resolveDiscordGatewayIntents } from "./gateway-plugin.js";
 
 /** A resume that lasts less than this is considered a "flap". */
@@ -23,7 +32,16 @@ const STABLE_CONNECTION_MS = 60_000;
 /** After this many consecutive flaps, force a fresh IDENTIFY. */
 const MAX_RAPID_RESUMES = 8;
 
+type KiroGatewayPluginParams = {
+  runtime?: RuntimeEnv;
+  /** Configured gateway-info timeout (ms); resolved against env + default. */
+  gatewayInfoTimeoutMs?: number;
+};
+
 class KiroGatewayPlugin extends ResilientGatewayPlugin {
+  protected readonly runtime: RuntimeEnv | undefined;
+  protected readonly gatewayInfoTimeoutMs: number;
+  private gatewayInfoUsedFallback = false;
   private _lastResumedAt = 0;
   private _rapidResumeCount = 0;
   private _backoffTimer: ReturnType<typeof setTimeout> | undefined;
@@ -44,8 +62,16 @@ class KiroGatewayPlugin extends ResilientGatewayPlugin {
     (this as unknown as { sequence: number | null }).sequence = v;
   }
 
-  constructor(options: ConstructorParameters<typeof discordGateway.GatewayPlugin>[0]) {
+  constructor(
+    options: ConstructorParameters<typeof discordGateway.GatewayPlugin>[0],
+    params?: KiroGatewayPluginParams,
+  ) {
     super(options);
+    this.runtime = params?.runtime;
+    this.gatewayInfoTimeoutMs = resolveDiscordGatewayInfoTimeoutMs({
+      configuredTimeoutMs: params?.gatewayInfoTimeoutMs,
+      env: process.env,
+    });
 
     // Patch setupWebSocket to add flap detection logging.
     const origSetup = (
@@ -128,15 +154,40 @@ class KiroGatewayPlugin extends ResilientGatewayPlugin {
     }
     super.disconnect();
   }
-}
 
-class SafeKiroGatewayPlugin extends KiroGatewayPlugin {
-  override async registerClient(client: unknown) {
-    if (!this.gatewayInfo) {
-      this.gatewayInfo = await fetchDiscordGatewayInfo({
-        token: (client as { options: { token: string } }).options.token,
-        fetchImpl: (input, init) => fetch(input, init as RequestInit),
-      });
+  /**
+   * Overridable metadata fetch. The proxy variant swaps in an undici fetch with
+   * a dispatcher; the default uses the global fetch. Both go through the shared
+   * timeout wrapper so a hung lookup cannot stall registration.
+   */
+  protected fetchGatewayInfo(token: string): Promise<APIGatewayBotInfo> {
+    return fetchDiscordGatewayInfoWithTimeout({
+      token,
+      fetchImpl: (input, init) => fetch(input, init as RequestInit),
+      timeoutMs: this.gatewayInfoTimeoutMs,
+    });
+  }
+
+  override registerClient(client: unknown) {
+    const registration = this.registerClientInternal(client);
+    // client.ts registers plugins fire-and-forget (`void plugin.registerClient`).
+    // Mark the promise handled so a transient/fatal metadata failure becomes a
+    // logged fallback or rejected registration — never an unhandled rejection
+    // that crashes the gateway process (e.g. ENOTFOUND on machine wake).
+    registration.catch(() => {});
+    return registration;
+  }
+
+  private async registerClientInternal(client: unknown) {
+    // Re-fetch when the last attempt fell back to the default url, so a healthy
+    // network on a later reconnect upgrades us off the fallback gateway.
+    if (!this.gatewayInfo || this.gatewayInfoUsedFallback) {
+      const token = (client as { options: { token: string } }).options.token;
+      const resolved = await this.fetchGatewayInfo(token)
+        .then((info) => ({ info, usedFallback: false }))
+        .catch((error) => resolveGatewayInfoWithFallback({ runtime: this.runtime, error }));
+      this.gatewayInfo = resolved.info;
+      this.gatewayInfoUsedFallback = resolved.usedFallback;
     }
     return super.registerClient(client as never);
   }
@@ -155,9 +206,13 @@ export function createKiroGatewayPlugin(params: {
     intents,
     autoInteractions: true,
   };
+  const pluginParams: KiroGatewayPluginParams = {
+    runtime: params.runtime,
+    gatewayInfoTimeoutMs: params.discordConfig?.gatewayInfoTimeoutMs,
+  };
 
   if (!proxy) {
-    return new SafeKiroGatewayPlugin(options) as unknown as discordGateway.GatewayPlugin;
+    return new KiroGatewayPlugin(options, pluginParams) as unknown as discordGateway.GatewayPlugin;
   }
 
   try {
@@ -166,15 +221,13 @@ export function createKiroGatewayPlugin(params: {
     params.runtime.log?.("discord: gateway proxy enabled");
 
     class ProxyKiroGatewayPlugin extends KiroGatewayPlugin {
-      override async registerClient(client: unknown) {
-        if (!this.gatewayInfo) {
-          this.gatewayInfo = await fetchDiscordGatewayInfo({
-            token: (client as { options: { token: string } }).options.token,
-            fetchImpl: (input, init) => undiciFetch(input, init),
-            fetchInit: { dispatcher: fetchAgent },
-          });
-        }
-        return super.registerClient(client as never);
+      protected override fetchGatewayInfo(token: string): Promise<APIGatewayBotInfo> {
+        return fetchDiscordGatewayInfoWithTimeout({
+          token,
+          fetchImpl: (input, init) => undiciFetch(input, init),
+          fetchInit: { dispatcher: fetchAgent },
+          timeoutMs: this.gatewayInfoTimeoutMs,
+        });
       }
 
       override createWebSocket(url: string) {
@@ -182,9 +235,12 @@ export function createKiroGatewayPlugin(params: {
       }
     }
 
-    return new ProxyKiroGatewayPlugin(options) as unknown as discordGateway.GatewayPlugin;
+    return new ProxyKiroGatewayPlugin(
+      options,
+      pluginParams,
+    ) as unknown as discordGateway.GatewayPlugin;
   } catch (err) {
     params.runtime.error?.(danger(`discord: invalid gateway proxy: ${String(err)}`));
-    return new SafeKiroGatewayPlugin(options) as unknown as discordGateway.GatewayPlugin;
+    return new KiroGatewayPlugin(options, pluginParams) as unknown as discordGateway.GatewayPlugin;
   }
 }
