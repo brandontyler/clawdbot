@@ -61,7 +61,7 @@ function extractText(content: unknown): string {
 
 /**
  * Native kiro-cli slash commands as advertised in `_kiro.dev/commands/available`
- * (kiro-cli v2.2.2). Commands the OpenClaw gateway intercepts upstream
+ * (kiro-cli v2.8.1). Commands the OpenClaw gateway intercepts upstream
  * (/new, /reset, /compact, /model, /think, /usage, /help, /mcp, /sessions,
  * /restart, /stop, /session, /status, /unfocus, /acp) never reach the proxy
  * and are intentionally absent from this list.
@@ -72,7 +72,9 @@ const KIRO_NATIVE_SLASH_COMMANDS: ReadonlySet<string> = new Set([
   "/clear",
   "/code",
   "/context",
+  "/effort",
   "/feedback",
+  "/goal",
   "/guide",
   "/hooks",
   "/knowledge",
@@ -81,6 +83,8 @@ const KIRO_NATIVE_SLASH_COMMANDS: ReadonlySet<string> = new Set([
   "/prompts",
   "/quit",
   "/reply",
+  "/rewind",
+  "/stats",
   "/tools",
 ]);
 
