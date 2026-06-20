@@ -185,6 +185,98 @@ journalctl --user -u openclaw-gateway -f
 | Memory / QMD               | `docs/concepts/memory.md`                                      |
 | macOS app                  | `docs/mac/`                                                    |
 
+## Skill Governance
+
+This section captures the conventions adopted by the
+[Google Agent Skills whitepaper governance program](.beads/beads.db) (umbrella
+bead `openclaw-agent-skills-paper-governance-3bu`). Source PDF and
+extracted markdown:
+`/home/ubuntu/Downloads/whitepaper-extract/whitepaper.md` (Singhal et al.,
+May 2026).
+
+### Authoritative spec sources
+
+- **Kiro CLI**: <https://kiro.dev/docs/cli/skills/>
+- **Open Agent Skills standard**: <https://agentskills.io/specification>
+
+Skills auto-load by description match (same as Claude Code) and can also
+be invoked as `/skill-name`. Frontmatter loads at session start; the
+SKILL.md body loads when the skill activates; `references/` and
+`scripts/` load on demand from the body.
+
+### Tier model (read / draft / act ladder)
+
+| Tier | Definition | `allowed-tools` guidance |
+| --- | --- | --- |
+| `read-only` | Queries, summaries, describes. No external side effects. | `Read` plus bounded `Bash` for read-only commands. |
+| `draft-only` | Produces artifacts for human review. Local file writes OK. | `Bash Read Write` (and `AskUserQuestion` if interactive). |
+| `action-allowed` | Real-system side effects (SMS, email, posts, infra restarts). | Narrowest possible `allowed-tools` plus `disable-model-invocation: true`. |
+
+Tier classification for the current library lives at
+`~/.kiro/skills/TIER-AUDIT.md`.
+
+### Required frontmatter per skill
+
+```yaml
+---
+name: <kebab-case>                            # spec-required
+description: "What it does + when to use it." # spec-required, ≤ 1024 chars
+allowed-tools: Bash Read                      # SPACE-SEPARATED string, not list
+metadata:
+  tier: read-only | draft-only | action-allowed
+  version: "X.Y.Z"                            # preferred placement
+# Action-allowed only:
+disable-model-invocation: true
+---
+```
+
+Spec note: `allowed-tools` is **space-separated** per
+<https://agentskills.io/specification>. `Bash, Read` (comma) and
+`[Bash, Read]` (YAML list) are non-standard. `disable-model-invocation`
+is undocumented in the spec but works in Kiro CLI 2.6.0
+(precedent: `~/.kiro/skills/thermo-nuclear-review/SKILL.md`).
+
+### Version placement
+
+Tolerate both `metadata.version` (spec-compliant, preferred for new
+skills) and top-level `version:` (existing convention in
+`drawio-skill`, `last30days`). See bead `openclaw-fji` for the
+decision rationale.
+
+### Body conventions (whitepaper §A)
+
+- SKILL.md body **≤ 5 KB / 500 lines ideal, ≤ 10 KB hard cap**.
+- Long reference material → `references/<topic>.md`.
+- Executable helpers → `scripts/`.
+- Templates and static assets → `assets/`.
+- Body should be a router: when to use, decision tree, links into
+  `references/` and `scripts/`.
+
+### Versioning bumps (semver)
+
+- Patch: typo / clarification / pitfall added.
+- Minor: new section, expanded coverage, new script.
+- Major: rename, slash-command change, removed surface.
+
+### Tooling
+
+- `~/.kiro/skills/skill-curator/` — lints frontmatter, body size, version
+  presence, tier annotations, evals coverage. Run before merging skill
+  changes.
+- `evals/` directory inside each skill (paper §6) — golden + adversarial
+  cases plus `run.sh`. Pilot example lives in `~/.kiro/skills/aws-sms/evals/`.
+
+### When adding a new skill
+
+1. Pick the tier first (read / draft / action). When in doubt, choose
+   the more restrictive tier — the paper's failure-modes section showed
+   19 % of skills *degrade* capability vs. no skill.
+2. Write a precise `description` with trigger phrases — that is what
+   the model matches against during auto-routing.
+3. Set `allowed-tools` to the narrowest set that lets the skill work.
+4. If side effects are external, add `disable-model-invocation: true`.
+5. Run `~/.kiro/skills/skill-curator/scripts/lint.sh ~/.kiro/skills/<new>`.
+
 ## Workflow Tips
 
 - Before editing, use `code search_symbols` to understand structure.
