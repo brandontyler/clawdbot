@@ -47,24 +47,52 @@ export function isInvalidHistoryError(err: unknown): boolean {
 
 /** Extract text from OpenAI content (string or array of content parts). */
 function extractText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .filter((p: { type: string; text?: string }) => p.type === "text" && p.text)
-      .map((p: { text: string }) => p.text)
-      .join(" ");
-  }
-  return JSON.stringify(content ?? "");
+  // Delegate to extractTextAndImages so the multimodal parsing logic lives
+  // in exactly one place. Callers that only care about text just ignore the
+  // images field; this is a hot path but the cost is negligible (no I/O).
+  return extractTextAndImages(content).text;
 }
 
 /**
- * Per-image cap matching kiro-cli's documented limit (10 MB):
- * https://kiro.dev/docs/cli/chat/images/. We measure decoded bytes (3/4 of
- * base64 length) since that's what kiro-cli sees.
+ * Maximum number of images per request, matching kiro-cli's documented limit
+ * (https://kiro.dev/docs/cli/chat/images/). Beyond this, kiro-cli may reject
+ * the whole prompt; truncating preserves the first N rather than losing all.
+ */
+const MAX_IMAGES_PER_REQUEST = 10;
+
+/**
+ * Per-image cap matching kiro-cli's documented limit (10 MB). We measure
+ * decoded bytes (3/4 of base64 length) since that's what kiro-cli sees.
  */
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Pattern matching the `[media attached: ...]` hint lines emitted by the
+ * gateway in `src/auto-reply/media-note.ts`. When pi-ai has already attached
+ * the corresponding image bytes as `image_url` parts, these lines are pure
+ * token bloat (~70-80 tokens per image attachment). Strip them so the model
+ * only sees the actual image plus the user's text, mirroring the IDE's
+ * drag/drop UX. Patterns:
+ *   [media attached: <path>]
+ *   [media attached: <path> (<mime>)]
+ *   [media attached: <path> (<mime>) | <url>]
+ *   [media attached N/M: <path>...]
+ *   [media attached: N files]   (multi-file header)
+ */
+const MEDIA_ATTACHED_LINE_PATTERN = /^\s*\[media attached(?:\s+\d+\/\d+)?:\s+[^\]]*\]\s*$/;
+
+function stripMediaAttachedLines(text: string): string {
+  if (!text.includes("[media attached")) return text;
+  const lines = text.split("\n");
+  const kept = lines.filter((line) => !MEDIA_ATTACHED_LINE_PATTERN.test(line));
+  if (kept.length === lines.length) return text;
+  // Collapse runs of blank lines created by removal so the prompt isn't
+  // peppered with empty paragraphs.
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 /**
  * Parse a single OpenAI multimodal `image_url` part into an ImageInput.
@@ -109,6 +137,13 @@ function parseImageUrlPart(
  * Extract both text and inline images from OpenAI content. Used by the
  * proxy to translate multimodal user messages into ACP prompt content
  * blocks. `text` collapses all text parts; `images` is in source order.
+ *
+ * NOTE: this is a pure projection — no `[media attached:]` stripping
+ * happens here. The strip is applied later in `buildPromptFromMessages`
+ * for the prompt we send to ACP, but kept out of this function so that
+ * session-key fingerprinting (`resolveSessionKey` → `extractText`) stays
+ * stable for the same conversation regardless of whether images were
+ * attached.
  */
 function extractTextAndImages(
   content: unknown,
@@ -804,13 +839,29 @@ export class SessionManager {
     for (const msg of messages) {
       if (msg.role === "user") {
         const extracted = extractTextAndImages(msg.content, this.log);
-        if (extracted.text) {
-          parts.push(extracted.text);
+        // Per-message scope: strip the redundant `[media attached: /path]`
+        // hint lines only from messages that actually carried image bytes.
+        // This keeps session-key fingerprinting stable (extractText stays a
+        // pure projection) while still saving ~80 tokens per attached image
+        // in the prompt we send to ACP.
+        const text =
+          extracted.images.length > 0 ? stripMediaAttachedLines(extracted.text) : extracted.text;
+        if (text) {
+          parts.push(text);
         }
         if (extracted.images.length > 0) {
           images.push(...extracted.images);
         }
       }
+    }
+    // Enforce kiro-cli's documented 10-image-per-request cap. Truncate (keep
+    // the first N) rather than dropping the request — better UX than silent
+    // total failure if the user attaches 11+ images at once.
+    if (images.length > MAX_IMAGES_PER_REQUEST) {
+      this.log(
+        `⚠️ ${images.length} images exceeds kiro-cli's ${MAX_IMAGES_PER_REQUEST}-image limit — truncating to first ${MAX_IMAGES_PER_REQUEST}`,
+      );
+      images.length = MAX_IMAGES_PER_REQUEST;
     }
     return { text: parts.join("\n\n").trim(), images };
   }
