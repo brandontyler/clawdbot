@@ -362,7 +362,11 @@ export class KiroSession {
   }
 
   /** Send a text prompt and stream chunks to the provided callback. */
-  async prompt(text: string, onChunk: ChunkCallback): Promise<string> {
+  async prompt(
+    text: string,
+    onChunk: ChunkCallback,
+    images?: ReadonlyArray<{ data: string; mimeType: string }>,
+  ): Promise<string> {
     this.lastTouchedAt = Date.now();
     this.isPrompting = true;
     this.promptStartedAt = Date.now();
@@ -377,9 +381,24 @@ export class KiroSession {
     }, 60_000);
 
     try {
+      // Build ACP prompt content blocks. Images first so the model has the
+      // visual context before the textual instruction (matches IDE drag/drop).
+      // kiro-cli advertises promptCapabilities.image:true; this is the
+      // path that actually feeds vision into the model context (the read-tool
+      // Image mode is broken for ACP — see kirodotdev/Kiro#6937).
+      const promptContent: Array<
+        { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+      > = [];
+      if (images && images.length > 0) {
+        for (const img of images) {
+          promptContent.push({ type: "image", data: img.data, mimeType: img.mimeType });
+        }
+      }
+      promptContent.push({ type: "text", text });
+
       const promptPromise = this.client.prompt({
         sessionId: this.acpSessionId,
-        prompt: [{ type: "text", text }],
+        prompt: promptContent,
       });
 
       // Race against process death so we don't hang forever if kiro-cli crashes.

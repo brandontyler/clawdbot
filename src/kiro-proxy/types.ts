@@ -10,9 +10,38 @@
 
 export type OpenAIRole = "system" | "user" | "assistant";
 
+/**
+ * OpenAI multimodal content parts. We support text and image_url because
+ * pi-ai's openai-completions adapter emits these when the model declares
+ * `input: ["image"]`. Other parts (tool_use, tool_result) are not relevant
+ * for the user→agent direction handled by this proxy.
+ */
+export type OpenAIContentPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image_url";
+      image_url: { url: string; detail?: "auto" | "low" | "high" };
+    };
+
 export type OpenAIMessage = {
   role: OpenAIRole;
-  content: string;
+  /**
+   * Either a plain string (legacy / non-multimodal) or an array of typed
+   * content parts (OpenAI multimodal). pi-ai sends arrays when the model
+   * supports images and the prompt has `images: ImageContent[]`.
+   */
+  content: string | OpenAIContentPart[];
+};
+
+/**
+ * A single image extracted from an OpenAI message, ready to forward to
+ * kiro-cli as an ACP `ContentBlock::Image`.
+ */
+export type ImageInput = {
+  /** Base64-encoded image bytes (no data: prefix). */
+  data: string;
+  /** Standard MIME type, e.g. "image/jpeg". */
+  mimeType: string;
 };
 
 export type OpenAIChatRequest = {

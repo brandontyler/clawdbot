@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { checkContextAlert, clearContextAlerts } from "./alerts.js";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
 import { ProgressReporter } from "./progress.js";
-import type { OpenAIMessage, KiroSessionHandle, ChannelRoute } from "./types.js";
+import type { OpenAIMessage, KiroSessionHandle, ChannelRoute, ImageInput } from "./types.js";
 
 const DEFAULT_IDLE_SECS = 1800; // 30 minutes — short idle timeout prevents stale ACP pipes
 
@@ -57,6 +57,84 @@ function extractText(content: unknown): string {
       .join(" ");
   }
   return JSON.stringify(content ?? "");
+}
+
+/**
+ * Per-image cap matching kiro-cli's documented limit (10 MB):
+ * https://kiro.dev/docs/cli/chat/images/. We measure decoded bytes (3/4 of
+ * base64 length) since that's what kiro-cli sees.
+ */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Parse a single OpenAI multimodal `image_url` part into an ImageInput.
+ * Returns null on malformed/unsupported URLs (logged by caller). Supports
+ * data:<mime>;base64,<bytes> URLs only — http(s) URLs are rejected because
+ * kiro-cli expects inline bytes, not links.
+ */
+function parseImageUrlPart(
+  url: string,
+  log?: (msg: string) => void,
+): { data: string; mimeType: string } | null {
+  if (!url.startsWith("data:")) {
+    log?.(`image_url skipped: non-data URL (${url.slice(0, 32)}…) — kiro expects inline bytes`);
+    return null;
+  }
+  // Format: data:<mime>;base64,<base64-data>
+  // Be permissive with parameters (e.g. data:image/jpeg;name=foo;base64,…).
+  const commaIdx = url.indexOf(",");
+  if (commaIdx < 0) {
+    log?.(`image_url skipped: malformed data URL (no comma)`);
+    return null;
+  }
+  const header = url.slice(5, commaIdx); // strip "data:"
+  const data = url.slice(commaIdx + 1);
+  if (!header.toLowerCase().includes(";base64")) {
+    log?.(`image_url skipped: data URL not base64-encoded`);
+    return null;
+  }
+  const mimeType = header.split(";")[0]?.trim() || "image/jpeg";
+  // Sanity-check decoded size (4 base64 chars = 3 bytes).
+  const approxBytes = Math.floor((data.length * 3) / 4);
+  if (approxBytes > MAX_IMAGE_BYTES) {
+    log?.(
+      `image_url skipped: ${Math.round(approxBytes / 1024 / 1024)}MB exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB cap`,
+    );
+    return null;
+  }
+  return { data, mimeType };
+}
+
+/**
+ * Extract both text and inline images from OpenAI content. Used by the
+ * proxy to translate multimodal user messages into ACP prompt content
+ * blocks. `text` collapses all text parts; `images` is in source order.
+ */
+function extractTextAndImages(
+  content: unknown,
+  log?: (msg: string) => void,
+): { text: string; images: Array<{ data: string; mimeType: string }> } {
+  if (typeof content === "string") {
+    return { text: content, images: [] };
+  }
+  if (!Array.isArray(content)) {
+    return { text: JSON.stringify(content ?? ""), images: [] };
+  }
+  const textParts: string[] = [];
+  const images: Array<{ data: string; mimeType: string }> = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const p = part as { type?: string; text?: string; image_url?: { url?: string } };
+    if (p.type === "text" && typeof p.text === "string") {
+      textParts.push(p.text);
+    } else if (p.type === "image_url" && typeof p.image_url?.url === "string") {
+      const img = parseImageUrlPart(p.image_url.url, log);
+      if (img) {
+        images.push(img);
+      }
+    }
+  }
+  return { text: textParts.join(" "), images };
 }
 
 /**
@@ -286,6 +364,7 @@ export class SessionManager {
   ): Promise<{
     session: KiroSession;
     promptText: string;
+    promptImages: ImageInput[];
     managed: ManagedSession;
     unlockPrompt?: () => void;
   }> {
@@ -358,13 +437,14 @@ export class SessionManager {
           this.resetSession(sessionKey, "desync-empty-slice");
           // Fall through to the "create fresh session" path below.
         } else {
-          const promptText = this.buildPromptFromMessages(newMessages);
+          const { text: promptText, images: promptImages } =
+            this.buildPromptFromMessages(newMessages);
           existing.handle.sentMessageCount = messages.length;
           existing.handle.lastTouchedAt = Date.now();
           existing.session.lastTouchedAt = Date.now();
           const rssKb = existing.session.getRssKb();
           this.log(
-            `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}`,
+            `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}${promptImages.length ? ` imgs=${promptImages.length}` : ""}`,
           );
           // Lock immediately so no concurrent request can slip through before
           // the caller sets the real promptLock in the streaming path.
@@ -375,6 +455,7 @@ export class SessionManager {
           return {
             session: existing.session,
             promptText,
+            promptImages,
             managed: existing,
             unlockPrompt: unlockPrompt!,
           };
@@ -420,7 +501,7 @@ export class SessionManager {
         `noHibernate fresh session — sending only latest message (dropped ${messages.length - 1} replayed)`,
       );
     }
-    const promptText = this.buildPromptFromMessages(promptMessages);
+    const { text: promptText, images: promptImages } = this.buildPromptFromMessages(promptMessages);
 
     const handle: KiroSessionHandle = {
       acpSessionId: session.acpSessionId,
@@ -437,7 +518,7 @@ export class SessionManager {
     };
     this.sessions.set(sessionKey, managed);
 
-    return { session, promptText, managed, unlockPrompt: unlockNew! };
+    return { session, promptText, promptImages, managed, unlockPrompt: unlockNew! };
   }
 
   /** Kill all sessions cleanly. */
@@ -702,25 +783,36 @@ export class SessionManager {
    * at position 0.  Otherwise the command is buried inside metadata and
    * gets treated as plain text by kiro-cli.
    */
-  private buildPromptFromMessages(messages: OpenAIMessage[]): string {
+  private buildPromptFromMessages(messages: OpenAIMessage[]): {
+    text: string;
+    images: ImageInput[];
+  } {
     // Try the slash-command fast-path on the latest user message.
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m?.role === "user") {
         const bare = extractKiroSlashCommand(extractText(m.content));
         if (bare) {
-          return bare;
+          // Slash commands never carry image attachments — keep it lean.
+          return { text: bare, images: [] };
         }
         break;
       }
     }
     const parts: string[] = [];
+    const images: ImageInput[] = [];
     for (const msg of messages) {
       if (msg.role === "user") {
-        parts.push(extractText(msg.content));
+        const extracted = extractTextAndImages(msg.content, this.log);
+        if (extracted.text) {
+          parts.push(extracted.text);
+        }
+        if (extracted.images.length > 0) {
+          images.push(...extracted.images);
+        }
       }
     }
-    return parts.join("\n\n").trim();
+    return { text: parts.join("\n\n").trim(), images };
   }
 
   private buildSessionEvents(sessionKey: string): KiroSessionEvents {

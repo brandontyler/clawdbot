@@ -538,7 +538,7 @@ async function handleCompletions(
     return;
   }
 
-  const { session, promptText, managed } = sessionResult;
+  const { session, promptText, promptImages, managed } = sessionResult;
   const tSession = performance.now();
   log(`timing: session=${sessionTag}… resolve=${Math.round(tSession - t0)}ms`);
 
@@ -618,19 +618,23 @@ async function handleCompletions(
       });
 
       const stopReason = await Promise.race([
-        session.prompt(promptText, (text) => {
-          if (!tFirstChunk) {
-            tFirstChunk = performance.now();
-            if (firstTokenTimer) clearTimeout(firstTokenTimer);
-            // Flip the cold→warm flag for this session so future turns use
-            // the (tighter) warm-session timeout floor.
-            session.hasStreamedFirstToken = true;
-          }
-          if (text) {
-            responseChunks.push(text);
-            sseChunk(res, buildChunk(completionId, text));
-          }
-        }),
+        session.prompt(
+          promptText,
+          (text) => {
+            if (!tFirstChunk) {
+              tFirstChunk = performance.now();
+              if (firstTokenTimer) clearTimeout(firstTokenTimer);
+              // Flip the cold→warm flag for this session so future turns use
+              // the (tighter) warm-session timeout floor.
+              session.hasStreamedFirstToken = true;
+            }
+            if (text) {
+              responseChunks.push(text);
+              sseChunk(res, buildChunk(completionId, text));
+            }
+          },
+          promptImages,
+        ),
         timeoutPromise,
       ]);
       session.consecutiveErrors = 0;
@@ -690,15 +694,19 @@ async function handleCompletions(
         let retrySucceeded = false;
         try {
           const retryChunks: string[] = [];
-          await session.prompt(promptText, (text) => {
-            if (!tFirstChunk) {
-              tFirstChunk = performance.now();
-            }
-            if (text) {
-              retryChunks.push(text);
-              sseChunk(res, buildChunk(completionId, text));
-            }
-          });
+          await session.prompt(
+            promptText,
+            (text) => {
+              if (!tFirstChunk) {
+                tFirstChunk = performance.now();
+              }
+              if (text) {
+                retryChunks.push(text);
+                sseChunk(res, buildChunk(completionId, text));
+              }
+            },
+            promptImages,
+          );
           const retryResponse = retryChunks.join("");
           if (retryResponse.trim()) {
             retrySucceeded = true;
@@ -919,9 +927,13 @@ async function handleCompletions(
     const resolveBlockLock = sessionResult.unlockPrompt ?? (() => {});
 
     try {
-      await session.prompt(promptText, (text) => {
-        if (text) parts.push(text);
-      });
+      await session.prompt(
+        promptText,
+        (text) => {
+          if (text) parts.push(text);
+        },
+        promptImages,
+      );
       session.consecutiveErrors = 0;
 
       // Detect kiro-cli inline corruption in blocking response.
