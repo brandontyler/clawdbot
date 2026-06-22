@@ -676,10 +676,10 @@ export class SessionManager {
         const session = this.sessions.get(sessionKey)?.session;
         reporter.start(channelId, session?.lastContextPct ?? 0);
       },
-      onPromptEnd: () => {
+      onPromptEnd: (producedText) => {
         const reporter = this.reporters.get(sessionKey);
         if (reporter) {
-          void reporter.finish();
+          void reporter.finish(producedText);
         }
       },
     };

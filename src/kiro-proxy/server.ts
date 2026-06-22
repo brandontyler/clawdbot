@@ -608,12 +608,13 @@ async function handleCompletions(
       // Wrap prompt in a first-token timeout: if kiro-cli produces no output
       // within the timeout, the session is likely dead/stale. Kill and let the
       // caller handle the error (which triggers a retry or fresh session).
-      // Scale timeout with context size: high-context sessions need more time
-      // for the model to process input before generating the first token.
-      const baseTimeoutMs = 30_000;
+      // Base is 60s: healthy time-to-first-token is routinely 17-29s (cold and
+      // hibernated-resume turns sit even higher), so the old flat 30s killed
+      // slow-but-alive sessions and surfaced false "no reply". Scale with
+      // context unconditionally — bigger histories take longer to first token.
+      const baseTimeoutMs = 60_000;
       const ctxPct = session.lastContextPct || 0;
-      const FIRST_TOKEN_TIMEOUT_MS =
-        ctxPct > 40 ? baseTimeoutMs + Math.round(ctxPct * 1500) : baseTimeoutMs;
+      const FIRST_TOKEN_TIMEOUT_MS = baseTimeoutMs + Math.round(ctxPct * 1500);
       let firstTokenTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         firstTokenTimer = setTimeout(() => {

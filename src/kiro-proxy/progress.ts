@@ -315,7 +315,16 @@ export class ProgressReporter {
     this.contextPct = pct;
   }
 
-  async finish(): Promise<void> {
+  /**
+   * Finalize the progress card.
+   *
+   * @param producedText whether the model streamed any assistant text this
+   *   run. When false, the run delivered no answer (first-token timeout, empty
+   *   ACP response, killed stale session) and we MUST NOT render "✅ Done" —
+   *   that reads as a successful reply when nothing reached the user. Show the
+   *   honest state instead so the card matches reality.
+   */
+  async finish(producedText: boolean): Promise<void> {
     if (!this.started) {
       return;
     }
@@ -327,6 +336,17 @@ export class ProgressReporter {
     }
 
     const dt = elapsed(Date.now() - this.promptStartedAt);
+
+    if (!producedText) {
+      const note =
+        this.toolCount > 0
+          ? `⚠️ **No reply** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""}) — the agent ran tools but returned no answer. It may retry automatically; if nothing follows, resend your message.`
+          : `⚠️ **No reply** (${dt}) — the agent timed out before responding. It may retry automatically; if nothing follows, resend your message.`;
+      await editMessage(this.channelId, this.messageId, note);
+      this.messageId = null;
+      return;
+    }
+
     const parts: string[] = [];
     parts.push(`✅ **Done** (${dt}, ${this.toolCount} tool${this.toolCount !== 1 ? "s" : ""})`);
 

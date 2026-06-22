@@ -135,7 +135,13 @@ export type KiroSessionEvents = {
   onActivity?: () => void;
   onToolCall?: (title: string, kind: string, status: string, isNew: boolean) => void;
   onPromptStart?: () => void;
-  onPromptEnd?: () => void;
+  /**
+   * Fired when a prompt() call settles (success, timeout, or throw).
+   * @param producedText true if the model streamed any assistant text this
+   *   run — i.e. the user actually received an answer. False on empty/timed-out
+   *   runs so progress reporting can avoid a false "Done".
+   */
+  onPromptEnd?: (producedText: boolean) => void;
 };
 
 export class KiroSession {
@@ -352,7 +358,15 @@ export class KiroSession {
     this.lastTouchedAt = Date.now();
     this.isPrompting = true;
     this.promptStartedAt = Date.now();
-    this.chunkCallback = onChunk;
+    // Track whether the model streamed any real assistant text this run.
+    // Empty chunks (tool-liveness pings) don't count — only text the user sees.
+    let producedText = false;
+    this.chunkCallback = (chunk) => {
+      if (chunk) {
+        producedText = true;
+      }
+      onChunk(chunk);
+    };
     this.events.onPromptStart?.();
 
     // Keep-alive: bump lastTouchedAt periodically while the prompt is in-flight
@@ -389,7 +403,7 @@ export class KiroSession {
       this.isPrompting = false;
       this.promptStartedAt = null;
       this.chunkCallback = null;
-      this.events.onPromptEnd?.();
+      this.events.onPromptEnd?.(producedText);
     }
   }
 
