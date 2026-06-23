@@ -156,7 +156,7 @@ NATHAN'S BACKGROUND:
   programs that serve teens).
 - Open to roles that leverage his film/video background (district media specialist,
   school video production, nonprofit communications/comms-coordinator).
-- Location: Denton, TX. MUST be commutable from Denton (~30 mi radius). NO
+- Location: Denton, TX. MUST be commutable from Denton (~35 mi radius). NO
   RELOCATION. Acceptable cities: Denton, Krum, Sanger, Aubrey, Pilot Point,
   Argyle, Lewisville, Flower Mound, Highland Village, Lake Dallas, Little Elm,
   Frisco, The Colony, Northwest ISD, Justin, Roanoke, Trophy Club. AVOID: Dallas
@@ -187,7 +187,7 @@ Score 1-5:
     care, child-development centers serving under-5 (e.g. KinderCare, Bright
     Horizons, Goddard, Primrose, Children's Lighthouse, Child Development
     Schools, Learning Experience). Also: anything requiring a teaching cert he
-    doesn't have, requires relocation, far outside the 30mi commute radius, or
+    doesn't have, requires relocation, far outside the 35mi commute radius, or
     unrelated to youth/education.
 
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief why this fits Nathan>\",\"pay\":\"<estimated range, hourly or annual>\"}
@@ -201,7 +201,7 @@ SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
 {
   echo "# 📚 Nathan's Job Search — $DATE_LABEL"
   echo ""
-  echo "_Bridge jobs toward teaching career — North Texas, ~30mi from Denton_"
+  echo "_Bridge jobs toward teaching career — North Texas, ~35mi from Denton_"
   echo ""
 } > "$DIGEST_FILE"
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Job Search for Nathan (Teaching Path / Youth Nonprofits)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/nathan-jobs.sh
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.16.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+MemoryMax=400M
+CPUQuota=100%
