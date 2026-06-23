@@ -127,7 +127,7 @@ SUMMARY=""
 if [ -n "$PDF_TEXT" ]; then
   SUMMARY=$(cd "$HOME" && timeout 60 kiro-cli chat --no-interactive --wrap never "Summarize this sermon in 2-3 sentences. What is the main topic, key scripture, and one takeaway? Be concise.
 
-${PDF_TEXT}" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:" | tail -5 | head -3)
+${PDF_TEXT}" 2>&1 | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -v "^$" | grep -v "Credits:\|Time:" | tail -5 | head -3)
 fi
 
 if [ -n "$SUMMARY" ]; then
