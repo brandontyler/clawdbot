@@ -7,5 +7,6 @@ ExecStart=/home/ubuntu/code/personal/finances/finance-morning-briefing.sh
 WorkingDirectory=/home/ubuntu/code/personal/finances
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
 MemoryMax=800M
 TimeoutStartSec=600

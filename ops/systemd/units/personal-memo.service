@@ -7,5 +7,6 @@ ExecStart=/home/ubuntu/code/personal/memo/personal-memo-ceo.sh
 WorkingDirectory=/home/ubuntu/code/personal/memo
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
 MemoryMax=800M
 TimeoutStartSec=900
