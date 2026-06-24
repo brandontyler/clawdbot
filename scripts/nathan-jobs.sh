@@ -68,7 +68,7 @@ log "=== Nathan's Job Search — $DATE_LABEL ==="
 log "Searching LinkedIn..."
 LI_SEARCHES=(
   # 1. Direct teacher-pipeline jobs near Denton
-  "https://www.linkedin.com/jobs/search?keywords=paraprofessional+OR+%22instructional+aide%22+OR+%22teaching+assistant%22+OR+%22substitute+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=35&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=paraprofessional+OR+%22instructional+aide%22+OR+%22teaching+assistant%22+OR+%22substitute+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=25&position=1&pageNum=0"
   # 2. After-school / youth program staff (DFW radius)
   "https://www.linkedin.com/jobs/search?keywords=%22after+school%22+OR+%22youth+program%22+OR+%22youth+development%22+OR+%22youth+coordinator%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
   # 3. Big-name youth nonprofits
@@ -76,7 +76,9 @@ LI_SEARCHES=(
   # 4. AV / video / media specialist (uses film background) — schools or nonprofits
   "https://www.linkedin.com/jobs/search?keywords=%22AV+technician%22+OR+%22media+specialist%22+OR+%22video+producer%22+OR+%22video+production%22+%28school+OR+ISD+OR+nonprofit+OR+education%29&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
   # 5. Tutoring / educational support centers
-  "https://www.linkedin.com/jobs/search?keywords=tutor+OR+%22tutoring%22+OR+%22Sylvan%22+OR+%22Mathnasium%22+OR+%22Kumon%22+OR+%22Varsity+Tutors%22&location=Denton%2C+Texas&f_TPR=r604800&distance=35&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=tutor+OR+%22tutoring%22+OR+%22Sylvan%22+OR+%22Mathnasium%22+OR+%22Kumon%22+OR+%22Varsity+Tutors%22&location=Denton%2C+Texas&f_TPR=r604800&distance=25&position=1&pageNum=0"
+  # 6. Foster care / foster youth / CASA / child welfare (NEW — explicit interest)
+  "https://www.linkedin.com/jobs/search?keywords=%22foster+care%22+OR+%22foster+youth%22+OR+%22CASA%22+OR+%22child+welfare%22+OR+%22residential+childcare%22+OR+%22Buckner%22+OR+%22ACH+Child%22+OR+%22Pathways+Youth%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
 )
 
 for url in "${LI_SEARCHES[@]}"; do
@@ -108,7 +110,7 @@ log "  LinkedIn: $LI_COUNT results"
 
 # --- X/Twitter (secondary) ---
 log "Searching X/Twitter..."
-TW_RESULTS=$(bird search '("paraprofessional" OR "teacher aide" OR "instructional aide" OR "after school" OR "youth coordinator" OR "Boys Girls Club" OR "Communities In Schools") (hiring OR "we'\''re hiring" OR "now hiring" OR "join our team") (Denton OR DFW OR "North Texas" OR Lewisville OR Frisco OR "Flower Mound") -is:retweet' -n 10 --json 2>/dev/null || echo "[]")
+TW_RESULTS=$(bird search '("paraprofessional" OR "teacher aide" OR "instructional aide" OR "after school" OR "youth coordinator" OR "Boys Girls Club" OR "Communities In Schools" OR "foster care" OR "foster youth" OR "CASA" OR "Buckner" OR "ACH Child") (hiring OR "we'\''re hiring" OR "now hiring" OR "join our team") (Denton OR DFW OR "North Texas" OR Lewisville OR Frisco OR "Flower Mound") -is:retweet' -n 10 --json 2>/dev/null || echo "[]")
 echo "$TW_RESULTS" | jq -r '.[] | "\(.id)\ttwitter\t\(.author.username)\t\(.text | gsub("\n";" ") | .[0:200])\thttps://x.com/\(.author.username)/status/\(.id)"' >> "$JOBS_FILE" 2>/dev/null
 
 TW_COUNT=$(grep -c "twitter" "$JOBS_FILE" 2>/dev/null || echo 0)
@@ -168,17 +170,26 @@ Score 1-5:
     instructional aide, substitute teacher, long-term sub, district AV/media
     specialist serving secondary grades; OR strong youth-serving nonprofit role
     near Denton (Boys & Girls Club, YMCA, Communities In Schools, BBBS) where
-    he gets meaningful contact with teens / older kids.
+    he gets meaningful contact with teens / older kids; OR foster-care / foster-
+    youth / CASA / child-welfare role at a child-placing or family-services
+    agency (Buckner, ACH Child & Family Services, Pathways Youth & Family,
+    Methodist Children's Home, CASA of Denton County, 4Kids of North Texas) —
+    Nathan has explicit interest in working with foster youth.
 4 = Adjacent secondary-grade roles: tutoring center for middle/high school
     (Sylvan/Mathnasium/Varsity Tutors targeting older students), private school
     aide (middle/high), after-school program staff for teens, library aide at
     a middle/high school, nonprofit communications role using his film background.
     Also: K-12 instructional aide where the grade isn't specified (default to 4
-    since most ISD aide roles cover multiple grades).
+    since most ISD aide roles cover multiple grades). Foster-adjacent roles
+    (residential childcare, transitional living, juvenile-justice mentoring)
+    that aren't strictly foster-care orgs but serve the same population.
 3 = General nonprofit/education role he could grow into, parks-rec youth
     programming serving teens, edtech support, museum/library education,
     school district admin that exposes him to secondary teachers daily.
     Elementary-only aide roles default here (acceptable but not preferred).
+    SPECIAL EDUCATION-only aide roles also default here — Nathan is NOT
+    pursuing SPED specifically; rate as acceptable-but-not-preferred unless
+    the role is at a middle/high school AND not SPED-exclusive.
 2 = Adjacent but weak: school district admin/clerical, customer service at a
     nonprofit, retail with 'youth team' wording, college-level (not K-12) roles
     even at education orgs (e.g., university career-services coordinator).
