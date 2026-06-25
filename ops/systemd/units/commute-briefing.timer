@@ -1,0 +1,10 @@
+[Unit]
+Description=Run commute briefing weekday mornings
+
+[Timer]
+# 5:30am CDT Mon-Fri — gives Brandon ~30min before 6am (system tz = America/Chicago)
+OnCalendar=Mon..Fri *-*-* 05:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

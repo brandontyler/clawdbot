@@ -1,0 +1,10 @@
+[Unit]
+Description=Commute Briefing — daily "what's broken on your drive" Discord post
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/ubuntu/openclaw/scripts/commute-briefing.py
+WorkingDirectory=/home/ubuntu/openclaw
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=180
