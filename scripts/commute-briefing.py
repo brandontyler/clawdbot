@@ -99,6 +99,55 @@ def dtx_query(table: str, where_clauses: list, take: int = 200) -> dict:
         return json.loads(raw)
 
 
+# ─── Google Maps live travel time scrape ────────────────────────────────
+def fetch_live_travel_time(origin: str, destination: str) -> dict:
+    """Scrape live drive-time from Google Maps via dev-browser. Returns {minutes, distance_mi, alt_minutes, raw}."""
+    import subprocess
+    url = f"https://www.google.com/maps/dir/{urllib.parse.quote(origin)}/{urllib.parse.quote(destination)}/"
+    js = f'''
+const page = await browser.newPage();
+await page.setViewportSize({{ width: 1280, height: 900 }});
+await page.goto({json.dumps(url)}, {{ waitUntil: "domcontentloaded", timeout: 30000 }});
+await page.waitForTimeout(11000);
+const text = await page.evaluate(() => document.body.innerText);
+const ranges = text.match(/\\d+\\s*hr\\s*\\d+\\s*min|\\d+\\s*min/g) || [];
+const dist = text.match(/\\d+(\\.\\d+)?\\s*mi/g) || [];
+console.log(JSON.stringify({{times: ranges.slice(0, 6), dist: dist.slice(0, 3)}}));
+await page.close();
+'''
+    try:
+        result = subprocess.run(
+            ["dev-browser", "--headless", "--timeout", "60"],
+            input=js, capture_output=True, text=True, timeout=90,
+        )
+        # Extract the JSON line we logged
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("{") and "times" in line:
+                parsed = json.loads(line)
+                times = parsed.get("times", [])
+                # Filter out >2hr (those are walking/transit; drives are <2hr from Denton to Dallas)
+                drive_mins = []
+                for t in times:
+                    m = re.match(r"(\d+)\s*hr\s*(\d+)\s*min", t)
+                    if m:
+                        total = int(m.group(1)) * 60 + int(m.group(2))
+                        if total < 120: drive_mins.append(total)
+                    else:
+                        m = re.match(r"(\d+)\s*min", t)
+                        if m: drive_mins.append(int(m.group(1)))
+                drive_mins = drive_mins[:5]
+                if not drive_mins: return {"error": "no-times"}
+                return {
+                    "minutes": min(drive_mins),
+                    "alt_minutes": sorted(drive_mins),
+                    "distance_mi": parsed.get("dist", [None])[0],
+                }
+        return {"error": "no-output", "stderr": result.stderr[:200]}
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+
 def fetch_route_conditions(table: str, route: str, county: int) -> list[dict]:
     """Fetch all conditions for a route in one county. Returns flat list of dicts."""
     where = [[
@@ -201,18 +250,58 @@ def fetch_phase2_closures() -> dict:
     return sections
 
 
+def is_daytime_construction(row: dict, now: datetime) -> bool:
+    """For construction items, keep only ones active during Brandon's commute hours (6am-9pm) today/tomorrow.
+    Drops overnight nightly closures (8pm-6am)."""
+    end_ms = row.get("CONDENDTS") or 0
+    start_ms = row.get("CONDSTARTTS") or 0
+    if start_ms < 1e10 or end_ms < 1e10: return False
+    start_dt = datetime.fromtimestamp(start_ms / 1000, tz=CDT)
+    end_dt = datetime.fromtimestamp(end_ms / 1000, tz=CDT)
+    # Description text: most "nightly closure" items contain that exact phrase
+    desc = (row.get("CONDDSCR") or "").lower()
+    if "nighttime closure" in desc or "night work only" in desc or "nightly closure" in desc:
+        return False
+    # If start hour is >=20 (8pm) and end hour is <=6 (6am), it's overnight — drop
+    if start_dt.hour >= 20 and end_dt.hour <= 6: return False
+    return True
+
+
 # ─── Format the briefing ─────────────────────────────────────────────────
 def build_briefing(now: datetime) -> str:
     """Compose the Discord message body."""
     out = []
     weekday = now.strftime("%A, %B %-d %Y")
-    out.append(f"🛣️ **What's Broken on Your Drive — {weekday}**")
-    out.append("_Denton ↔ Dallas Galleria · I-35E + I-635 + FM-1171 · auto-pulled from DriveTexas + TxDOT_")
+    time_str = now.strftime("%-I:%M %p CDT")
+    out.append(f"🛣️ **Commute Briefing — {weekday} · {time_str}**")
     out.append("")
 
-    # ── Section 1: DriveTexas live conditions ──
+    # ── Section 1: LIVE travel time (the #1 thing that matters) ──
+    out.append("**🚗 Live travel time (right now)**")
+    inbound = fetch_live_travel_time("Denton, TX", "Galleria Dallas, TX")
+    outbound = fetch_live_travel_time("Galleria Dallas, TX", "Denton, TX")
+    for label, leg in (("Denton → Galleria", inbound), ("Galleria → Denton", outbound)):
+        if "error" in leg:
+            out.append(f"• {label}: _scrape failed: {leg['error']}_")
+            continue
+        mins = leg["minutes"]
+        alts = leg["alt_minutes"]
+        dist = leg.get("distance_mi") or "?"
+        # Compare to off-peak baseline (~36 min for this route)
+        BASELINE = 36
+        delta = mins - BASELINE
+        delta_str = ""
+        if delta >= 10: delta_str = f" 🔴 +{delta} vs typical"
+        elif delta >= 5: delta_str = f" 🟡 +{delta} vs typical"
+        elif delta <= -2: delta_str = f" 🟢 −{-delta} below typical"
+        else: delta_str = " ✅ at typical"
+        alt_str = f"  _(alt routes: {', '.join(str(a)+'min' for a in alts[1:4])})_" if len(alts) > 1 else ""
+        out.append(f"• {label}: **{mins} min** · {dist}{delta_str}{alt_str}")
+    out.append("")
+
+    # ── Section 2: Live incidents on route (last 6h, all type codes) ──
     all_rows = []
-    for table in ("conditionsLine", "futureConditionsLine"):
+    for table in ("conditionsLine", "futureConditionsLine", "conditionsPoint"):
         for route in (ROUTE_IH35E, ROUTE_IH635, ROUTE_FM1171):
             for county in (DALLAS_CO, DENTON_CO):
                 try:
@@ -223,20 +312,25 @@ def build_briefing(now: datetime) -> str:
                 except Exception as e:
                     print(f"  [warn] dtx {table}/{route}/{county}: {e}", file=sys.stderr)
 
-    relevant = [r for r in all_rows if is_brandons_route(r) and is_relevant_window(r, now)]
-    # Dedupe by start+from-desc (the API returns near-duplicates across line/point tables)
+    # Dedupe
     seen = set()
     unique = []
-    for r in relevant:
-        key = (r.get("CONDSTARTTS"), r.get("CONDLMTFROMDSCR"), r.get("CONDDSCR", "")[:50])
+    for r in all_rows:
+        key = (r.get("CONDSTARTTS"), r.get("CONDLMTFROMDSCR"), (r.get("CONDDSCR") or "")[:50])
         if key in seen: continue
         seen.add(key)
-        unique.append(r)
+        if is_brandons_route(r) and is_relevant_window(r, now):
+            unique.append(r)
     unique.sort(key=lambda r: (r.get("CONDSTARTTS") or 0))
 
-    if unique:
-        out.append(f"**🚦 Live conditions on your route ({len(unique)})**")
-        for r in unique[:12]:
+    # Split: real incidents (A/D/X/F = wrecks/closures/floods) vs construction (C/M)
+    incident_codes = {"A", "D", "X", "F", "I"}
+    incidents = [r for r in unique if r.get("CNSTRNTTYPECD") in incident_codes]
+    construction = [r for r in unique if r.get("CNSTRNTTYPECD") not in incident_codes and is_daytime_construction(r, now)]
+
+    if incidents:
+        out.append(f"**🚨 Active incidents on your route ({len(incidents)})**")
+        for r in incidents[:8]:
             t = TYPECODES.get(r.get("CNSTRNTTYPECD", ""), "❓")
             route_name = r["RTENM"].replace("IH00", "I-").replace("FM", "FM-")
             direction = r.get("TRVLDRCTCD", "")
@@ -246,43 +340,29 @@ def build_briefing(now: datetime) -> str:
             out.append(f"• {t} **{route_name} {direction}** — {when}")
             out.append(f"   📍 {from_loc}")
             if desc: out.append(f"   _{desc}_")
-        if len(unique) > 12:
-            out.append(f"   … and {len(unique) - 12} more (see https://drivetexas.org)")
     else:
-        out.append("**🚦 Live conditions on your route: none in the next 24h** ✅")
-
+        out.append("**🚨 Active incidents on your route: none** ✅")
     out.append("")
 
-    # ── Section 2: TxDOT Phase 2 nightly closures ──
-    try:
-        sections = fetch_phase2_closures()
-        active = []
-        for sec_name, items in sections.items():
-            if "Permanent" in sec_name:
-                continue  # Skip permanent — those are already in the bead
-            # Only show closures relevant for today (mention today's day-name or "nightly")
-            today_name = now.strftime("%A")
-            yesterday_name = (now - timedelta(days=1)).strftime("%A")
-            tomorrow_name = (now + timedelta(days=1)).strftime("%A")
-            today_short = now.strftime("%b %-d")
-            for item in items:
-                if any(d in item for d in (today_name, yesterday_name, tomorrow_name, today_short)):
-                    active.append((sec_name, item))
-        if active:
-            out.append(f"**🏗️ I-35E Phase 2 (Dallas Co.) closures touching today ({len(active)})**")
-            for sec, item in active[:10]:
-                # Trim noisy filler
-                short = item.replace(" overnight from ", " ").replace(" until ", " → ")
-                out.append(f"• {short[:280]}")
-            if len(active) > 10:
-                out.append(f"   … and {len(active) - 10} more (see {TXDOT_PHASE2_URL})")
-        else:
-            out.append("**🏗️ I-35E Phase 2 closures today: none scheduled** ✅")
-    except Exception as e:
-        out.append(f"**🏗️ I-35E Phase 2:** _scrape failed: {e}_")
+    # ── Section 3: Daytime construction (overnight stuff filtered out) ──
+    if construction:
+        out.append(f"**🚧 Daytime construction touching your commute ({len(construction)})**")
+        for r in construction[:6]:
+            route_name = r["RTENM"].replace("IH00", "I-").replace("FM", "FM-")
+            direction = r.get("TRVLDRCTCD", "")
+            when = fmt_when(r.get("CONDSTARTTS", 0), r.get("CONDENDTS", 0))
+            from_loc = (r.get("CONDLMTFROMDSCR") or "")[:60]
+            desc = clean_desc(r.get("CONDDSCR") or "")[:120]
+            out.append(f"• **{route_name} {direction}** — {when}")
+            out.append(f"   📍 {from_loc}")
+            if desc: out.append(f"   _{desc}_")
+        if len(construction) > 6:
+            out.append(f"   _+{len(construction) - 6} more · full list at https://drivetexas.org_")
+    else:
+        out.append("**🚧 No daytime construction on your route** ✅")
 
     out.append("")
-    out.append("_Sources: DriveTexas live API · TxDOT 35EPhase2 page · Updates every weekday 5:30am CDT_")
+    out.append("_Live travel time: Google Maps · Incidents: TxDOT DriveTexas · Updates Mon-Fri 5:30am CDT_")
     return "\n".join(out)
 
 
