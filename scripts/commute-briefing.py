@@ -100,15 +100,21 @@ def dtx_query(table: str, where_clauses: list, take: int = 200) -> dict:
 
 
 # ─── Google Maps live travel time scrape ────────────────────────────────
-def fetch_live_travel_time(origin: str, destination: str) -> dict:
-    """Scrape live drive-time from Google Maps via dev-browser. Returns {minutes, distance_mi, alt_minutes, raw}."""
+def fetch_live_travel_time(origin: str, destination: str, depart_unix: int | None = None) -> dict:
+    """Scrape drive-time from Google Maps via dev-browser. Returns {minutes, distance_mi, alt_minutes, raw}.
+    If depart_unix is provided, uses depart-at forecast (Google's historical-traffic prediction for that time).
+    Otherwise uses 'now' which is current live traffic."""
     import subprocess
-    url = f"https://www.google.com/maps/dir/{urllib.parse.quote(origin)}/{urllib.parse.quote(destination)}/"
+    if depart_unix:
+        url = (f"https://www.google.com/maps?saddr={urllib.parse.quote(origin)}"
+               f"&daddr={urllib.parse.quote(destination)}&dirflg=d&ttype=dep&t={depart_unix}")
+    else:
+        url = f"https://www.google.com/maps/dir/{urllib.parse.quote(origin)}/{urllib.parse.quote(destination)}/"
     js = f'''
 const page = await browser.newPage();
 await page.setViewportSize({{ width: 1280, height: 900 }});
 await page.goto({json.dumps(url)}, {{ waitUntil: "domcontentloaded", timeout: 30000 }});
-await page.waitForTimeout(11000);
+await page.waitForTimeout(13000);
 const text = await page.evaluate(() => document.body.innerText);
 const ranges = text.match(/\\d+\\s*hr\\s*\\d+\\s*min|\\d+\\s*min/g) || [];
 const dist = text.match(/\\d+(\\.\\d+)?\\s*mi/g) || [];
@@ -277,26 +283,56 @@ def build_briefing(now: datetime) -> str:
     out.append("")
 
     # ── Section 1: LIVE travel time (the #1 thing that matters) ──
-    out.append("**🚗 Live travel time (right now)**")
-    inbound = fetch_live_travel_time("Denton, TX", "Galleria Dallas, TX")
-    outbound = fetch_live_travel_time("Galleria Dallas, TX", "Denton, TX")
-    for label, leg in (("Denton → Galleria", inbound), ("Galleria → Denton", outbound)):
-        if "error" in leg:
-            out.append(f"• {label}: _scrape failed: {leg['error']}_")
-            continue
-        mins = leg["minutes"]
-        alts = leg["alt_minutes"]
-        dist = leg.get("distance_mi") or "?"
-        # Compare to off-peak baseline (~36 min for this route)
-        BASELINE = 36
-        delta = mins - BASELINE
-        delta_str = ""
-        if delta >= 10: delta_str = f" 🔴 +{delta} vs typical"
-        elif delta >= 5: delta_str = f" 🟡 +{delta} vs typical"
-        elif delta <= -2: delta_str = f" 🟢 −{-delta} below typical"
-        else: delta_str = " ✅ at typical"
-        alt_str = f"  _(alt routes: {', '.join(str(a)+'min' for a in alts[1:4])})_" if len(alts) > 1 else ""
-        out.append(f"• {label}: **{mins} min** · {dist}{delta_str}{alt_str}")
+    # Brandon's commute pattern: Mon/Tue/Wed only. Outbound 6:00am, inbound 3:15pm.
+    # On commute days, forecast for actual departure. On non-commute days, skip forecast.
+    weekday_idx = now.weekday()  # Mon=0 ... Sun=6
+    is_commute_day = weekday_idx in (0, 1, 2)  # Mon, Tue, Wed
+
+    if is_commute_day:
+        out.append("**🚗 Forecast for today's commute (Brady + Brandon, M/T/W)**")
+        # Build depart timestamps for today's 6:00am and 3:15pm
+        out_dt = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        in_dt = now.replace(hour=15, minute=15, second=0, microsecond=0)
+        # If we're past those times today, push to next-occurrence (i.e., the briefing was triggered late)
+        if now > out_dt + timedelta(hours=1): out_dt += timedelta(days=1)
+        if now > in_dt + timedelta(hours=1): in_dt += timedelta(days=1)
+        out_unix = int(out_dt.timestamp())
+        in_unix = int(in_dt.timestamp())
+        # Baselines: 6am outbound is light traffic (~35 min). 3:15pm inbound is pre-rush (~40 min).
+        legs = [
+            ("Denton → Galleria @ 6:00 AM", "Denton, TX", "Galleria Dallas, TX", out_unix, 35),
+            ("Galleria → Denton @ 3:15 PM", "Galleria Dallas, TX", "Denton, TX", in_unix, 40),
+        ]
+        for label, origin, dest, ts, baseline in legs:
+            leg = fetch_live_travel_time(origin, dest, depart_unix=ts)
+            if "error" in leg:
+                out.append(f"• {label}: _scrape failed: {leg['error']}_")
+                continue
+            mins = leg["minutes"]
+            alts = leg["alt_minutes"]
+            dist = leg.get("distance_mi") or "?"
+            delta = mins - baseline
+            if delta >= 10: delta_str = f" 🔴 +{delta} vs typical"
+            elif delta >= 5: delta_str = f" 🟡 +{delta} vs typical"
+            elif delta <= -2: delta_str = f" 🟢 −{-delta} below typical"
+            else: delta_str = " ✅ at typical"
+            alt_str = f"  _(alts: {', '.join(str(a)+'min' for a in alts[1:4])})_" if len(alts) > 1 else ""
+            out.append(f"• {label}: **{mins} min** · {dist}{delta_str}{alt_str}")
+    else:
+        # Thu-Sun: no scheduled commute. Show live "right now" as a courtesy in case ad-hoc trip.
+        day_name = now.strftime("%A")
+        out.append(f"**🚗 Live travel time (right now — {day_name} is not a commute day)**")
+        for label, origin, dest in (
+            ("Denton → Galleria", "Denton, TX", "Galleria Dallas, TX"),
+            ("Galleria → Denton", "Galleria Dallas, TX", "Denton, TX"),
+        ):
+            leg = fetch_live_travel_time(origin, dest)
+            if "error" in leg:
+                out.append(f"• {label}: _scrape failed: {leg['error']}_")
+                continue
+            mins = leg["minutes"]
+            dist = leg.get("distance_mi") or "?"
+            out.append(f"• {label}: **{mins} min** · {dist}")
     out.append("")
 
     # ── Section 2: Live incidents on route (last 6h, all type codes) ──
