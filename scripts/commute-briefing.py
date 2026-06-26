@@ -273,6 +273,202 @@ def is_daytime_construction(row: dict, now: datetime) -> bool:
     return True
 
 
+# ─── X/Twitter traffic-spotter integration ───────────────────────────────
+# Pulls live wreck reports from named DFW traffic reporters on X, filters
+# them to Brandon's actual corridor, and surfaces them above construction.
+#
+# Brandon's commute corridor (per 2026-06-26):
+#   AM (going to work):   I-35E SB Denton → I-635, then I-635 EB → Dallas North Tollway
+#   PM (going home, 3pm+): I-635 WB DNT → I-35E,  then I-35E NB → Denton
+#
+# Anything else (other freeways, other directions) is NOT relevant and
+# must be filtered out — the Kiro CLI Qwen3 model handles this precisely.
+
+TRAFFIC_SPOTTER_ACCOUNTS = ["chipwfox4", "krldtraffic"]
+SPOTTER_WINDOW_HOURS = 2  # how far back to look
+SPOTTER_BIRD_TIMEOUT = 30  # seconds
+SPOTTER_KIRO_TIMEOUT = 60  # seconds
+SPOTTER_KIRO_MODEL = "claude-haiku-4.5"  # 0.4x credit cost; precision needed for structured route logic.
+                                          # Tested vs qwen3-coder-next (0.05x) — Qwen hallucinated hwy/loc
+                                          # fields when summarizing tweets that mention multiple highways.
+                                          # Haiku 4.5 cleanly extracted only the actual route mentioned.
+
+# Cheap regex prefilter — anything that doesn't mention these is definitely off-route.
+# Used to skip sending obviously-irrelevant tweets to the LLM (saves credits).
+SPOTTER_CORRIDOR_REGEX = re.compile(
+    r"\b(35E|I-?35E?|IH-?35E?|35\s+E\b|"
+    r"635|I-?635|IH-?635|LBJ|"
+    r"Denton|Corinth|Lewisville|Carrollton|Farmers Branch|"
+    r"Stemmons|Mockingbird|Royal\b|Northwest Hwy|Walnut Hill|"
+    r"PGBT|Bush Turnpike|\b121\b|"
+    r"DNT|Dallas North Tollway|Galleria|Preston|Coit)\b",
+    re.IGNORECASE,
+)
+
+# Strip ANSI escape codes (kiro-cli emits color sequences even in --no-interactive).
+ANSI_RE = re.compile(r"\x1b\[[\?0-9;]*[a-zA-Z]")
+
+
+def _bird_search(account: str) -> str:
+    """Call `bird search from:<account>` and return the raw --plain output."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["bird", "search", f"from:{account}", "--plain"],
+            capture_output=True, text=True, timeout=SPOTTER_BIRD_TIMEOUT,
+        )
+        return result.stdout or ""
+    except Exception as e:
+        print(f"  [warn] bird fetch from:{account} failed: {e}", file=sys.stderr)
+        return ""
+
+
+def _parse_bird_tweets(output: str) -> list[dict]:
+    """Parse bird --plain output into [{dt, text, url}, ...].
+    Format per tweet block (separated by 20+ box-drawing dashes):
+        @handle (DisplayName):
+        <body text, possibly multiple lines>
+        date: <fmt>
+        url: <url>
+    """
+    tweets = []
+    blocks = [b.strip() for b in re.split(r"─{20,}", output) if b.strip()]
+    for block in blocks:
+        date_match = re.search(r"^date:\s*(.+)$", block, re.MULTILINE)
+        url_match = re.search(r"^url:\s*(.+)$", block, re.MULTILINE)
+        if not date_match:
+            continue
+        try:
+            dt = datetime.strptime(date_match.group(1).strip(), "%a %b %d %H:%M:%S %z %Y")
+        except Exception:
+            continue
+        # Body = everything between the header line and the date/url lines
+        lines = block.split("\n")
+        text_lines = []
+        in_text = False
+        for line in lines:
+            if line.startswith("@") and "(" in line and not in_text:
+                in_text = True  # this is the @handle header — skip but flip flag
+                continue
+            if line.startswith("date:") or line.startswith("url:"):
+                in_text = False
+                continue
+            if in_text and line.strip():
+                text_lines.append(line)
+        text = "\n".join(text_lines).strip()
+        if text:
+            tweets.append({
+                "dt": dt,
+                "text": text,
+                "url": url_match.group(1).strip() if url_match else "",
+            })
+    return tweets
+
+
+def _filter_recent(tweets: list[dict], now: datetime, hours: int) -> list[dict]:
+    cutoff = now - timedelta(hours=hours)
+    return [t for t in tweets if t["dt"].astimezone(CDT) >= cutoff]
+
+
+def _keyword_prefilter(tweets: list[dict]) -> list[dict]:
+    """Cheap regex prefilter — drop tweets that don't mention any corridor keyword.
+    The LLM does the precise direction/route-segment filtering."""
+    return [t for t in tweets if SPOTTER_CORRIDOR_REGEX.search(t["text"])]
+
+
+def _commute_direction(now: datetime) -> str:
+    """At/before noon = AM commute (Denton→Dallas). After noon = PM commute (Dallas→Denton)."""
+    return "am" if now.hour < 12 else "pm"
+
+
+def _kiro_classify_tweets(tweets: list[dict], direction: str) -> list[dict]:
+    """Call kiro-cli headless (Qwen3-coder-next, 0.05x credit) to extract structured incidents
+    on Brandon's actual route. Returns [{hwy, loc, lanes, type, status, summary, tweet_idx}, ...]."""
+    import subprocess
+    if not tweets:
+        return []
+
+    route_desc = {
+        "am": ("I-35E SOUTHBOUND from Denton through Corinth/Lewisville/Carrollton to I-635, "
+               "then I-635 EASTBOUND from I-35E to the Dallas North Tollway (DNT)"),
+        "pm": ("I-635 WESTBOUND from the Dallas North Tollway (DNT) to I-35E, "
+               "then I-35E NORTHBOUND from I-635 through Carrollton/Lewisville/Corinth to Denton"),
+    }[direction]
+
+    tweet_block = "\n".join(
+        f"[{i+1}] {t['dt'].astimezone(CDT).strftime('%-I:%M %p')} — {t['text'][:500]}"
+        for i, t in enumerate(tweets)
+    )
+
+    prompt = f"""You're filtering DFW traffic-spotter tweets for Brandon's commute briefing.
+
+Brandon's {direction.upper()} route: {route_desc}.
+
+RULES (apply strictly):
+1. ONLY report incidents on Brandon's EXACT route segments. Skip everything else.
+2. {"AM:" if direction == "am" else "PM:"} only the {"SB" if direction == "am" else "NB"} direction of I-35E matters, and only the {"EB" if direction == "am" else "WB"} direction of I-635 matters.
+3. Skip incidents marked "cleared", "clear", or "open again" UNLESS the tweet is from within the last 30 minutes (residual backup risk).
+4. Identify lane type: "main lanes" (default freeway lanes), "express/LBJ Express" (managed/toll lanes), or "frontage/service road" (parallel access road). This matters: a wreck on the frontage road doesn't usually affect main-lane traffic.
+5. Common abbreviations: RL=right lane, LL=left lane, 2LL=2 left lanes, RS=right shoulder, GBT/PGBT=George Bush Turnpike, DSO=Dallas Sheriff. SB35E=I-35E southbound, etc.
+
+TWEETS:
+{tweet_block}
+
+Reply with ONLY a JSON array of incidents on Brandon's route. Each item:
+{{"hwy": "I-35E SB", "loc": "at PGBT/Carrollton", "lanes": "main lanes", "type": "crash", "status": "active", "summary": "verbatim or paraphrased", "tweet_idx": <1-based index>}}
+
+If no incidents on his route, reply with: []
+
+Reply ONLY with the JSON array — no preface, no explanation, no markdown fences."""
+
+    try:
+        result = subprocess.run(
+            ["kiro-cli", "chat", "--no-interactive", "--trust-tools=",
+             "--model", SPOTTER_KIRO_MODEL, prompt],
+            capture_output=True, text=True, timeout=SPOTTER_KIRO_TIMEOUT,
+        )
+        clean = ANSI_RE.sub("", result.stdout)
+        # Find the JSON array (greedy match across lines, including empty [])
+        m = re.search(r"\[\s*\{.*?\}\s*\]", clean, re.DOTALL)
+        if not m:
+            m = re.search(r"\[\s*\]", clean)
+        if not m:
+            return []
+        parsed = json.loads(m.group(0))
+        return parsed if isinstance(parsed, list) else []
+    except subprocess.TimeoutExpired:
+        print(f"  [warn] kiro-cli classify timed out after {SPOTTER_KIRO_TIMEOUT}s", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  [warn] kiro-cli classify failed: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_traffic_spotters(now: datetime) -> tuple[str, list[dict]]:
+    """End-to-end: fetch tweets → window filter → keyword prefilter → LLM classify.
+    Returns (direction, incidents). Never raises — returns empty list on any failure."""
+    try:
+        direction = _commute_direction(now)
+        raw = []
+        for account in TRAFFIC_SPOTTER_ACCOUNTS:
+            raw.extend(_parse_bird_tweets(_bird_search(account)))
+        recent = _filter_recent(raw, now, SPOTTER_WINDOW_HOURS)
+        pre = _keyword_prefilter(recent)
+        if not pre:
+            return direction, []  # no LLM call needed → save credits
+        incidents = _kiro_classify_tweets(pre, direction)
+        # Attach tweet URLs from indices
+        for inc in incidents:
+            idx = inc.get("tweet_idx")
+            if isinstance(idx, int) and 1 <= idx <= len(pre):
+                inc["url"] = pre[idx - 1].get("url", "")
+                inc["dt"] = pre[idx - 1].get("dt")
+        return direction, incidents
+    except Exception as e:
+        print(f"  [warn] traffic-spotter section failed entirely: {e}", file=sys.stderr)
+        return _commute_direction(now), []
+
+
 # ─── Format the briefing ─────────────────────────────────────────────────
 def build_briefing(now: datetime) -> str:
     """Compose the Discord message body."""
@@ -380,6 +576,32 @@ def build_briefing(now: datetime) -> str:
         out.append("**🚨 Active incidents on your route: none** ✅")
     out.append("")
 
+    # ── Section 2.5: X/Twitter traffic-spotter reports (last 2h) ──
+    # Sources: @chipwfox4 (Fox 4 Dallas), @krldtraffic (KRLD 1080).
+    # LLM-filtered to Brandon's actual SB/EB (AM) or WB/NB (PM) corridor.
+    spot_direction, spotter_incidents = fetch_traffic_spotters(now)
+    if spotter_incidents:
+        out.append(f"**🚨 Reported by traffic spotters (last {SPOTTER_WINDOW_HOURS}h, {spot_direction.upper()} corridor)**")
+        for inc in spotter_incidents[:5]:
+            hwy = inc.get("hwy") or "?"
+            loc = inc.get("loc") or ""
+            lanes = inc.get("lanes") or "main lanes (presumed)"
+            itype = inc.get("type") or "incident"
+            status = (inc.get("status") or "active").lower()
+            status_emoji = "🔴" if status == "active" else "🟡"
+            summary = (inc.get("summary") or "").strip()
+            t_dt = inc.get("dt")
+            t_when = t_dt.astimezone(CDT).strftime("%-I:%M%p") if t_dt else ""
+            head = f"• {status_emoji} **{hwy}**"
+            if loc: head += f" {loc}"
+            head += f" — {itype}"
+            if t_when: head += f" _(reported {t_when})_"
+            out.append(head)
+            out.append(f"   🛣️ {lanes}")
+            if summary: out.append(f"   _{summary}_")
+        out.append(f"_Sources: @chipwfox4 · @krldtraffic · classified by Haiku 4.5 via kiro-cli_")
+        out.append("")
+
     # ── Section 3: Daytime construction (overnight stuff filtered out) ──
     if construction:
         out.append(f"**🚧 Daytime construction touching your commute ({len(construction)})**")
@@ -398,7 +620,7 @@ def build_briefing(now: datetime) -> str:
         out.append("**🚧 No daytime construction on your route** ✅")
 
     out.append("")
-    out.append("_Live travel time: Google Maps · Incidents: TxDOT DriveTexas · Updates Mon-Fri 5:30am CDT_")
+    out.append("_Live travel time: Google Maps · Incidents: TxDOT DriveTexas + X spotters · Updates Mon-Fri 5:30am CDT_")
     return "\n".join(out)
 
 
