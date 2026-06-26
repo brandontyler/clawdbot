@@ -288,6 +288,8 @@ TRAFFIC_SPOTTER_ACCOUNTS = ["chipwfox4", "krldtraffic"]
 SPOTTER_WINDOW_HOURS = 2  # how far back to look
 SPOTTER_BIRD_TIMEOUT = 30  # seconds
 SPOTTER_KIRO_TIMEOUT = 90  # seconds — matches other scripts (nathan-jobs, x-bookmark-review, email-triage)
+DENTON_SCANNER_URL = "https://www.facebook.com/Denton.Scanner"  # public FB page; unauth scrape returns only the latest post (still high-value)
+DENTON_SCANNER_TIMEOUT = 60  # seconds — page load + 4s render wait
 
 # Cheap regex prefilter — anything that doesn't mention these is definitely off-route.
 # Used to skip sending obviously-irrelevant tweets to the LLM (saves credits).
@@ -317,6 +319,94 @@ def _bird_search(account: str) -> str:
     except Exception as e:
         print(f"  [warn] bird fetch from:{account} failed: {e}", file=sys.stderr)
         return ""
+
+
+def _parse_relative_ts(ts: str, now: datetime) -> datetime | None:
+    """Parse FB's relative timestamps like '29m', '2h', '1d', 'Yesterday at 3pm'."""
+    if not ts:
+        return None
+    ts = ts.strip()
+    # 'Nm', 'Nh', 'Nd' format
+    m = re.match(r"^(\d+)([mhd])$", ts)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta = {"m": timedelta(minutes=n), "h": timedelta(hours=n), "d": timedelta(days=n)}[unit]
+        return now - delta
+    # 'N minutes/hours/days ago' format
+    m = re.match(r"^(\d+)\s+(minute|hour|day)s?(\s+ago)?$", ts, re.IGNORECASE)
+    if m:
+        n, unit = int(m.group(1)), m.group(2).lower()
+        delta = {"minute": timedelta(minutes=n), "hour": timedelta(hours=n), "day": timedelta(days=n)}[unit]
+        return now - delta
+    # 'Yesterday at H:MM AM/PM' — approximate to yesterday's date at the given time
+    m = re.match(r"^Yesterday at (\d+):?(\d+)?\s*(am|pm)?", ts, re.IGNORECASE)
+    if m:
+        return now.replace(hour=0, minute=0) - timedelta(days=1)  # rough approximation; only used for window filtering
+    return None
+
+
+def _denton_scanner_fetch(now: datetime) -> list[dict]:
+    """Scrape Denton Scanner FB page via dev-browser. Returns [{dt, text, url}] with at most
+    one entry (FB's unauth view caps at the most recent post). Falls back to empty list on any failure.
+
+    Source: https://www.facebook.com/Denton.Scanner — public page covering Denton County weather/news,
+    fire/EMS dispatches, breaking incidents. 87K followers. Recommended by Brandon 2026-06-26."""
+    import subprocess
+    js = (
+        'const page = await browser.newPage();\n'
+        f'await page.goto({json.dumps(DENTON_SCANNER_URL)}, '
+        '{ waitUntil: "domcontentloaded", timeout: 30000 });\n'
+        'await page.waitForTimeout(4000);\n'
+        'const post = await page.evaluate(() => {\n'
+        '  const articles = Array.from(document.querySelectorAll(\'[role="article"]\'));\n'
+        '  for (const a of articles) {\n'
+        '    const text = a.innerText || "";\n'
+        '    if (text.startsWith("Denton Scanner") && text.length > 80) {\n'
+        '      const lines = text.split("\\n").map(s => s.trim()).filter(Boolean);\n'
+        '      const tsIdx = lines.findIndex(l => /^(\\d+[mhd]|Yesterday|\\d+ minutes?|\\d+ hours?|\\d+ days?)/.test(l));\n'
+        '      const ts = tsIdx > -1 ? lines[tsIdx] : "";\n'
+        '      const bulletIdx = lines.findIndex(l => l === "·");\n'
+        '      let bodyStart = bulletIdx > -1 ? bulletIdx + 1 : (tsIdx > -1 ? tsIdx + 1 : 1);\n'
+        '      let bodyEnd = lines.findIndex((l, i) => i > bodyStart && /^(All reactions|Like|Comment|See translation)/.test(l));\n'
+        '      if (bodyEnd < 0) bodyEnd = lines.length;\n'
+        '      const body = lines.slice(bodyStart, bodyEnd).join(" ");\n'
+        '      return { ts, body };\n'
+        '    }\n'
+        '  }\n'
+        '  return null;\n'
+        '});\n'
+        'console.log(JSON.stringify(post));\n'
+        'await page.close();\n'
+    )
+    try:
+        result = subprocess.run(
+            ["dev-browser", "--headless", "--timeout", str(DENTON_SCANNER_TIMEOUT)],
+            input=js, capture_output=True, text=True, timeout=DENTON_SCANNER_TIMEOUT + 10,
+        )
+        # Find the JSON line we logged
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+                if not obj or not obj.get("body"):
+                    return []
+                dt = _parse_relative_ts(obj.get("ts", ""), now) or now
+                return [{
+                    "dt": dt,
+                    "text": obj["body"],  # raw post body; the URL identifies the source
+                    "url": DENTON_SCANNER_URL,
+                }]
+            except json.JSONDecodeError:
+                continue
+        return []
+    except subprocess.TimeoutExpired:
+        print(f"  [warn] Denton Scanner fetch timed out after {DENTON_SCANNER_TIMEOUT}s", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  [warn] Denton Scanner fetch failed: {e}", file=sys.stderr)
+        return []
 
 
 def _parse_bird_tweets(output: str) -> list[dict]:
@@ -460,6 +550,7 @@ def fetch_traffic_spotters(now: datetime) -> tuple[str, list[dict]]:
         raw = []
         for account in TRAFFIC_SPOTTER_ACCOUNTS:
             raw.extend(_parse_bird_tweets(_bird_search(account)))
+        raw.extend(_denton_scanner_fetch(now))  # Denton-specific FB page (latest post only)
         recent = _filter_recent(raw, now, SPOTTER_WINDOW_HOURS)
         pre = _keyword_prefilter(recent)
         if not pre:
@@ -607,7 +698,7 @@ def build_briefing(now: datetime) -> str:
             out.append(head)
             out.append(f"   🛣️ {lanes}")
             if summary: out.append(f"   _{summary}_")
-        out.append(f"_Sources: @chipwfox4 · @krldtraffic · classified by kiro-cli_")
+        out.append(f"_Sources: @chipwfox4 · @krldtraffic · Denton Scanner · classified by kiro-cli_")
         out.append("")
 
     # ── Section 3: Daytime construction (overnight stuff filtered out) ──
@@ -628,7 +719,7 @@ def build_briefing(now: datetime) -> str:
         out.append("**🚧 No daytime construction on your route** ✅")
 
     out.append("")
-    out.append("_Live travel time: Google Maps · Incidents: TxDOT DriveTexas + X spotters · Updates Mon-Fri 5:30am CDT_")
+    out.append("_Live travel time: Google Maps · Incidents: TxDOT DriveTexas + X spotters + Denton Scanner · Updates Mon-Fri 5:30am CDT_")
     return "\n".join(out)
 
 
