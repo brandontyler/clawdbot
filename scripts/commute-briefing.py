@@ -287,11 +287,7 @@ def is_daytime_construction(row: dict, now: datetime) -> bool:
 TRAFFIC_SPOTTER_ACCOUNTS = ["chipwfox4", "krldtraffic"]
 SPOTTER_WINDOW_HOURS = 2  # how far back to look
 SPOTTER_BIRD_TIMEOUT = 30  # seconds
-SPOTTER_KIRO_TIMEOUT = 60  # seconds
-SPOTTER_KIRO_MODEL = "claude-haiku-4.5"  # 0.4x credit cost; precision needed for structured route logic.
-                                          # Tested vs qwen3-coder-next (0.05x) — Qwen hallucinated hwy/loc
-                                          # fields when summarizing tweets that mention multiple highways.
-                                          # Haiku 4.5 cleanly extracted only the actual route mentioned.
+SPOTTER_KIRO_TIMEOUT = 90  # seconds — matches other scripts (nathan-jobs, x-bookmark-review, email-triage)
 
 # Cheap regex prefilter — anything that doesn't mention these is definitely off-route.
 # Used to skip sending obviously-irrelevant tweets to the LLM (saves credits).
@@ -382,8 +378,10 @@ def _commute_direction(now: datetime) -> str:
 
 
 def _kiro_classify_tweets(tweets: list[dict], direction: str) -> list[dict]:
-    """Call kiro-cli headless (Qwen3-coder-next, 0.05x credit) to extract structured incidents
-    on Brandon's actual route. Returns [{hwy, loc, lanes, type, status, summary, tweet_idx}, ...]."""
+    """Call kiro-cli headless (default agent + auto model, matching every other script
+    in this repo — fire-jobs, x-bookmark-review, email-triage, nathan-jobs, etc.) to
+    extract structured incidents on Brandon's actual route.
+    Returns [{hwy, loc, lanes, type, status, summary, tweet_idx}, ...]."""
     import subprocess
     if not tweets:
         return []
@@ -421,17 +419,27 @@ If no incidents on his route, reply with: []
 
 Reply ONLY with the JSON array — no preface, no explanation, no markdown fences."""
 
+    # Canonical headless invocation pattern (matches fire-jobs, nathan-jobs, x-bookmark-review,
+    # email-triage, x-digest, cca-study-reminder, sermon-notes-print): run via shell with
+    # cd $HOME, default agent, default model (auto), --no-interactive --wrap never, strip ANSI.
+    cmd = (
+        f"cd \"$HOME\" && timeout {SPOTTER_KIRO_TIMEOUT} "
+        f"kiro-cli chat --no-interactive --wrap never \"$PROMPT\" 2>&1 "
+        f"| sed 's/\\x1b\\[[0-9;]*m//g'"
+    )
     try:
         result = subprocess.run(
-            ["kiro-cli", "chat", "--no-interactive", "--trust-tools=",
-             "--model", SPOTTER_KIRO_MODEL, prompt],
-            capture_output=True, text=True, timeout=SPOTTER_KIRO_TIMEOUT,
+            ["bash", "-c", cmd],
+            env={**os.environ, "PROMPT": prompt},
+            capture_output=True, text=True, timeout=SPOTTER_KIRO_TIMEOUT + 10,
         )
-        clean = ANSI_RE.sub("", result.stdout)
+        out = result.stdout
+        # Also strip cursor-control sequences sed misses (\x1b[?25l, \x1b[?25h)
+        out = re.sub(r"\x1b\[[\?0-9;]*[a-zA-Z]", "", out)
         # Find the JSON array (greedy match across lines, including empty [])
-        m = re.search(r"\[\s*\{.*?\}\s*\]", clean, re.DOTALL)
+        m = re.search(r"\[\s*\{.*?\}\s*\]", out, re.DOTALL)
         if not m:
-            m = re.search(r"\[\s*\]", clean)
+            m = re.search(r"\[\s*\]", out)
         if not m:
             return []
         parsed = json.loads(m.group(0))
@@ -599,7 +607,7 @@ def build_briefing(now: datetime) -> str:
             out.append(head)
             out.append(f"   🛣️ {lanes}")
             if summary: out.append(f"   _{summary}_")
-        out.append(f"_Sources: @chipwfox4 · @krldtraffic · classified by Haiku 4.5 via kiro-cli_")
+        out.append(f"_Sources: @chipwfox4 · @krldtraffic · classified by kiro-cli_")
         out.append("")
 
     # ── Section 3: Daytime construction (overnight stuff filtered out) ──
