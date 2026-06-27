@@ -1,0 +1,19 @@
+{
+  "id": "stopkiro",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "name": "Kiro Stop",
+  "description": "Adds /stopkiro slash command that cancels the in-flight kiro-proxy ACP session for the originating Discord channel.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "proxyUrl": {
+        "type": "string",
+        "description": "Base URL of the kiro-proxy HTTP API. Defaults to http://localhost:18801 (matches systemd kiro-proxy.service)."
+      }
+    }
+  }
+}
