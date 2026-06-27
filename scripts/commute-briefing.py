@@ -493,19 +493,20 @@ def _kiro_classify_tweets(tweets: list[dict], direction: str) -> list[dict]:
 Brandon's {direction.upper()} route: {route_desc}.
 
 RULES (apply strictly):
-1. ONLY report incidents on Brandon's EXACT route segments. Skip everything else.
-2. {"AM:" if direction == "am" else "PM:"} only the {"SB" if direction == "am" else "NB"} direction of I-35E matters, and only the {"EB" if direction == "am" else "WB"} direction of I-635 matters.
-3. Skip incidents marked "cleared", "clear", or "open again" UNLESS the tweet is from within the last 30 minutes (residual backup risk).
-4. Identify lane type: "main lanes" (default freeway lanes), "express/LBJ Express" (managed/toll lanes), or "frontage/service road" (parallel access road). This matters: a wreck on the frontage road doesn't usually affect main-lane traffic.
-5. Common abbreviations: RL=right lane, LL=left lane, 2LL=2 left lanes, RS=right shoulder, GBT/PGBT=George Bush Turnpike, DSO=Dallas Sheriff. SB35E=I-35E southbound, etc.
+1. Report incidents on Brandon's EXACT route segments (same direction). Skip everything else.
+2. EXCEPTION — opposite-direction MAJOR incidents: if a tweet describes a major incident on the OPPOSITE side of I-35E or I-635 (within Brandon's geography: Denton/Lewisville/Carrollton/Farmers Branch/LBJ corridor) AND it sounds like it would affect his side too (multi-lane block on the other side causing gawker backups; tanker fire/hazmat; fatal; "all lanes blocked"; "highway shut down"; large debris field; police investigation on scene; pedestrian/cyclist struck), INCLUDE it. Mark with "opposite_direction": true. For minor/cleared opposite-direction stuff, skip it.
+3. {"AM:" if direction == "am" else "PM:"} same-direction means {"SB" if direction == "am" else "NB"} on I-35E and {"EB" if direction == "am" else "WB"} on I-635. Anything else is opposite-direction (apply rule #2).
+4. Skip incidents marked "cleared", "clear", or "open again" UNLESS the tweet is from within the last 30 minutes (residual backup risk).
+5. Identify lane type: "main lanes" (default freeway lanes), "express/LBJ Express" (managed/toll lanes), or "frontage/service road" (parallel access road).
+6. Common abbreviations: RL=right lane, LL=left lane, 2LL=2 left lanes, RS=right shoulder, GBT/PGBT=George Bush Turnpike, DSO=Dallas Sheriff. SB35E=I-35E southbound, etc.
 
 TWEETS:
 {tweet_block}
 
-Reply with ONLY a JSON array of incidents on Brandon's route. Each item:
-{{"hwy": "I-35E SB", "loc": "at PGBT/Carrollton", "lanes": "main lanes", "type": "crash", "status": "active", "summary": "verbatim or paraphrased", "tweet_idx": <1-based index>}}
+Reply with ONLY a JSON array of incidents. Each item:
+{{"hwy": "I-35E SB", "loc": "at PGBT/Carrollton", "lanes": "main lanes", "type": "crash", "status": "active", "summary": "verbatim or paraphrased", "opposite_direction": false, "tweet_idx": <1-based index>}}
 
-If no incidents on his route, reply with: []
+If no incidents qualify, reply with: []
 
 Reply ONLY with the JSON array — no preface, no explanation, no markdown fences."""
 
@@ -676,8 +677,9 @@ def build_briefing(now: datetime) -> str:
     out.append("")
 
     # ── Section 2.5: X/Twitter traffic-spotter reports (last 2h) ──
-    # Sources: @chipwfox4 (Fox 4 Dallas), @krldtraffic (KRLD 1080).
-    # LLM-filtered to Brandon's actual SB/EB (AM) or WB/NB (PM) corridor.
+    # Sources: @chipwfox4 (Fox 4 Dallas), @krldtraffic (KRLD 1080), Denton Scanner FB.
+    # LLM-filtered to Brandon's actual SB/EB (AM) or WB/NB (PM) corridor,
+    # plus major opposite-direction incidents (full closures, hazmat, fatal, etc).
     spot_direction, spotter_incidents = fetch_traffic_spotters(now)
     if spotter_incidents:
         out.append(f"**🚨 Reported by traffic spotters (last {SPOTTER_WINDOW_HOURS}h, {spot_direction.upper()} corridor)**")
@@ -687,13 +689,20 @@ def build_briefing(now: datetime) -> str:
             lanes = inc.get("lanes") or "main lanes (presumed)"
             itype = inc.get("type") or "incident"
             status = (inc.get("status") or "active").lower()
-            status_emoji = "🔴" if status == "active" else "🟡"
+            opposite = bool(inc.get("opposite_direction"))
+            if opposite:
+                status_emoji = "🟠"  # opposite-direction major
+            elif status == "active":
+                status_emoji = "🔴"
+            else:
+                status_emoji = "🟡"
             summary = (inc.get("summary") or "").strip()
             t_dt = inc.get("dt")
             t_when = t_dt.astimezone(CDT).strftime("%-I:%M%p") if t_dt else ""
             head = f"• {status_emoji} **{hwy}**"
             if loc: head += f" {loc}"
             head += f" — {itype}"
+            if opposite: head += " _(opposite direction — major, backups likely)_"
             if t_when: head += f" _(reported {t_when})_"
             out.append(head)
             out.append(f"   🛣️ {lanes}")
