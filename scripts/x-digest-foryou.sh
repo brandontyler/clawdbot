@@ -136,7 +136,7 @@ pull_search_supplements() {
     }
     [ -z "$results" ] && continue
 
-    # Parse to TSV (same shape as For You parsing)
+    # Parse to TSV (same shape as For You parsing, plus a source tag column)
     local rows
     rows=$(echo "$results" | python3 -c "
 import sys, json
@@ -162,7 +162,7 @@ for tweet in (data or [])[:limit]:
         print(f'{tid}\t{user}\t{name}\t{likes}\t{rts}\t{created}\t{text[:300]}')
     except (KeyError, TypeError):
         pass
-" 2>/dev/null)
+" 2>/dev/null | sed "s/$/	${name}/")
 
     if [ -n "$rows" ]; then
       local n
@@ -308,7 +308,7 @@ for e in entries:
         # Skip pure RTs (text starts with 'RT @')
         if text.startswith('RT @'):
             continue
-        print(f'{tid}\t{username}\t{name}\t{likes}\t{rts}\t{created}\t{text[:300]}')
+        print(f'{tid}\t{username}\t{name}\t{likes}\t{rts}\t{created}\t{text[:300]}\tforyou')
     except (KeyError, TypeError):
         pass
 ")
@@ -325,8 +325,29 @@ SUPPL_TSV=$(pull_search_supplements)
 SUPPL_COUNT=$(echo "$SUPPL_TSV" | grep -c '.' || echo 0)
 
 if [ "$SUPPL_COUNT" -gt 0 ]; then
-  # Merge + in-memory dedup by tid (cross-source dedup before DynamoDB hit)
-  TWEETS_TSV=$(printf '%s\n%s\n' "$TWEETS_TSV" "$SUPPL_TSV" | awk -F'\t' '!seen[$1]++ && NF>=6 && $1 != ""')
+  # Merge + cross-source dedup by tid. When a tweet appears in BOTH For You
+  # AND a search, concatenate the sources (e.g., "foryou+karpathy") so the
+  # digest shows where it surfaced from. Source preservation is what makes
+  # the digest tunable — Brandon can see which queries are pulling weight.
+  TWEETS_TSV=$(printf '%s\n%s\n' "$TWEETS_TSV" "$SUPPL_TSV" | python3 -c "
+import sys
+seen = {}
+order = []
+for line in sys.stdin:
+    p = line.rstrip('\n').split('\t')
+    if len(p) < 8 or not p[0]:
+        continue
+    tid, src = p[0], p[7]
+    if tid in seen:
+        existing = seen[tid][7].split('+')
+        if src and src not in existing:
+            seen[tid][7] = seen[tid][7] + '+' + src
+    else:
+        seen[tid] = p
+        order.append(tid)
+for tid in order:
+    print('\t'.join(seen[tid]))
+")
   TOTAL_RAW=$(echo "$TWEETS_TSV" | grep -c '.' || echo 0)
   log "After merging $SUPPL_COUNT supplemental + cross-source dedup: $TOTAL_RAW unique tweets"
 fi
@@ -334,12 +355,12 @@ fi
 # Dedup against DynamoDB
 FRESH_TSV=""
 SKIPPED=0
-while IFS=$'\t' read -r tid user name likes rts created text; do
+while IFS=$'\t' read -r tid user name likes rts created text source; do
   [ -z "$tid" ] && continue
   if is_seen "$tid"; then
     SKIPPED=$((SKIPPED + 1))
   else
-    FRESH_TSV="${FRESH_TSV}${tid}\t${user}\t${name}\t${likes}\t${rts}\t${created}\t${text}\n"
+    FRESH_TSV="${FRESH_TSV}${tid}\t${user}\t${name}\t${likes}\t${rts}\t${created}\t${text}\t${source}\n"
   fi
 done <<< "$TWEETS_TSV"
 
@@ -358,7 +379,7 @@ else
   # Build numbered list for LLM scoring
   NUMBERED=""
   i=1
-  while IFS=$'\t' read -r tid user name likes rts created text; do
+  while IFS=$'\t' read -r tid user name likes rts created text source; do
     [ -z "$tid" ] && continue
     NUMBERED="${NUMBERED}${i}. @${user} (${likes} likes): ${text}\n"
     i=$((i + 1))
@@ -402,22 +423,37 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
   } > "$DIGEST_FILE"
 
   MARK_FILE=$(mktemp)
+  SOURCE_TALLY=$(mktemp)
   INCLUDED=0
   i=0
-  while IFS=$'\t' read -r tid user name likes rts created text; do
+  while IFS=$'\t' read -r tid user name likes rts created text source; do
     [ -z "$tid" ] && continue
     score=$(echo "$SCORES" | jq -r ".[$i] // 0" 2>/dev/null || echo "5")
+    # Track source for evaluation breakdown (whether surfaced or not)
+    echo "eval:${source:-unknown}" >> "$SOURCE_TALLY"
     if [ "$score" -ge "$EFFECTIVE_THRESHOLD" ] 2>/dev/null; then
       # Format date
       cdt=$(TZ='America/Chicago' date -d "$created" '+%a %b %d, %l:%M %p CDT' 2>/dev/null || echo "$created")
+      # Render source as friendly badges
+      source_display="${source:-unknown}"
+      if [ "$source_display" = "foryou" ]; then
+        src_line="📡 For You feed · score ${score}/10"
+      elif [[ "$source_display" == *"+"* ]]; then
+        # Multiple sources — show all
+        src_line="🎯 \`${source_display}\` · score ${score}/10"
+      else
+        src_line="🎯 \`${source_display}\` search · score ${score}/10"
+      fi
       {
         echo "**@${user}** ($name) — ${likes} likes, ${rts} RTs — ${cdt}"
+        echo "$src_line"
         echo "${text}"
         echo "https://x.com/${user}/status/${tid}"
         echo ""
       } >> "$DIGEST_FILE"
       INCLUDED=$((INCLUDED + 1))
       echo "$tid" >> "$MARK_FILE"
+      echo "surfaced:${source:-unknown}" >> "$SOURCE_TALLY"
     else
       # Still mark low-scoring tweets as seen so they don't reappear
       echo "$tid" >> "$MARK_FILE"
@@ -425,9 +461,21 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
     i=$((i + 1))
   done <<< "$(echo -e "$FRESH_TSV")"
 
+  # Build source breakdown (top 8 sources by surfaced count, plus evaluated totals)
+  EVAL_BREAKDOWN=$(grep '^eval:' "$SOURCE_TALLY" | sed 's/^eval://' | tr '+' '\n' | sort | uniq -c | sort -rn | awk '{printf "%s %d · ", $2, $1}' | sed 's/ · $//')
+  SURFACED_BREAKDOWN=$(grep '^surfaced:' "$SOURCE_TALLY" | sed 's/^surfaced://' | tr '+' '\n' | sort | uniq -c | sort -rn | awk '{printf "%s %d · ", $2, $1}' | sed 's/ · $//')
+  rm -f "$SOURCE_TALLY"
+
   {
     echo "---"
     echo "_${FRESH_COUNT} new posts evaluated, ${INCLUDED} surfaced (score ≥ ${EFFECTIVE_THRESHOLD}/10), ${SKIPPED} previously seen skipped.${ADAPTIVE_NOTE}_"
+    if [ -n "$EVAL_BREAKDOWN" ]; then
+      echo ""
+      echo "_📥 Evaluated by source: ${EVAL_BREAKDOWN}_"
+    fi
+    if [ -n "$SURFACED_BREAKDOWN" ]; then
+      echo "_🎯 Surfaced by source: ${SURFACED_BREAKDOWN}_"
+    fi
   } >> "$DIGEST_FILE"
 
   # Mark all evaluated tweets as seen
