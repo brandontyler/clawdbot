@@ -109,6 +109,73 @@ pull_foryou() {
     --data-urlencode "features=${FEATURES}" 2>/dev/null
 }
 
+# --- Pull supplemental searches ---
+# Loops through scripts/x-digest-searches.txt and runs each query via the
+# `bird search` CLI. Catches high-engagement topic content For You may miss
+# (e.g., authors Brandon doesn't engage with on X often).
+# Emits TSV rows: tid \t user \t name \t likes \t rts \t created \t text
+pull_search_supplements() {
+  local searches_file="${SCRIPT_DIR}/x-digest-searches.txt"
+  if [ ! -f "$searches_file" ]; then
+    log "No supplemental searches file at $searches_file — skipping"
+    return
+  fi
+
+  local total=0
+  while IFS='|' read -r name query max_results; do
+    # Skip comments and blank lines
+    [[ "$name" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${name// }" ]] && continue
+    [ -z "$query" ] && continue
+    max_results="${max_results:-5}"
+
+    local results
+    results=$(timeout 15 bird search "$query" --json 2>/dev/null) || {
+      log "search '$name' timed out or failed — skipping" >&2
+      continue
+    }
+    [ -z "$results" ] && continue
+
+    # Parse to TSV (same shape as For You parsing)
+    local rows
+    rows=$(echo "$results" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    sys.exit(0)
+limit = int('${max_results}')
+for tweet in (data or [])[:limit]:
+    try:
+        tid = tweet.get('id', '')
+        author = tweet.get('author', {}) or {}
+        user = author.get('username', '')
+        name = author.get('name', '')
+        text = (tweet.get('text', '') or '').replace('\n', ' ').replace('\t', ' ')
+        likes = tweet.get('likeCount', 0)
+        rts = tweet.get('retweetCount', 0)
+        created = tweet.get('createdAt', '')
+        if not text or not user or not tid:
+            continue
+        if text.startswith('RT @'):
+            continue
+        print(f'{tid}\t{user}\t{name}\t{likes}\t{rts}\t{created}\t{text[:300]}')
+    except (KeyError, TypeError):
+        pass
+" 2>/dev/null)
+
+    if [ -n "$rows" ]; then
+      local n
+      n=$(echo "$rows" | grep -c '.' || echo 0)
+      total=$((total + n))
+      log "  $name: $n tweets" >&2
+      printf '%s\n' "$rows"
+    fi
+  done < "$searches_file"
+
+  log "Supplemental searches: $total tweets pulled across all queries" >&2
+}
+
 # --- DynamoDB helpers ---
 is_seen() {
   local tid="$1"
@@ -157,11 +224,16 @@ Brandon wants to see:
 - Kiro CLI best practices — how people are using it, tips, what's new
 - How people are using AI to solve REAL problems (not hype, actual use cases)
 - Agent skills (SKILL.md files) — what's popular, what are people installing and using
+- Eval-driven development — DeepEval, agent evaluation, eval harnesses, regression testing for agents
+- Loop Engineering and agentic workflows — autonomous agent loops, agent orchestration patterns
+- AI for productivity — Gmail/Calendar/Drive/Workspace automation, agentic email/calendar assistants
+- Discord / Slack agent integrations — multi-channel agent platforms, chat-driven agents
+- Voice agents / TTS — ElevenLabs, Vapi, voice-first agent UX
 - What's happening in AI — latest breakthroughs, new tools, what people are excited about
 - MCP servers, tool integrations, agent architectures
-- AWS news and services (Amazon Connect, Bedrock, Lambda, new launches) — Brandon works at AWS
+- AWS news and services (Amazon Connect, Bedrock, AgentCore, Strands, Lambda, new launches) — Brandon works at AWS
 - SpaceX launches, milestones, engineering achievements
-- Tesla, FSD, robotaxi, Boring Company news and progress
+- Tesla, FSD, robotaxi, Cybercab, Boring Company news and progress
 - @elonmusk — ONLY include when it's about SpaceX, Tesla, Neuralink, xAI, Boring Company, or engineering. Skip political takes, culture war, government/DOGE commentary, and casual replies.
 - @SawyerMerritt — breaking Tesla/SpaceX news. Only his biggest posts (he posts a lot too).
 - ENGAGEMENT RULE: For high-volume posters (Elon, Sawyer, Boris Cherny), only surface their top 1-2 posts — the ones with unusually high engagement relative to their normal. If Elon averages 50K likes, only include 100K+ posts. If Sawyer averages 2K, only include 5K+.
@@ -242,7 +314,22 @@ for e in entries:
 ")
 
 TOTAL_RAW=$(echo "$TWEETS_TSV" | grep -c '.' || echo 0)
-log "Parsed $TOTAL_RAW tweets (promoted/RTs filtered)"
+log "Parsed $TOTAL_RAW tweets from For You (promoted/RTs filtered)"
+
+# --- Supplemental: topic searches via bird CLI ---
+# Catches high-engagement topic content For You may not surface, plus
+# always-include accounts (karpathy, bcherny). Output merged with For You
+# before DynamoDB dedup so cross-source repeats are eliminated.
+log "Running supplemental topic searches..."
+SUPPL_TSV=$(pull_search_supplements)
+SUPPL_COUNT=$(echo "$SUPPL_TSV" | grep -c '.' || echo 0)
+
+if [ "$SUPPL_COUNT" -gt 0 ]; then
+  # Merge + in-memory dedup by tid (cross-source dedup before DynamoDB hit)
+  TWEETS_TSV=$(printf '%s\n%s\n' "$TWEETS_TSV" "$SUPPL_TSV" | awk -F'\t' '!seen[$1]++ && NF>=6 && $1 != ""')
+  TOTAL_RAW=$(echo "$TWEETS_TSV" | grep -c '.' || echo 0)
+  log "After merging $SUPPL_COUNT supplemental + cross-source dedup: $TOTAL_RAW unique tweets"
+fi
 
 # Dedup against DynamoDB
 FRESH_TSV=""

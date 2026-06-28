@@ -1,0 +1,52 @@
+# X digest supplemental searches — runs in addition to the For You feed pull.
+#
+# Why: For You is X's algorithmic feed, so it only shows what X *thinks* you
+# want. These searches catch high-engagement content in your interest topics
+# that For You might skip — especially when you haven't engaged with a topic
+# recently and X stops showing it.
+#
+# Format: name|bird-search-query|max_results
+#  - name: human-readable label (logged but not used in scoring)
+#  - query: anything `bird search` accepts (see bird CLI). Combine X
+#           search operators: from:user, OR, min_faves:N, since:YYYY-MM-DD
+#  - max_results: cap on how many to pull from this search (3-5 is sane)
+#
+# Lines starting with # and blank lines are ignored.
+# Total candidates after merge ≈ For You (~30) + sum(max_results) here.
+
+# --- Always-include people ---
+karpathy|from:karpathy|3
+bcherny|from:bcherny min_faves:50|3
+
+# --- Claude Code / Kiro CLI ---
+claude_code|claude code min_faves:500|5
+kiro_cli|kiro-cli OR "kiro one" min_faves:200|5
+
+# --- Agent skills / SKILL.md ecosystem ---
+agent_skills|SKILL.md OR "agent skill" min_faves:200|5
+skill_announcements|"new skill" OR "skill for" min_faves:300|3
+
+# --- Eval-driven development (Brandon filed openclaw-v3w for this) ---
+evals|deepeval OR "agent eval" OR "eval harness" min_faves:100|5
+
+# --- Loop Engineering / agentic workflows ---
+loop_engineering|"loop engineering" OR "agentic loop" min_faves:50|3
+
+# --- AWS surface area Brandon works on ---
+amazon_connect|"amazon connect" min_faves:50|3
+bedrock_agentcore|bedrock agentcore OR "agent core" min_faves:50|3
+aws_ai|AWS bedrock OR strands min_faves:200|3
+
+# --- MCP / tool integrations ---
+mcp|"mcp server" OR "mcp tool" min_faves:200|5
+
+# --- Voice / TTS / conversational AI ---
+voice_tts|elevenlabs OR vapi OR "voice agent" min_faves:200|3
+
+# --- AI for productivity (Gmail/Calendar/Drive automation) ---
+ai_productivity|"google workspace" agent OR "gmail" agent min_faves:200|3
+
+# --- SpaceX / Tesla (high engagement bar — only mega-viral) ---
+spacex|from:SpaceX OR starship OR "raptor engine" min_faves:1000|3
+tesla|from:Tesla OR FSD OR cybercab min_faves:1000|3
+elonmusk_top|from:elonmusk min_faves:10000|2
