@@ -36,6 +36,29 @@ mkdir -p "$DIGEST_DIR"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
+# --- Discord alert helper (for failures) ---
+# Sends a one-line alert to the OpenClaw EC2 admin channel.
+alert_discord() {
+  local msg="$1"
+  local channel="${DIGEST_DISCORD_CHANNEL:-1503414103341797406}"
+  local token
+  token=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+  [ -z "$token" ] && { log "alert_discord: no token, skipping alert"; return; }
+  curl -s -X POST "https://discord.com/api/v10/channels/$channel/messages" \
+    -H "Authorization: Bot $token" \
+    -H "Content-Type: application/json" \
+    -d "{\"content\":$(printf '%s' "$msg" | jq -Rs .)}" > /dev/null 2>&1
+}
+
+# fail <message> — log, alert Discord, exit 1.
+fail() {
+  local msg="$1"
+  log "FATAL: $msg"
+  alert_discord "⚠️ **x-digest failed** — $msg
+See \`~/logs/x-digest/cron.log\` on EC2 for details."
+  exit 1
+}
+
 # --- GraphQL query ID management ---
 get_query_id() {
   # Try cached ID first
@@ -175,9 +198,9 @@ if [ -z "$RAW_JSON" ] || ! echo "$RAW_JSON" | jq -e '.data.home' > /dev/null 2>&
   log "ERROR: Failed to pull For You timeline"
   # Check if auth expired
   if echo "$RAW_JSON" | grep -qi "unauthorized\|forbidden\|Could not authenticate"; then
-    log "Auth tokens may be expired. Check AUTH_TOKEN and CT0 in ~/.profile"
+    fail "Auth tokens may be expired — check AUTH_TOKEN and CT0 in ~/.profile"
   fi
-  exit 1
+  fail "Pulled empty/invalid response from X For You GraphQL endpoint"
 fi
 
 # Parse tweets from the timeline
@@ -258,11 +281,30 @@ else
   SCORES=$(score_tweets "$(echo -e "$NUMBERED")")
 
   if [ -z "$SCORES" ]; then
-    log "WARN: LLM scoring failed — using all tweets (fallback)"
-    SCORES="[$(printf '7,%.0s' $(seq 1 "$FRESH_COUNT") | sed 's/,$//' )]"
+    # Fail-closed: don't flood Discord with unscored tweets.
+    alert_discord "⚠️ **x-digest scoring failed** — kiro-cli returned no scores for $FRESH_COUNT tweets.
+No digest sent. Raw tweets in \`/tmp/x-digest/digest-${TODAY}.md\` on EC2.
+Tweets are NOT marked seen — they will be re-evaluated next run."
+    log "FATAL: LLM scoring returned empty — aborting without marking tweets seen"
+    exit 1
   fi
 
   log "Scores: $SCORES"
+
+  # Adaptive threshold: if fewer than 3 posts meet ≥7, lower threshold to the
+  # 3rd-highest score so the digest is never near-empty on slow days. Quality
+  # bar stays at 7 for normal days, falls back to top-3 on thin days.
+  EFFECTIVE_THRESHOLD="$RELEVANCE_THRESHOLD"
+  ADAPTIVE_NOTE=""
+  COUNT_AT_THRESHOLD=$(echo "$SCORES" | jq "[.[] | select(. >= $RELEVANCE_THRESHOLD)] | length" 2>/dev/null || echo 0)
+  if [ "$COUNT_AT_THRESHOLD" -lt 3 ] && [ "$FRESH_COUNT" -ge 3 ]; then
+    THIRD_HIGHEST=$(echo "$SCORES" | jq "[.[]] | sort | reverse | .[2]" 2>/dev/null)
+    if [ -n "$THIRD_HIGHEST" ] && [ "$THIRD_HIGHEST" != "null" ]; then
+      EFFECTIVE_THRESHOLD="$THIRD_HIGHEST"
+      ADAPTIVE_NOTE=" (adaptive: only $COUNT_AT_THRESHOLD met ≥${RELEVANCE_THRESHOLD}, lowered to top-3)"
+      log "Adaptive threshold: only $COUNT_AT_THRESHOLD met ≥${RELEVANCE_THRESHOLD}, lowering to ${EFFECTIVE_THRESHOLD} to guarantee 3 posts"
+    fi
+  fi
 
   # Build digest with scored tweets
   {
@@ -278,7 +320,7 @@ else
   while IFS=$'\t' read -r tid user name likes rts created text; do
     [ -z "$tid" ] && continue
     score=$(echo "$SCORES" | jq -r ".[$i] // 0" 2>/dev/null || echo "5")
-    if [ "$score" -ge "$RELEVANCE_THRESHOLD" ] 2>/dev/null; then
+    if [ "$score" -ge "$EFFECTIVE_THRESHOLD" ] 2>/dev/null; then
       # Format date
       cdt=$(TZ='America/Chicago' date -d "$created" '+%a %b %d, %l:%M %p CDT' 2>/dev/null || echo "$created")
       {
@@ -298,7 +340,7 @@ else
 
   {
     echo "---"
-    echo "_${FRESH_COUNT} new posts evaluated, ${INCLUDED} surfaced (score ≥ ${RELEVANCE_THRESHOLD}/10), ${SKIPPED} previously seen skipped._"
+    echo "_${FRESH_COUNT} new posts evaluated, ${INCLUDED} surfaced (score ≥ ${EFFECTIVE_THRESHOLD}/10), ${SKIPPED} previously seen skipped.${ADAPTIVE_NOTE}_"
   } >> "$DIGEST_FILE"
 
   # Mark all evaluated tweets as seen
