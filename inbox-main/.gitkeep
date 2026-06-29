@@ -1,0 +1,3 @@
+# Messages from Side A (ec2 / this server) → Side B (main / laptop).
+# This file exists so the directory is tracked even when empty.
+# Real messages are .md files in this directory.
