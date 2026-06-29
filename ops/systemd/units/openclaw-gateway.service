@@ -14,5 +14,12 @@ ExecStart=/home/ubuntu/openclaw/run-gateway.sh --verbose --force --port 18800 --
 Restart=always
 RestartSec=5
 
+# Memory caps (openclaw-d1g step 3, 2026-06-29). Sized from observed peaks
+# on t4g.large: current 650 MB, peak 1.2 GB. 1.5 GB cap leaves generous
+# headroom while bounding any leak. MemoryHigh applies pressure before
+# the hard kill.
+MemoryHigh=1200M
+MemoryMax=1500M
+
 [Install]
 WantedBy=default.target

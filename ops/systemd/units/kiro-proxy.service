@@ -11,5 +11,14 @@ ExecStart=/home/ubuntu/openclaw/run-kiro-proxy.sh
 Restart=always
 RestartSec=5
 
+# Memory caps (openclaw-d1g step 3, 2026-06-29). Sized from observed peaks
+# on t4g.large (7.6 GB physical): current 3.4 GB, peak 4.6 GB. Cap above
+# peak but well below box capacity; OOM-killer targets this cgroup if
+# it runs away rather than crashing the host. MemoryHigh sets a soft
+# threshold where kernel applies memory pressure (page reclaim) before
+# the hard kill.
+MemoryHigh=4G
+MemoryMax=5G
+
 [Install]
 WantedBy=default.target
