@@ -3,12 +3,12 @@
 # via the shared `bridge` branch.
 #
 # Usage:
-#   scripts/git-bridge-send.sh --to main --subject "Subject" --body "Body"
-#   scripts/git-bridge-send.sh --to main --subject "Subject" --body-file ./msg.md
-#   echo "body via stdin" | scripts/git-bridge-send.sh --to main --subject "Subject" --body-file -
+#   scripts/git-bridge-send.sh --to mac --subject "Subject" --body "Body"
+#   scripts/git-bridge-send.sh --to mac --subject "Subject" --body-file ./msg.md
+#   echo "body via stdin" | scripts/git-bridge-send.sh --to mac --subject "Subject" --body-file -
 #
 # Flags:
-#   --to <target>       'main' (sibling) or 'ec2' (us). Default: main.
+#   --to <target>       'mac' (sibling laptop, default) or 'ec2' (us).
 #   --subject <text>    Required. Used in filename + frontmatter.
 #   --body <text>       Inline body (single arg).
 #   --body-file <path>  Body from file (use '-' for stdin).
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 # --- Args ---
-TO=main
+TO=mac
 SUBJECT=""
 BODY=""
 BODY_FILE=""
@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$SUBJECT" ] && { echo "ERROR: --subject required" >&2; exit 1; }
-[ "$TO" != "main" ] && [ "$TO" != "ec2" ] && { echo "ERROR: --to must be 'main' or 'ec2'" >&2; exit 1; }
+[ "$TO" != "mac" ] && [ "$TO" != "ec2" ] && { echo "ERROR: --to must be 'mac' or 'ec2'" >&2; exit 1; }
 
 # Body source
 if [ -n "$BODY_FILE" ]; then
