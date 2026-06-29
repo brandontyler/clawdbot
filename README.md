@@ -6,10 +6,10 @@ deployments that share this repo on different working branches:
 | Deployment | Working branch | Channel | Role |
 |---|---|---|---|
 | EC2 (Brandon's server) | `ec2` | `#openclaw-ec2` (`1503414103341797406`) | Side A |
-| Other deployment (Brandon's laptop or another machine) | `main` | `#???` (`1475513267433767014`) | Side B |
+| Other deployment (Brandon's laptop or another machine) | `mac` | `#openclaw-mac` (`1475513267433767014`) | Side B |
 
 The branch was created on 2026-06-29 as an orphan branch (no parent commit,
-no code, no history shared with `ec2` or `main`). Pulling `origin/bridge`
+no code, no history shared with `ec2` or `mac`). Pulling `origin/bridge`
 gets you only the mailbox tree, never the application code.
 
 ## Layout
@@ -18,7 +18,7 @@ gets you only the mailbox tree, never the application code.
 bridge/
 ├── README.md             ← this file (the protocol)
 ├── inbox-ec2/            ← Side B (main) writes here, Side A (ec2) reads
-├── inbox-main/           ← Side A (ec2) writes here, Side B (main) reads
+├── inbox-mac/           ← Side A (ec2) writes here, Side B (main) reads
 └── processed/            ← optional — move messages here after handling so
                             inbox/ only shows pending work
 ```
@@ -57,7 +57,7 @@ scripts/git-bridge-send.sh --to main --subject "Subject" --body "Body"
 The script:
 1. Adds a worktree at `/tmp/openclaw-bridge` if one doesn't exist
 2. Pulls latest `bridge`
-3. Creates `inbox-main/<timestamp>-from-ec2-<slug>.md`
+3. Creates `inbox-mac/<timestamp>-from-ec2-<slug>.md`
 4. Commits + pushes `bridge`
 5. Removes the worktree
 
@@ -68,14 +68,14 @@ Side B needs a polling mechanism. Either:
 **Manual:**
 ```bash
 git fetch origin bridge
-git show origin/bridge -- inbox-main/    # see what's pending
-git checkout origin/bridge -- inbox-main/  # if you want copies
+git show origin/bridge -- inbox-mac/    # see what's pending
+git checkout origin/bridge -- inbox-mac/  # if you want copies
 ```
 
 **Scheduled (systemd timer recommended):**
 A 30-line `scripts/git-bridge-poll.sh` that:
 1. Fetches `origin/bridge`
-2. Lists files in `inbox-main/` newer than a watermark file
+2. Lists files in `inbox-mac/` newer than a watermark file
 3. For each new message, posts to its target Discord channel via webhook
    or local bot token
 4. Optionally `git mv` the file into `processed/` and pushes
@@ -99,4 +99,14 @@ Polling interval: 5-15 minutes is plenty for non-urgent messaging.
 If we later regret this and want to retire the bridge:
 1. Move all messages out of inbox/ to processed/
 2. Delete the branch from origin (`git push origin :bridge`)
-3. The orphan history just goes away — no impact on `ec2` or `main`.
+3. The orphan history just goes away — no impact on `ec2` or `mac`.
+
+## Revision history
+
+- **2026-06-29 14:30 CDT** — orphan branch initialized from `ec2`.
+- **2026-06-29 15:01 CDT** — renamed `inbox-main/` → `inbox-mac/` after
+  Side B (laptop) reported it's actually on the `mac` branch, not `main`.
+  Side A's existing sender helper (`scripts/git-bridge-send.sh` on
+  `ec2`) updated in lock-step to write to `inbox-mac/` instead of
+  `inbox-main/`. Naming convention going forward: each inbox is the
+  branch name of the side that *reads* from it.
