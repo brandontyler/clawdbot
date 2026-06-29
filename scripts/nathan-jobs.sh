@@ -208,11 +208,20 @@ Score 1-5:
     nonprofit, retail with 'youth team' wording, college-level (not K-12) roles
     even at education orgs (e.g., university career-services coordinator).
     Location borderline (20-25mi).
+    *** ALSO SCORE 2: Time-limited internships at media/sports/entertainment
+    companies even when commutable (Frisco Bowl marketing internship, FC Dallas
+    digital media internship, etc.) — internships don't build toward teacher
+    certification and end after a semester. ***
 1 = Wrong field. Specifically includes:
     *** SPECIAL EDUCATION-only roles (SPED aide, SPED paraprofessional, SPED
     instructional aide, behavior tech for SPED, autism aide) — Nathan is
     explicitly NOT pursuing SPED and has declined SPED-specific positions.
     Filter these out regardless of grade level or location. ***
+    *** MARKETING, PR, SOCIAL MEDIA, COMMUNICATIONS roles at edtech or
+    education-adjacent companies (Turnitin, Coursera, Khan Academy, McGraw
+    Hill, Pearson, school-district marketing/comms departments) — these are
+    corporate roles, not teacher-path. Nathan is targeting CLASSROOM
+    work, not corporate education sector. Score 1 even if remote/flexible. ***
     DAYCARE, preschool, pre-K, infant/toddler care, child-development centers
     serving under-5 (e.g. KinderCare, Bright Horizons, Goddard, Primrose,
     Children's Lighthouse, Child Development Schools, Learning Experience).
@@ -220,7 +229,7 @@ Score 1-5:
     doesn't have, requires relocation, far outside the 25mi commute radius, or
     unrelated to youth/education.
 
-Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief why this fits Nathan>\",\"pay\":\"<estimated range, hourly or annual>\"}
+Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief why this fits Nathan>\"}
 
 ${JOB_LIST}"
 
@@ -242,7 +251,6 @@ while IFS= read -r score_line; do
   idx=$(echo "$score_line"   | jq -r '.idx    // 0'  2>/dev/null)
   score=$(echo "$score_line" | jq -r '.score  // 0'  2>/dev/null)
   reason=$(echo "$score_line" | jq -r '.reason // ""' 2>/dev/null)
-  pay=$(echo "$score_line"   | jq -r '.pay    // ""' 2>/dev/null)
   [ "$score" -lt 3 ] 2>/dev/null && continue
 
   JOB_LINE=$(sed -n "${idx}p" "$JOBS_FILE")
@@ -252,13 +260,12 @@ while IFS= read -r score_line; do
 
   {
     echo "${title}"
-    [ -n "$pay" ] && [ "$pay" != "null" ] && echo "  💰 Est: ${pay}"
     echo "Source: ${source} | Score: ${score}/5 | ${reason}"
     echo "${url}"
     echo ""
   } >> "$DIGEST_FILE"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$jid" "$score" "$pay" "$reason" "$source" "$title" "$url" >> "$NEW_JOBS_TSV"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$jid" "$score" "$reason" "$source" "$title" "$url" >> "$NEW_JOBS_TSV"
   mark_seen "$jid" "$title" "$source"
   KEPT=$((KEPT + 1))
 done <<< "$SCORES"
@@ -281,10 +288,9 @@ if [ "$KEPT" -gt 0 ]; then
         -d "$(jq -nc --arg c "$1" '{content:$c}')" > /dev/null
     }
     chunk="📚 **${KEPT} new job(s) for Nathan — North TX** — ${DATE_LABEL}"
-    while IFS=$'\t' read -r jid score pay reason source title url; do
+    while IFS=$'\t' read -r jid score reason source title url; do
       short_title="${title:0:200}"
       job_block=$'\n\n'"• **${short_title}** _(score ${score}/5)_"
-      [ -n "$pay" ] && [ "$pay" != "null" ] && job_block="${job_block}"$'\n'"  💰 ${pay}"
       [ -n "$reason" ] && job_block="${job_block}"$'\n'"  _${reason}_"
       job_block="${job_block}"$'\n'"  <${url}>"
       candidate="${chunk}${job_block}"
