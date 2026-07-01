@@ -250,3 +250,6 @@ ops/systemd/units/gog.env
 # safer-build.sh dist snapshot + rollback forensics
 dist.last-good/
 dist.broken.*/
+.build.lock
+scripts/safer-build.sh.bak-*
+dist.broken.*

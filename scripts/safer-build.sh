@@ -14,8 +14,22 @@
 #      place. verify-gateway-dist.sh sees it and can promote it back to dist/
 #      during the next gateway start.
 #
+# CONCURRENCY (flock, added 2026-06-30 — Tier 2 of the build-stall outage fix):
+#   Because the build writes dist/ IN PLACE (tsdown --no-clean), two builds
+#   running at once can interleave their writes and leave a partial dist/ with
+#   missing/out-of-order stamps. That is exactly the state that crash-looped the
+#   proxy through systemd's StartLimitBurst and produced the ~4h outage on
+#   2026-06-30. An flock on .build.lock guarantees only ONE build touches dist/
+#   at a time. A second invocation waits up to 15 minutes for the lock, then
+#   bails (exit 1) rather than racing. ALWAYS build via this script, never a bare
+#   `pnpm build`, so the lock actually protects you.
+#
 # Usage:
 #   scripts/safer-build.sh
+#
+# Env:
+#   SAFER_BUILD_CMD   Build command to run (default: "pnpm build"). Overridable
+#                     so the lock behavior can be tested without a full build.
 #
 # Idempotent. Safe to wedge into systemd ExecStart or run manually.
 set -euo pipefail
@@ -24,8 +38,20 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 DIST="$REPO_ROOT/dist"
 LASTGOOD="$REPO_ROOT/dist.last-good"
+LOCKFILE="$REPO_ROOT/.build.lock"
+BUILD_CMD="${SAFER_BUILD_CMD:-pnpm build}"
 
 log() { printf '[safer-build] %s\n' "$*" >&2; }
+
+# 0. Serialize builds. Hold an exclusive lock for the whole snapshot+build so a
+#    concurrent invocation cannot interleave writes into dist/. fd 9 stays open
+#    for the life of the process and the lock releases automatically on exit.
+exec 9>"$LOCKFILE"
+if ! flock -w 900 9; then
+  log "Another build holds $LOCKFILE and did not release within 15m — refusing to run concurrently"
+  exit 1
+fi
+log "Acquired build lock ($LOCKFILE)"
 
 # 1. Snapshot last-known-good dist (only if the previous build actually completed)
 if [ -f "$DIST/.runtime-postbuildstamp" ] && [ -f "$DIST/.buildstamp" ]; then
@@ -37,8 +63,8 @@ else
 fi
 
 # 2. Run the build
-log "Running pnpm build"
-if ! pnpm build; then
+log "Running build: $BUILD_CMD"
+if ! $BUILD_CMD; then
   rc=$?
   log "BUILD FAILED (exit=$rc). dist.last-good preserved at $LASTGOOD"
   log "Gateway can auto-rollback at next start via verify-gateway-dist.sh"
