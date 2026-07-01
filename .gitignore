@@ -246,3 +246,7 @@ excalidraw.log
 # Local-only systemd env files (contain secrets — see ops/systemd/gog.env.example)
 ops/systemd/*.env
 ops/systemd/units/gog.env
+
+# safer-build.sh dist snapshot + rollback forensics
+dist.last-good/
+dist.broken.*/
