@@ -17,19 +17,26 @@
 # CONCURRENCY (flock, added 2026-06-30 — Tier 2 of the build-stall outage fix):
 #   Because the build writes dist/ IN PLACE (tsdown --no-clean), two builds
 #   running at once can interleave their writes and leave a partial dist/ with
-#   missing/out-of-order stamps. That is exactly the state that crash-looped the
-#   proxy through systemd's StartLimitBurst and produced the ~4h outage on
-#   2026-06-30. An flock on .build.lock guarantees only ONE build touches dist/
-#   at a time. A second invocation waits up to 15 minutes for the lock, then
-#   bails (exit 1) rather than racing. ALWAYS build via this script, never a bare
-#   `pnpm build`, so the lock actually protects you.
+#   missing/out-of-order stamps. An flock on .build.lock guarantees only ONE
+#   build touches dist/ at a time.
+#
+# LIVE-CLOBBER GUARD (added 2026-07-01 after a 3rd outage):
+#   An in-place build ALSO wipes/rewrites dist/ out from under an already-running
+#   gateway/proxy (2026-07-01 06:34: an agent ran this script while the gateway
+#   was live → gateway served HTTP 503 "Control UI assets not found" for ~30min).
+#   Services load dist/ at startup and do NOT hot-reload it, so building in place
+#   while they serve is pure downside. This script now REFUSES when the gateway
+#   (:18800) or proxy (:18801) is listening. Override for a real maintenance
+#   window with SAFER_BUILD_ALLOW_LIVE=1. The right long-term fix is to build
+#   off-box (CI) and ship dist/, or build to a staging dir and atomically swap.
 #
 # Usage:
 #   scripts/safer-build.sh
 #
 # Env:
-#   SAFER_BUILD_CMD   Build command to run (default: "pnpm build"). Overridable
-#                     so the lock behavior can be tested without a full build.
+#   SAFER_BUILD_CMD          Build command (default: "pnpm build"). Overridable
+#                            so the lock behavior can be tested without a build.
+#   SAFER_BUILD_ALLOW_LIVE   Set to 1 to build even while services are live.
 #
 # Idempotent. Safe to wedge into systemd ExecStart or run manually.
 set -euo pipefail
@@ -42,6 +49,21 @@ LOCKFILE="$REPO_ROOT/.build.lock"
 BUILD_CMD="${SAFER_BUILD_CMD:-pnpm build}"
 
 log() { printf '[safer-build] %s\n' "$*" >&2; }
+
+# Refuse to clobber a LIVE dist/ (see LIVE-CLOBBER GUARD above).
+if [ "${SAFER_BUILD_ALLOW_LIVE:-0}" != "1" ]; then
+  live=""
+  for port in 18800 18801; do
+    if ss -ltn 2>/dev/null | grep -q ":${port} "; then live="${live} ${port}"; fi
+  done
+  if [ -n "$live" ]; then
+    log "REFUSING to build: service(s) listening on${live} (gateway 18800 / proxy 18801)."
+    log "An in-place build rewrites dist/ under them and takes them down."
+    log "Deploy by building off-box and shipping dist/, or stop the services first,"
+    log "or re-run with SAFER_BUILD_ALLOW_LIVE=1 for a deliberate maintenance window."
+    exit 3
+  fi
+fi
 
 # 0. Serialize builds. Hold an exclusive lock for the whole snapshot+build so a
 #    concurrent invocation cannot interleave writes into dist/. fd 9 stays open
