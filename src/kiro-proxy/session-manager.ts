@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { checkContextAlert, clearContextAlerts } from "./alerts.js";
+import { postMessage } from "./discord-api.js";
 import { KiroSession, type KiroSessionOptions, type KiroSessionEvents } from "./kiro-session.js";
 import { ProgressReporter } from "./progress.js";
 import type { OpenAIMessage, KiroSessionHandle, ChannelRoute, ImageInput } from "./types.js";
@@ -957,6 +958,42 @@ export class SessionManager {
         if (reporter) {
           void reporter.finish();
         }
+      },
+      onCompactionStatus: (status, summary) => {
+        const reporter = this.reporters.get(sessionKey);
+        if (!reporter) {
+          return;
+        }
+        if (status === "started") {
+          reporter.onCompactionStarted();
+          return;
+        }
+        // status === "completed"
+        //
+        // Defer one microtask so any trailing `_kiro.dev/metadata` carrying
+        // the post-compaction contextUsagePercentage has a chance to fire
+        // FIRST and update session.lastContextPct. Otherwise the "N% → M%"
+        // delta shows a stale pre-compaction after-value because these two
+        // ACP notifications race and observed order has been "completed
+        // then metadata" (see 2026-07-01 log: realestate compaction).
+        setImmediate(() => {
+          const session = this.sessions.get(sessionKey)?.session;
+          const afterPct = session?.lastContextPct ?? 0;
+          void reporter.onCompactionCompleted(afterPct).then(({ channelId }) => {
+            if (!summary || !channelId) {
+              return;
+            }
+            // Discord message limit is 2000 chars; leave headroom for the
+            // header line and code fences. kiro-cli summaries typically fit
+            // comfortably under 1500, but ambitious sessions can spill.
+            const MAX_BODY_LEN = 1800;
+            const truncated = summary.length > MAX_BODY_LEN;
+            const body = truncated
+              ? `${summary.slice(0, MAX_BODY_LEN)}\n\n_[truncated — ${summary.length - MAX_BODY_LEN} more chars]_`
+              : summary;
+            void postMessage(channelId, `📋 **Compaction summary**\n\n${body}`);
+          });
+        });
       },
     };
   }

@@ -215,6 +215,10 @@ export class ProgressReporter {
   private allHistory: CompletedTool[] = [];
   private contextPct = 0;
   private lastToolEndAt = 0;
+  /** Non-null while a `/compact` turn is in flight — enables compaction banner. */
+  private compactionStartedAt: number | null = null;
+  /** Context pct captured at compaction start, used for the "N% → M%" delta. */
+  private preCompactContextPct = 0;
   private readonly log: (msg: string) => void;
 
   constructor(log: (msg: string) => void) {
@@ -315,6 +319,61 @@ export class ProgressReporter {
     this.contextPct = pct;
   }
 
+  /**
+   * Called when kiro-cli emits `_kiro.dev/compaction/status {type:"started"}`.
+   * Captures the pre-compaction context% for the eventual before→after delta
+   * and re-renders the banner into "🧹 Compacting..." mode. buildMessage()
+   * short-circuits into a compaction-specific line while compactionStartedAt
+   * is non-null, so subsequent interval ticks (and the eventual completion
+   * edit) all render with the right shape.
+   */
+  onCompactionStarted(): void {
+    if (!this.started) {
+      return;
+    }
+    this.compactionStartedAt = Date.now();
+    this.preCompactContextPct = this.contextPct;
+    void this.sendOrEdit();
+  }
+
+  /**
+   * Called when kiro-cli emits `_kiro.dev/compaction/status {type:"completed"}`.
+   * Edits the banner one last time with the final "✅ Compacted (X% → Y%, Ns)"
+   * summary and returns (channelId, messageId) so the caller can optionally
+   * post the transcript summary as a follow-up message. Marks the reporter
+   * finished so the eventual `onPromptEnd → finish()` call is a no-op — we
+   * don't want it to overwrite our compaction result with a generic "Done".
+   *
+   * `afterPct` is passed in from session-manager rather than read from
+   * `this.contextPct` because the `_kiro.dev/metadata` notification carrying
+   * the post-compaction pct can race with `_kiro.dev/compaction/status`;
+   * the session's `lastContextPct` is the more authoritative source.
+   */
+  async onCompactionCompleted(
+    afterPct: number,
+  ): Promise<{ channelId: string | null; messageId: string | null }> {
+    if (!this.channelId || !this.messageId) {
+      return { channelId: this.channelId, messageId: null };
+    }
+    const durMs = this.compactionStartedAt
+      ? Date.now() - this.compactionStartedAt
+      : Date.now() - this.promptStartedAt;
+    const dt = elapsed(durMs);
+    const before = this.preCompactContextPct || this.contextPct;
+    const parts: string[] = [
+      `✅ **Compacted** (${dt})`,
+      `  📊 ${before.toFixed(0)}% → ${afterPct.toFixed(0)}% ctx`,
+    ];
+    const result = { channelId: this.channelId, messageId: this.messageId };
+    await editMessage(this.channelId, this.messageId, parts.join("\n"));
+    // Prevent the later finish() call from overwriting our result.
+    this.started = false;
+    this.clearTimers();
+    this.messageId = null;
+    this.compactionStartedAt = null;
+    return result;
+  }
+
   async finish(): Promise<void> {
     if (!this.started) {
       return;
@@ -408,6 +467,14 @@ export class ProgressReporter {
   }
 
   private buildMessage(): string {
+    // Compaction is a distinct phase — kiro-cli emits no tool_call events
+    // during compaction, so the normal tool-based banner is misleading
+    // ("🔧 Working... 0 tools" for 60s straight). Show a dedicated line
+    // that reports elapsed compaction time and the pre-compaction ctx.
+    if (this.compactionStartedAt) {
+      const dt = elapsed(Date.now() - this.compactionStartedAt);
+      return `🧹 **Compacting**... (${dt})\n  📊 ${this.preCompactContextPct.toFixed(0)}% ctx`;
+    }
     const dt = elapsed(Date.now() - this.promptStartedAt);
     const lines: string[] = [];
 

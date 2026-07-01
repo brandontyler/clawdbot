@@ -131,6 +131,13 @@ export type KiroSessionEvents = {
   onToolCall?: (title: string, kind: string, status: string, isNew: boolean) => void;
   onPromptStart?: () => void;
   onPromptEnd?: () => void;
+  /**
+   * Fires on `_kiro.dev/compaction/status` ext-notifications.
+   * `status` is the kiro-cli lifecycle stage ("started" | "completed").
+   * On "completed", `summary` is the human-readable transcript summary
+   * kiro-cli replaced the conversation history with.
+   */
+  onCompactionStatus?: (status: "started" | "completed", summary?: string) => void;
 };
 
 export class KiroSession {
@@ -479,6 +486,27 @@ export class KiroSession {
         this.events.onContextUsage?.(meta.contextUsagePercentage);
         this.events.onActivity?.();
       }
+      return;
+    }
+    if (method === "_kiro.dev/compaction/status") {
+      // Shape (verified 2026-07-01, kiro-cli 2.6.0):
+      //   { sessionId: "…", status: { type: "started" | "completed" }, summary: string | null }
+      // ACP `session/prompt` for `/compact` returns almost immediately with
+      // stopReason:"end_turn", but kiro-cli keeps working in the background
+      // and only emits `completed` (with the transcript-replacement summary)
+      // when compaction actually finishes — often 60+ seconds later. Without
+      // this hook the Discord progress banner freezes at the pre-compaction
+      // "🔧 Working... N% ctx" state because ProgressReporter never sees a
+      // tool_call event to update on and finish() ran too early.
+      const p = params as { status?: { type?: string }; summary?: unknown };
+      const type = p.status?.type;
+      const summary = typeof p.summary === "string" ? p.summary : undefined;
+      if (type === "started" || type === "completed") {
+        this.events.onCompactionStatus?.(type, summary);
+      }
+      this.log(
+        `ext-notification: ${method} type=${type ?? "?"} summaryLen=${summary?.length ?? 0}`,
+      );
       return;
     }
     // Log other _kiro.dev/* notifications for discovery
