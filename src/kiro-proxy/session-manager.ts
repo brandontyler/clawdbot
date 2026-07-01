@@ -202,6 +202,31 @@ const KIRO_NATIVE_SLASH_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Aliases for kiro-cli native commands that the OpenClaw gateway intercepts
+ * upstream (and therefore never reach the proxy in their original form).
+ *
+ * The gateway intercepts `/compact` and runs it against its OWN transcript,
+ * which is typically tiny or empty for kiro-proxy channels (the persistent
+ * kiro-cli ACP child accumulates the real context across hibernation cycles,
+ * while the gateway just feeds one prompt per turn). Running `/compact` on
+ * the gateway side is therefore a no-op when you actually want compaction
+ * applied to the kiro-cli child's conversation history.
+ *
+ * `/kcompact` is the bypass: the OpenClaw gateway doesn't know it (not in
+ * its reserved command catalog), so it flows through as a regular prompt.
+ * Once it reaches the proxy, this map rewrites it to `/compact` before
+ * forwarding — and kiro-cli runs its native conversation-history compaction
+ * against the right transcript.
+ *
+ * Add more aliases here if more gateway-intercepted native commands need a
+ * bypass. `/clear` is NOT gateway-intercepted (it's in KIRO_NATIVE_SLASH_COMMANDS
+ * above and reaches kiro-cli unchanged), so no alias is needed for that one.
+ */
+const KIRO_COMMAND_ALIASES: Readonly<Record<string, string>> = {
+  "/kcompact": "/compact",
+};
+
+/**
  * If the message body is a kiro-cli native slash command (after stripping
  * the gateway's metadata envelope), return the bare command (with optional
  * trailing args). Otherwise return null.
@@ -240,11 +265,19 @@ export function extractKiroSlashCommand(text: string): string | null {
   if (!match) {
     return null;
   }
-  const cmd = match[1].toLowerCase();
-  if (!KIRO_NATIVE_SLASH_COMMANDS.has(cmd)) {
+  const raw = match[1].toLowerCase();
+  // Aliases are pre-approved bypasses we control via KIRO_COMMAND_ALIASES.
+  // The alias map IS the trust gate for these — they intentionally don't
+  // need to be in KIRO_NATIVE_SLASH_COMMANDS, because they map to commands
+  // that the OpenClaw gateway would otherwise intercept upstream.
+  const aliasTarget = KIRO_COMMAND_ALIASES[raw];
+  if (aliasTarget !== undefined) {
+    return match[2] ? `${aliasTarget} ${match[2].trim()}` : aliasTarget;
+  }
+  if (!KIRO_NATIVE_SLASH_COMMANDS.has(raw)) {
     return null;
   }
-  return match[2] ? `${cmd} ${match[2].trim()}` : cmd;
+  return match[2] ? `${raw} ${match[2].trim()}` : raw;
 }
 
 /**
