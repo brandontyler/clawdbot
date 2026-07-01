@@ -253,3 +253,4 @@ dist.broken.*/
 .build.lock
 scripts/safer-build.sh.bak-*
 dist.broken.*
+scripts/*.bak-*

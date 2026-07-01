@@ -1,24 +1,25 @@
 #!/bin/bash
-# kiro-proxy-heartbeat.sh — emit a CloudWatch liveness metric for the kiro-proxy
-# systemd --user service (Tier 3 of the 2026-06-30 build-stall outage fix).
+# kiro-proxy-heartbeat.sh — emit CloudWatch liveness metrics for the OpenClaw
+# stack on this box (Tier 3 of the 2026-06-30 build-stall outage fix).
 #
-# WHY: the proxy runs on this box behind Discord/Slack/etc. When it died on
-# 2026-06-30 it crash-looped past systemd's StartLimitBurst and stayed dead ~4h
-# until a human noticed via Discord. A metric + alarm pages the operator in
-# minutes instead.
+# Emits every 60s (via kiro-proxy-heartbeat.timer):
+#   OpenClawProxy/ProxyHealthy    1 iff kiro-proxy answers HTTP 200 on :18801
+#   OpenClawProxy/GatewayHealthy  1 iff openclaw-gateway answers HTTP 200 on :18800
+# dimension Host=<instance-id>.
 #
-# Metric: namespace OpenClawProxy, name ProxyHealthy (1=healthy, 0=down),
-#         dimension Host=<instance-id>. Driven every 60s by
-#         kiro-proxy-heartbeat.timer. The paired alarm 'openclaw-kiro-proxy-down'
-#         treats MISSING data as breaching, so a dead box (no heartbeat at all)
-#         alarms too.
+# HTTP-based on purpose (not just "unit active / port listening"): the
+# 2026-06-30 22:58 incident was the GATEWAY dead ~6h while a port-only proxy
+# check reported healthy=1. An HTTP probe with a timeout reads a hung- or
+# dead-but-listening process as DOWN, and covers the gateway too.
 #
-# Healthy := kiro-proxy --user unit is active AND something is listening on 18801.
-# Always exits 0 so the oneshot service never enters a failed state.
+# Paired alarms (treat-missing-data=breaching, so a dead box also pages):
+#   openclaw-kiro-proxy-down  on ProxyHealthy
+#   openclaw-gateway-down     on GatewayHealthy
 set -uo pipefail
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 AWS_BIN="$(command -v aws || echo "$HOME/.local/bin/aws")"
-PORT=18801
+PROXY_PORT=18801
+GATEWAY_PORT=18800
 
 TOKEN=$(curl -sf -X PUT http://169.254.169.254/latest/api/token \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null)
@@ -26,21 +27,20 @@ IID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" \
   http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
 IID="${IID:-unknown}"
 
-healthy=0
-if systemctl --user is-active --quiet kiro-proxy; then
-  if ss -ltn 2>/dev/null | grep -q ":${PORT} "; then
-    healthy=1
-  fi
-fi
+# 1 iff an HTTP GET to the port returns 200 within 5s (catches down AND hung).
+http_healthy() {
+  local port="$1" code
+  code=$(curl -sS -m 5 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${port}/" 2>/dev/null)
+  [ "$code" = "200" ] && echo 1 || echo 0
+}
 
-"$AWS_BIN" cloudwatch put-metric-data \
-  --namespace OpenClawProxy \
-  --metric-name ProxyHealthy \
-  --unit Count \
-  --value "$healthy" \
-  --dimensions Host="$IID" \
-  --storage-resolution 60 >/dev/null 2>&1
+proxy=$(http_healthy "$PROXY_PORT")
+gateway=$(http_healthy "$GATEWAY_PORT")
+
+"$AWS_BIN" cloudwatch put-metric-data --namespace OpenClawProxy --metric-data \
+"[{\"MetricName\":\"ProxyHealthy\",\"Value\":${proxy},\"Unit\":\"Count\",\"Dimensions\":[{\"Name\":\"Host\",\"Value\":\"${IID}\"}],\"StorageResolution\":60},{\"MetricName\":\"GatewayHealthy\",\"Value\":${gateway},\"Unit\":\"Count\",\"Dimensions\":[{\"Name\":\"Host\",\"Value\":\"${IID}\"}],\"StorageResolution\":60}]" \
+  >/dev/null 2>&1
 rc=$?
 
-echo "[kiro-proxy-heartbeat] healthy=${healthy} iid=${IID} put_metric_rc=${rc}"
+echo "[openclaw-heartbeat] proxy=${proxy} gateway=${gateway} iid=${IID} put_metric_rc=${rc}"
 exit 0
