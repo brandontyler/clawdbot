@@ -1,0 +1,19 @@
+{
+  "id": "kiro-commands",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": true,
+  "name": "Kiro Commands",
+  "description": "Adds native /k* slash commands (kcompact, kclear, kusage, kcontext, kstats) that forward kiro-cli native commands to the channel's ACP child via kiro-proxy — with Discord autocomplete.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "proxyUrl": {
+        "type": "string",
+        "description": "Base URL of the kiro-proxy HTTP API. Defaults to http://localhost:18801 (matches systemd kiro-proxy.service)."
+      }
+    }
+  }
+}
