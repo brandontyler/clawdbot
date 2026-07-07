@@ -97,6 +97,42 @@ AI Consulting Leaders | from:itsolelehmann OR from:raborenstein OR from:levelsio
 # Tier 2: Community — people talking about making money with AI agents (English only)
 AI Consulting Community | ("AI consulting" OR "vibe coding" OR "AI freelance" OR "agent workflow" OR "AI side business" OR "AI agency") min_faves:200 lang:en -filter:replies -filter:retweets -course -free -giveaway | 200 | 5
 
+# === REAL ESTATE × AI (talk prep — how agents use AI) ===
+# Added 2026-07-06 (Brandon): sourcing material for an upcoming talk to real estate
+# agents on how the industry is using AI. Ties together our two threads — the AI work
+# in #realestate and the broader "agents using AI" conversation. Surface practical,
+# substantive takes: agents using AI tools, AI for listings / valuations / lead-gen /
+# marketing / CRM / virtual staging, plus industry-shaping news. The downstream LLM
+# relevance filter (threshold 6) strips macro AI-hype and off-topic keyword collisions
+# (stock brokerage, astrology, generic "real estate is booming" macro takes).
+#
+# Tier 1: verified voices (every handle tested via bird 2026-07-06)
+#   RyanSerhant — Ryan Serhant, broker with his own RE AI product (Sage); posts on AI in RE
+#   tomferry — Tom Ferry, top real estate coach; practical "use AI in your business" content
+#   robhahn — Robert Hahn, RE industry analyst; deep AI-in-real-estate essays (e.g. compliance review)
+#   Inman — Inman News; heavy AI-in-real-estate coverage
+#   HousingWire — HousingWire; housing/mortgage tech + AI news
+#   ByronLazine — Byron Lazine, BAM co-founder; agent-focused AI-in-RE commentary
+#   TheBrokeAgent — The Broke Agent (BAM); high-engagement RE media, agents + AI takes
+#   zillow — Zillow; AI-powered home search (ChatGPT listing integration, conversational search)
+#   Redfin — Redfin; AI features + AI's impact on the housing market
+# min_faves:5 — Brandon wants POPULAR content. Two dynamics at play now: (1) the individual
+# voices get few likes (their AI posts land at 5-9 while generic motivational posts get
+# 10-14, so a HIGH floor backfires — it keeps the non-AI posts the LLM then drops and cuts
+# the AI ones); (2) the portals (Zillow/Redfin) and RE media get high engagement, so the
+# sort-by-engagement floats their viral AI posts to the top = the "popular" content, while
+# the low floor still lets individual expert takes through on quiet days. The LLM relevance
+# filter gates topicality either way. (Verified 2026-07-06.)
+Real Estate x AI Voices | from:RyanSerhant OR from:tomferry OR from:robhahn OR from:Inman OR from:HousingWire OR from:ByronLazine OR from:TheBrokeAgent OR from:zillow OR from:Redfin (AI OR ChatGPT OR "artificial intelligence" OR automation OR "machine learning") | 5 | 5
+# Tier 2: Community — POPULAR AI-in-real-estate buzz. Anchored on PRACTITIONER terms
+# (realtor / agent / broker / marketing / staging / leads), deliberately NOT bare
+# "real estate" — that phrase is a macro-finance magnet (bubble/IPO/market takes) that
+# floods the pool. min_faves:50 keeps only content that's actually resonating: verified
+# 2026-07-06 that genuine popular RE-AI posts land at 90-170 likes while the noisy
+# self-promo / domain-spam / self-intro tail sits at 1-11, with a clean gap between.
+# The LLM relevance filter (threshold 6) then strips any remaining off-topic collisions.
+Real Estate x AI Community | (realtor OR "real estate agent" OR "listing agent" OR "real estate broker" OR "real estate marketing" OR "home staging" OR "real estate leads") (AI OR ChatGPT OR "artificial intelligence" OR automation) min_faves:50 lang:en -filter:replies -filter:retweets -crypto -web3 -giveaway -stock -shares -dividend -bubble | 50 | 5
+
 # === PARIS TRIP (removed — trip complete) ===
 
 # === AGENT EVALUATIONS (educational — learning the space) ===
