@@ -1,0 +1,172 @@
+# Upstream Sync Guide
+
+**Last synced:** `upstream/main` @ `bf533f8654` — 2026-05-08
+
+Fork of [OpenClaw](https://github.com/openclaw/openclaw) customized for `kiro-cli`.
+Keep the delta small so pulling upstream stays painless.
+
+## Sync Workflow
+
+```bash
+git fetch upstream
+git rebase upstream/main
+# For each conflict: replace file with upstream HEAD, re-apply our patch:
+#   git show upstream/main:<file> > <file>
+#   (apply patch from table below)
+#   git add <file>
+# IMPORTANT: Do NOT use `git checkout --theirs` — it gives the old merge-base,
+# not upstream HEAD. Always use `git show upstream/main:` instead.
+# pnpm-lock.yaml: always delete and regenerate
+chmod +x .kiro/hooks/*.sh 2>/dev/null
+pnpm install && pnpm build && pnpm check
+# Verify every patched file has a small diff vs upstream:
+#   for f in <patched files>; do diff <(git show upstream/main:"$f") "$f" | wc -l; done
+openclaw config set agents.defaults.timeoutSeconds 999999
+# Update "Last synced" at top of this file
+spinup oc --defer
+# Send a real Discord message to confirm delivery
+```
+
+**Conflict strategy:** For each conflicted patched file, replace it with
+upstream's current version (`git show upstream/main:<file> > <file>`), then
+re-apply our edit from the Patched Files table. Do NOT use `git checkout --theirs`
+— during rebase, "theirs" is the old merge-base version, not upstream HEAD.
+After resolving, verify each file: `diff <(git show upstream/main:<file>) <file>`
+should show only our patch lines. Kiro-only files never conflict — keep ours.
+Generated files (`pnpm-lock.yaml`, `a2ui.bundle.*`): regenerate.
+
+---
+
+## Kiro-Only Files (zero conflict risk)
+
+These don't exist upstream. If git tries to delete them during rebase, keep ours.
+
+| File                                                         | Purpose                                                                                                                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/kiro-proxy/`                                            | Proxy: server, session manager, ACP bridge, alerts, progress, cleanup, tests                                                                     |
+| `src/cli/kiro-proxy-cli.ts`                                  | CLI wiring for `openclaw kiro-proxy`                                                                                                             |
+| `extensions/discord/src/monitor/gateway-plugin-kiro.ts`      | Flap detection, backoff, crash-safe metadata fetch — subclasses `ResilientGatewayPlugin`. **Imports upstream helpers** (see coupling note below) |
+| `extensions/discord/src/monitor/gateway-plugin-kiro.test.ts` | Tests for the above: happy path, transient-fallback, fire-and-forget crash safety, fallback re-fetch, timeout                                    |
+| `scripts/spinup`                                             | tmux session manager (symlinked from `~/bin/spinup`)                                                                                             |
+| `scripts/add-channel.sh`                                     | Create Discord channel + proxy route + tmux session                                                                                              |
+| `scripts/remove-channel.sh`                                  | Tear down a project channel                                                                                                                      |
+| `scripts/setup.sh`                                           | One-time machine bootstrap                                                                                                                       |
+| `scripts/sms-poller.sh`                                      | Poll SQS inbound SMS → Discord                                                                                                                   |
+| `scripts/sermon-notes-print.sh`                              | Sunday auto-print: scrape Denton Bible sermon notes PDF → HP ePrint via SES                                                                      |
+| `scripts/upstream-sync-check.sh`                             | Daily cron: sync reminder with feature/conflict analysis                                                                                         |
+| `scripts/verify-runtime-artifacts.mjs`                       | Post-build: verify extension dist-runtime output                                                                                                 |
+| `scripts/extract-x-cookies.ps1`                              | PowerShell DPAPI decryption of X/Twitter cookies                                                                                                 |
+| `scripts/refresh-x-cookies`                                  | Bash wrapper for above                                                                                                                           |
+| `scripts/scrape-neogov.mjs`                                  | Headless Chrome scraper for government job postings                                                                                              |
+| `scripts/scrape-tcfp.mjs`                                    | Headless Chrome scraper for TCFP fire service careers                                                                                            |
+| `scripts/fire-jobs.sh`                                       | Daily North Texas firefighter job search aggregator                                                                                              |
+| `scripts/x-digest.sh`                                        | Daily X/Twitter digest via bird CLI + DynamoDB dedup                                                                                             |
+| `scripts/x-digest-topics.txt`                                | Topic list for X digest                                                                                                                          |
+| `scripts/x-bookmark-review.sh`                               | Daily X bookmark review via bird CLI + DynamoDB dedup                                                                                            |
+| `kiro-proxy-routes.json`                                     | Channel → cwd mapping (gitignored)                                                                                                               |
+| `kiro-proxy-routes.example.json`                             | Template for above                                                                                                                               |
+| `docs/kiro-proxy-plan.md`                                    | Proxy design doc                                                                                                                                 |
+| `docs/kiro-known-issues.md`                                  | Known kiro-cli bugs and workarounds                                                                                                              |
+| `docs/setup.md`                                              | New-machine setup guide                                                                                                                          |
+| `.kiro/`                                                     | Agent config, hooks, agent profiles (gitignored except tracked hooks)                                                                            |
+| `UPSTREAM.md`                                                | This file                                                                                                                                        |
+
+---
+
+## Patched Files (review on every sync)
+
+Each row is one upstream file we've edited. The "Where / What" column tells you
+exactly where to look and what to change. For full code, run
+`git diff $(git merge-base HEAD upstream/main)..HEAD -- <file>`.
+
+### Group 1: One-line changes
+
+| File                                         | Where / What                                                                             |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `extensions/discord/src/gateway-logging.ts`  | `INFO_DEBUG_MARKERS` array: add `"Resumed successfully"`                                 |
+| `src/auto-reply/reply/queue/settings.ts`     | `defaultQueueModeForChannel()`: return `"steer-backlog"` (upstream: `"steer"`)           |
+| `src/auto-reply/reply/typing.ts`             | `createTypingController()` default: `typingTtlMs = 15 * 60_000` (upstream: `2 * 60_000`) |
+| `extensions/discord/src/monitor/timeouts.ts` | `DISCORD_DEFAULT_INBOUND_WORKER_TIMEOUT_MS`: `120 * 60_000` (upstream: `30 * 60_000`)    |
+
+### Group 2: Small additions (5–15 lines)
+
+| File                                       | Where / What                                                                        |
+| ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `src/cli/program/register.subclis-core.ts` | Add `kiro-proxy` entry to `entrySpecs` array (~5 lines, after `acp`)                |
+| `src/cli/program/subcli-descriptors.ts`    | Add `kiro-proxy` descriptor to `subCliCommandCatalog` array (~5 lines, after `acp`) |
+| `src/gateway/channel-health-monitor.ts`    | After `evaluateChannelHealth()`: add `log.info` with all status fields (3 lines)    |
+
+### Group 3: Larger patches
+
+| File                                               | Where / What                                                                                                                                                                                                                           |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                                     | `uncaughtException` handler: add early return for `"zombie connection"`, `"certificate has expired"` (~8 lines before existing benign-error handler). `EAI_AGAIN`/`ENOTFOUND` absorbed by upstream's `isBenignUncaughtExceptionError`. |
+| `src/agents/pi-embedded-runner/run/attempt.ts`     | After `cacheTrace.wrapStreamFn`: inject `x-openclaw-session-key` header when `provider === "kiro"` (~10 lines). Previous patches (undici timeouts, orphan trailing-user removal) absorbed by upstream.                                 |
+| `extensions/discord/src/monitor/gateway-plugin.ts` | Add `ResilientGatewayPlugin` class (~45 lines) fixing reconnect-counter and zombie-heartbeat bugs; change `OpenClawGatewayPlugin` → extends `ResilientGatewayPlugin` instead of `GatewayPlugin`                                        |
+| `extensions/discord/src/monitor/provider.ts`       | Import `createKiroGatewayPlugin`; use it instead of `createDiscordGatewayPlugin` in `monitorDiscordProvider()` and `__testing` (3 lines)                                                                                               |
+| `package.json`                                     | Add `kiro-proxy`/`kiro-proxy:dev` scripts; append `verify-runtime-artifacts.mjs` to `build` chain                                                                                                                                      |
+| `pnpm-workspace.yaml`                              | Move `@discordjs/opus` from `onlyBuiltDependencies` to `ignoredBuiltDependencies`                                                                                                                                                      |
+| `.gitignore`                                       | Append: `.kiro/`, `.beads/`, `logs/`, `kiro-proxy-routes.json`, `client_secret*.json`, `excalidraw.log`                                                                                                                                |
+
+---
+
+## Required Gateway Config
+
+| Setting                                | Value    | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents.defaults.timeoutSeconds`       | `999999` | Embedded run timeout. Default 48h, but resets to 3600 on some upgrades. Upstream validation rejects `0`; use large value instead. Discord worker timeout (2h) is the outer guard.                                                                                                                                                                                                                                                                  |
+| `models.providers.kiro.timeoutSeconds` | `999999` | Per-provider request timeout. Required since upstream `e899b32e1d` (2026-04-27) restructured idle watchdog logic: `agents.defaults.timeoutSeconds` is now treated as an _implicit_ timeout clamped to 120s for the LLM idle watchdog, while `models.providers.*.timeoutSeconds` is _explicit_ and honored directly. Without this, the gateway kills kiro-proxy connections after 120s of no SSE tokens (which happens during long tool-use turns). |
+
+```bash
+openclaw config set agents.defaults.timeoutSeconds 999999
+# Also required after 2026-05-04 sync:
+openclaw config set models.providers.kiro.timeoutSeconds 999999
+```
+
+Note: The legacy `agents.defaults.llm.idleTimeoutSeconds` key was removed upstream.
+If the running gateway keeps restoring it, stop the gateway first, edit
+`~/.openclaw/openclaw.json` to remove the `llm` block, then restart.
+
+## Temporary Workarounds
+
+Non-upstream pins that should be removed once the underlying issue is fixed.
+Revisit on every sync — stale workarounds become sludge.
+
+_(none active)_
+
+## Post-Sync Checklist
+
+- [ ] `pnpm build && pnpm check` pass
+- [ ] `spinup oc --defer` restarts gateway/proxy
+- [ ] Test Discord message delivered
+- [ ] "Last synced" updated at top of this file
+- [ ] `scripts/upstream-sync-check.sh` patched files array matches this doc
+
+## Why the Discord Hardening?
+
+Long-running tasks through Discord cause missed heartbeats → gateway drops →
+resume fails → flapping. `ResilientGatewayPlugin` (in `gateway-plugin.ts`) fixes
+two @buape/carbon bugs; `KiroGatewayPlugin` (in `gateway-plugin-kiro.ts`) adds
+flap detection and exponential backoff. Kept in separate files, not PRed upstream.
+
+### Coupling note: gateway-plugin-kiro.ts → upstream gateway-metadata.ts
+
+`gateway-plugin-kiro.ts` is a Kiro-only file (never conflicts on rebase), but its
+`registerClient` deliberately mirrors upstream `OpenClawGatewayPlugin`
+(`gateway-plugin.ts`) and **imports three helpers from upstream
+`gateway-metadata.ts`**: `fetchDiscordGatewayInfoWithTimeout`,
+`resolveDiscordGatewayInfoTimeoutMs`, and `resolveGatewayInfoWithFallback`.
+
+This is intentional — it keeps our fork's metadata fetch on the same
+timeout + transient-fallback path as upstream, so a temporary DNS/network failure
+(e.g. `ENOTFOUND` on machine wake) falls back to the default gateway url and
+retries instead of throwing. The throw previously escaped the fire-and-forget
+`void plugin.registerClient(...)` call in `internal/client.ts` and crashed the
+whole gateway process.
+
+**On sync:** if upstream renames or changes the signature of any of those three
+`gateway-metadata.ts` exports, `gateway-plugin-kiro.ts` will fail to typecheck.
+Fix is to re-align our `registerClient`/`fetchGatewayInfo` with upstream's current
+`registerClientInternal`. The test file pins the behavior, so run
+`pnpm test extensions/discord/src/monitor/gateway-plugin-kiro.test.ts` after any
+gateway-related sync.

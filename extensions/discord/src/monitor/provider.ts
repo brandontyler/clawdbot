@@ -36,7 +36,7 @@ import { resolveDiscordVoiceEnabled } from "../voice/config.js";
 import { createDiscordAutoPresenceController } from "./auto-presence.js";
 import { resolveDiscordSlashCommandConfig } from "./commands.js";
 import type { MutableDiscordGateway } from "./gateway-handle.js";
-import { createDiscordGatewayPlugin } from "./gateway-plugin.js";
+import { createKiroGatewayPlugin } from "./gateway-plugin-kiro.js";
 import { createDiscordGatewaySupervisor } from "./gateway-supervisor.js";
 import { registerDiscordListener } from "./listeners.js";
 import { createDiscordNativeCommand } from "./native-command.js";
@@ -441,7 +441,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       discordConfig: discordCfg,
       runtime,
       createClient: createClientForTesting ?? ((...args) => new Client(...args)),
-      createGatewayPlugin: createDiscordGatewayPlugin,
+      createGatewayPlugin: createKiroGatewayPlugin,
       createGatewaySupervisor: createDiscordGatewaySupervisor,
       createAutoPresenceController: createDiscordAutoPresenceController,
       isDisallowedIntentsError: isDiscordDisallowedIntentsError,
@@ -630,7 +630,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
 }
 
 export const testing = {
-  createDiscordGatewayPlugin,
+  createDiscordGatewayPlugin: createKiroGatewayPlugin,
   resolveDiscordRuntimeGroupPolicy: resolveOpenProviderRuntimeGroupPolicy,
   resolveDefaultGroupPolicy,
   resolveDiscordRestFetch,

@@ -97,6 +97,11 @@ const entrySpecs: readonly CommandGroupDescriptorSpec<SubCliRegistrar>[] = [
       exportName: "registerAcpCli",
     },
     {
+      commandNames: ["kiro-proxy"],
+      loadModule: () => import("../kiro-proxy-cli.js"),
+      exportName: "registerKiroProxyCli",
+    },
+    {
       commandNames: ["gateway"],
       loadModule: () => import("../gateway-cli.js"),
       exportName: "registerGatewayCli",

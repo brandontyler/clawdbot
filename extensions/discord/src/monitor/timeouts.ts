@@ -4,7 +4,7 @@ import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 // Compatibility constants for existing imports. Discord no longer enforces
 // channel-owned listener or inbound run timeouts.
 export const DISCORD_DEFAULT_LISTENER_TIMEOUT_MS = 120_000;
-export const DISCORD_DEFAULT_INBOUND_WORKER_TIMEOUT_MS = 30 * 60_000;
+export const DISCORD_DEFAULT_INBOUND_WORKER_TIMEOUT_MS = 120 * 60_000;
 
 export const DISCORD_ATTACHMENT_IDLE_TIMEOUT_MS = 60_000;
 export const DISCORD_ATTACHMENT_TOTAL_TIMEOUT_MS = 120_000;

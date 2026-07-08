@@ -9,7 +9,7 @@ import { createTypingStartGuard } from "../../channels/typing-start-guard.js";
 import { isSilentReplyPrefixText, isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 
 const DEFAULT_TYPING_INTERVAL_SECONDS = 6;
-const DEFAULT_TYPING_TTL_MS = 2 * 60_000;
+const DEFAULT_TYPING_TTL_MS = 15 * 60_000;
 
 function resolveTypingIntervalMs(seconds: number | undefined): number {
   if (Number.isFinite(seconds) && (seconds ?? 0) <= 0) {

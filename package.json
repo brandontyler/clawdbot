@@ -1517,7 +1517,7 @@
     "android:version:pin": "node --import tsx scripts/android-pin-version.ts",
     "android:version:sync": "node --import tsx scripts/android-sync-versioning.ts --write",
     "audit:seams": "node scripts/audit-seams.mjs",
-    "build": "node scripts/build-all.mjs",
+    "build": "node scripts/build-all.mjs && node scripts/verify-runtime-artifacts.mjs",
     "build:ci-artifacts": "node scripts/build-all.mjs ciArtifacts",
     "build:docker": "node scripts/tsdown-build.mjs && node scripts/check-cli-bootstrap-imports.mjs && node scripts/runtime-postbuild.mjs && node scripts/build-stamp.mjs && node scripts/runtime-postbuild-stamp.mjs && pnpm plugins:assets:build && pnpm plugins:assets:copy && node --import tsx scripts/copy-hook-metadata.ts && node --import tsx scripts/copy-export-html-templates.ts && node --import tsx scripts/write-build-info.ts && node --import tsx scripts/write-cli-startup-metadata.ts && node --import tsx scripts/write-cli-compat.ts",
     "build:plugin-sdk:dts": "node scripts/run-tsgo.mjs -p tsconfig.plugin-sdk.dts.json --declaration true",
@@ -1977,10 +1977,13 @@
     "android:i18n:check": "node --import tsx scripts/android-app-i18n.ts check",
     "apple:i18n:check": "node --import tsx scripts/apple-app-i18n.ts check",
     "ui:install": "node scripts/ui.js install",
+    "kiro-proxy": "pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json",
+    "kiro-proxy:dev": "pnpm dev kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json",
     "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",
+    "@agentclientprotocol/sdk-legacy": "npm:@agentclientprotocol/sdk@0.21.0",
     "@anthropic-ai/sdk": "0.109.1",
     "@clack/core": "1.4.2",
     "@clack/prompts": "1.6.0",

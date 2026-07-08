@@ -33,7 +33,7 @@ export function resolveQueueSettings(params: ResolveQueueSettingsParams): QueueS
     normalizePersistedQueueMode(params.sessionEntry?.queueMode) ??
     normalizeQueueMode(providerModeRaw) ??
     normalizeQueueMode(queueCfg?.mode) ??
-    "steer";
+    "followup";
   const debounceRaw =
     params.inlineOptions?.debounceMs ??
     params.sessionEntry?.queueDebounceMs ??

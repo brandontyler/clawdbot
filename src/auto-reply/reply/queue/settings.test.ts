@@ -6,7 +6,7 @@ import { resolveQueueSettings } from "./settings.js";
 describe("resolveQueueSettings", () => {
   it("defaults inbound channels to steering settings", () => {
     expect(resolveQueueSettings({ cfg: {} as OpenClawConfig })).toEqual({
-      mode: "steer",
+      mode: "followup",
       debounceMs: 500,
       cap: 20,
       dropPolicy: "summarize",

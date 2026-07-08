@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STRIP='sed -u "s/\x1b\[[0-9;]*m//g"'
+STRIP_BUILD='grep --line-buffered -vE "^ℹ |^✔ Build complete"'
+TODAY=$(date +%Y-%m-%d)
+
+log_path() { echo "/tmp/$1-$TODAY.log"; }
+
+kill_port() { lsof -ti:"$1" 2>/dev/null | xargs kill -9 2>/dev/null || true; }
+
+# Clean up logs older than 7 days
+cleanup_logs() {
+  local cutoff
+  # macOS date uses -v for relative dates; Linux uses -d
+  if date -v-7d +%s >/dev/null 2>&1; then
+    cutoff=$(date -v-7d +%s)
+  else
+    cutoff=$(date -d "$TODAY -7 days" +%s)
+  fi
+  find /tmp -maxdepth 1 \( -name 'kiro-proxy-*.log' -o -name 'openclaw-gateway-*.log' -o -name 'dev-browser-*.log' -o -name 'excalidraw-canvas-*.log' -o -name 'pi-agent-*.log' \) \
+    | while read -r f; do
+        [[ "$f" =~ [0-9]{4}-[0-9]{2}-[0-9]{2} ]] || continue
+        local d="${BASH_REMATCH[0]}"
+        local ts
+        if date -j -f "%Y-%m-%d" "$d" +%s >/dev/null 2>&1; then
+          ts=$(date -j -f "%Y-%m-%d" "$d" +%s)
+        else
+          ts=$(date -d "$d" +%s 2>/dev/null || echo 0)
+        fi
+        (( ts < cutoff )) && rm -f "$f" || true
+      done
+}
+
+new_session() {
+  local name="$1"; shift
+  tmux kill-session -t "$name" 2>/dev/null || true
+  sleep 0.5
+  tmux new-session -d -s "$name" "$@"
+  tmux set-option -t "$name" -g remain-on-exit on
+}
+
+# Store a command in tmux env and as a pane variable for agent discovery
+tag_pane() {
+  local session="$1" pane="$2" title="$3" cmd="${4:-}"
+  tmux select-pane -t "$pane" -T "$title"
+  if [[ -n "$cmd" ]]; then
+    tmux set-environment -t "$session" "CMD_${title}" "$cmd"
+  fi
+}
+
+# --- subcommands ---
+
+do_status() {
+  echo "=== spinup status ==="
+  for sess in oc oc-cli hermes; do
+    if tmux has-session -t "$sess" 2>/dev/null; then
+      echo ""
+      echo "session=$sess status=alive"
+      tmux list-panes -s -t "$sess" -F \
+        "  pane=#{pane_id} window=#{window_name} title=#{pane_title} pid=#{pane_pid} dead=#{pane_dead} cwd=#{pane_current_path}" 2>/dev/null
+    else
+      echo ""
+      echo "session=$sess status=dead"
+    fi
+  done
+  echo ""
+  echo "=== ports ==="
+  for port in 18801 18800 9222 9223 3000; do
+    pid=$(lsof -ti:"$port" 2>/dev/null | head -1 || true)
+    if [[ -n "$pid" ]]; then
+      echo "port=$port pid=$pid status=listening"
+    else
+      echo "port=$port status=free"
+    fi
+  done
+}
+
+do_logs() {
+  local target="${1:-all}"
+  local lines="${2:-30}"
+  declare -A log_names=(
+    [kiro-proxy]=kiro-proxy
+    [gateway]=openclaw-gateway
+    [dev-browser]=dev-browser
+    [excalidraw]=excalidraw-canvas
+    [pi-agent]=pi-agent
+    [defer]=spinup-defer
+  )
+  for name in "${!log_names[@]}"; do
+    if [[ "$target" == "all" || "$target" == "$name" ]]; then
+      # Try today's dated log first, fall back to undated (defer log)
+      local f="/tmp/${log_names[$name]}-$TODAY.log"
+      [[ -f "$f" ]] || f="/tmp/${log_names[$name]}.log"
+      if [[ -f "$f" ]]; then
+        echo "=== $name ($f) last $lines lines ==="
+        tail -n "$lines" "$f"
+        echo ""
+      else
+        echo "=== $name — not found ==="
+      fi
+    fi
+  done
+}
+
+do_restart_pane() {
+  local target_title="$1"
+  # Find the pane by title across all sessions
+  local match
+  match=$(tmux list-panes -a -F "#{session_name}:#{window_name}.#{pane_index} #{pane_title}" 2>/dev/null \
+    | grep -F "$target_title" | head -1 | awk '{print $1}' || true)
+  if [[ -z "$match" ]]; then
+    echo "No pane with title '$target_title' found."
+    return 1
+  fi
+  local sess="${match%%:*}"
+  # Look up stored command
+  local cmd
+  cmd=$(tmux show-environment -t "$sess" "CMD_${target_title}" 2>/dev/null | sed "s/^CMD_${target_title}=//" || true)
+  if [[ -z "$cmd" ]]; then
+    echo "No stored command for pane '$target_title' in session '$sess'."
+    return 1
+  fi
+  echo "Restarting pane '$target_title' ($match) with: $cmd"
+  tmux respawn-pane -t "$match" -k "$cmd"
+}
+
+# --- main ---
+
+DEFER=0
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --defer) DEFER=45 ;;
+    --defer=*) DEFER="${arg#--defer=}" ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+TARGET="${ARGS[0]:-all}"
+
+do_context() {
+  local ROUTES="$OC_DIR/kiro-proxy-routes.json"
+  local data
+  data=$(curl -sf http://127.0.0.1:18801/sessions 2>/dev/null) || { echo "Proxy not reachable on :18801"; return 1; }
+
+  python3 -c "
+import json,sys,re,os
+routes=json.load(open('$ROUTES')) if os.path.exists('$ROUTES') else {}
+names={cid: os.path.basename(v['cwd']) for cid,v in routes.items()}
+data=json.loads('''$data''')
+sessions=data['sessions']
+hibernated=data.get('hibernated',[])
+
+print('=== ACP Sessions ===')
+active_cids=set()
+for s in sorted(sessions, key=lambda x: -x['contextPct']):
+    m=re.search(r'discord:channel:(\d+)',s['key'])
+    cid=m.group(1) if m else None
+    if cid: active_cids.add(cid)
+    label='#'+names.get(cid,cid or s['key'][:16])
+    ctx=s['contextPct']
+    filled=int(ctx/100*20)
+    bar=chr(9608)*filled+chr(9617)*(20-filled)
+    st='PROMPTING' if s['isPrompting'] else f\"idle={s['idleSecs']}s\"
+    errs=f\" errs={s['consecutiveErrors']}\" if s['consecutiveErrors'] else ''
+    rss=f\"{s['rssMb']}MB\" if s['rssMb'] is not None else '?'
+    print(f\"  {label:<20s} [{bar}] {ctx:5.1f}%  rss={rss:<6s} msgs={s['sentMessages']:<4d} {st}{errs}\")
+
+hib_cids=set()
+for h in hibernated:
+    m=re.search(r'discord:channel:(\d+)',h['key'])
+    cid=m.group(1) if m else None
+    if cid: hib_cids.add(cid); active_cids.add(cid)
+    label='#'+names.get(cid,cid or h['key'][:16])
+    ctx=h['contextPct']
+    age=h['ageSecs']
+    age_str=f\"{age//3600}h{(age%3600)//60}m\" if age>=3600 else f\"{age//60}m\"
+    print(f\"  {label:<20s} [hibernated {age_str} ago]  ctx={ctx:.0f}%\")
+
+for cid,name in sorted(names.items(), key=lambda x:x[1]):
+    if cid not in active_cids:
+        print(f\"  {'#'+name:<20s} (no session)\")
+
+if not sessions and not hibernated and not names:
+    print('  (no active sessions)')
+"
+}
+
+do_hibernate() {
+  echo "=== Hibernating all ACP sessions ==="
+  local data
+  data=$(curl -sf http://127.0.0.1:18801/sessions 2>/dev/null) || { echo "Proxy not reachable"; return 1; }
+  local keys
+  keys=$(echo "$data" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for s in d['sessions']:
+    if not s['isPrompting']:
+        print(s['key'])
+" 2>/dev/null)
+  local count=0
+  for key in $keys; do
+    local encoded="${key//:/%3A}"
+    local result
+    result=$(curl -sf -X POST "http://127.0.0.1:18801/hibernate/$encoded" 2>/dev/null) || true
+    echo "  hibernated: $key"
+    ((count++)) || true
+  done
+  echo "Hibernated $count session(s). Safe to shut down."
+}
+
+do_wake() {
+  echo "=== Waking hibernated sessions ==="
+  local data
+  data=$(curl -sf http://127.0.0.1:18801/sessions 2>/dev/null) || { echo "Proxy not reachable"; return 1; }
+  local count
+  count=$(echo "$data" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('hibernated',[])))" 2>/dev/null)
+  echo "$count hibernated session(s) waiting. They will restore on next Discord message."
+}
+
+do_snapshot() {
+  echo "=== Snapshotting all ACP sessions ==="
+  local result
+  result=$(curl -sf -X POST http://127.0.0.1:18801/snapshot 2>/dev/null) || { echo "Proxy not reachable"; return 1; }
+  local count
+  count=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('snapshotted',0))" 2>/dev/null)
+  echo "Saved $count session(s). Processes still running — state will survive restart."
+}
+
+# Auto-detect the clawdbot repo root: walk up from this script's real location
+# looking for kiro-proxy-routes.json (the marker file).
+# Falls back to SPINUP_OC_DIR env var, then the current working directory.
+_script_dir="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "${BASH_SOURCE[0]}")")" && pwd)"
+OC_DIR=""
+_candidate="$_script_dir"
+while [[ "$_candidate" != "/" ]]; do
+  if [[ -f "$_candidate/kiro-proxy-routes.json" ]]; then
+    OC_DIR="$_candidate"
+    break
+  fi
+  _candidate="$(dirname "$_candidate")"
+done
+if [[ -z "$OC_DIR" ]]; then
+  OC_DIR="${SPINUP_OC_DIR:-}"
+fi
+if [[ -z "$OC_DIR" || ! -f "$OC_DIR/kiro-proxy-routes.json" ]]; then
+  # Last resort: check cwd
+  if [[ -f "kiro-proxy-routes.json" ]]; then
+    OC_DIR="$(pwd)"
+  else
+    echo "ERROR: Cannot find clawdbot repo root."
+    echo "Run from the repo, set SPINUP_OC_DIR, or symlink ~/bin/spinup → <repo>/scripts/spinup"
+    exit 1
+  fi
+fi
+
+case "$TARGET" in
+  status) do_status; exit 0 ;;
+  context) do_context; exit 0 ;;
+  logs)   do_logs "${ARGS[1]:-all}" "${ARGS[2]:-30}"; exit 0 ;;
+  hibernate) do_hibernate; exit 0 ;;
+  snapshot) do_snapshot; exit 0 ;;
+  wake) do_wake; exit 0 ;;
+  restart-pane)
+    if [[ -z "${ARGS[1]:-}" ]]; then
+      echo "Usage: spinup restart-pane <pane-title>"
+      echo "Pane titles: kiro-proxy, gateway, kiro-cli, dev-browser, excalidraw"
+      exit 1
+    fi
+    do_restart_pane "${ARGS[1]}"; exit 0 ;;
+esac
+
+# Defer: background the restart and exit immediately so the caller can finish
+DEFER_LOG=/tmp/spinup-defer.log
+if (( DEFER > 0 )); then
+  echo "Deferring restart of '$TARGET' by ${DEFER}s (backgrounded)."
+  nohup bash -c "
+    # Keep only last 20 lines
+    if [[ -f $DEFER_LOG ]]; then tail -20 $DEFER_LOG > ${DEFER_LOG}.tmp && mv ${DEFER_LOG}.tmp $DEFER_LOG; fi
+    echo \"[defer] scheduled: target=$TARGET delay=${DEFER}s at \$(date -Iseconds)\" >> $DEFER_LOG
+    sleep $DEFER
+    echo \"[defer] executing: target=$TARGET at \$(date -Iseconds)\" >> $DEFER_LOG
+    $(realpath "$0" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$0") $TARGET
+    echo \"[defer] complete: target=$TARGET exit=\$? at \$(date -Iseconds)\" >> $DEFER_LOG
+  " >/dev/null 2>&1 &
+  exit 0
+fi
+
+# --- oc session ---
+cleanup_logs
+PROXY_CMD="pnpm openclaw kiro-proxy --port 18801 --verbose --routes kiro-proxy-routes.json 2>&1 | $STRIP_BUILD | $STRIP | tee -a $(log_path kiro-proxy)"
+GATEWAY_CMD="AWS_PROFILE=personal pnpm openclaw gateway run --verbose --force --port 18800 --bind loopback 2>&1 | $STRIP_BUILD | $STRIP | tee -a $(log_path openclaw-gateway)"
+KIRO_CLI_CMD="kiro-cli"
+
+# Excalidraw canvas server on :3000 — backs the global excalidraw MCP server
+# (~/.kiro/settings/mcp.json). Runs in the oc session so it autostarts with the
+# proxy/gateway and is available to every channel's Kiro, not just accode-agent.
+# The canvas pre-checks :3000 and exits cleanly if already bound, so a second
+# definition (e.g. accode-agent) safely no-ops.
+EXCALIDRAW_DIR=~/src/github.com/yctimlin/mcp_excalidraw
+EXCALIDRAW_CMD="PORT=3000 npm run canvas 2>&1 | tee -a $(log_path excalidraw-canvas)"
+
+if [[ "$TARGET" == "all" || "$TARGET" == "oc" ]]; then
+  # Gracefully hibernate sessions before killing the proxy
+  if curl -sf http://127.0.0.1:18801/sessions >/dev/null 2>&1; then
+    do_hibernate 2>/dev/null || true
+    # Give proxy SIGTERM so it persists hibernation state
+    lsof -ti:18801 2>/dev/null | xargs kill -TERM 2>/dev/null || true
+    sleep 1
+  fi
+  kill_port 18801
+  new_session oc -n kiro-proxy -c "$OC_DIR" "$PROXY_CMD"
+  tag_pane oc oc:kiro-proxy.0 kiro-proxy "$PROXY_CMD"
+  # Both panes run syncRuntimeArtifacts (nuke + rebuild dist-runtime/) via
+  # run-node.mjs on startup. Without staggering they race and the loser gets
+  # ENOENT. Wait for the proxy port to confirm its runtime sync is done.
+  for i in $(seq 1 30); do lsof -iTCP:18801 -sTCP:LISTEN -n -P >/dev/null 2>&1 && break; sleep 1; done
+  tmux new-window -t oc -n gateway -c "$OC_DIR" "$GATEWAY_CMD"
+  tmux set-option -w -t oc:gateway remain-on-exit on
+  tag_pane oc oc:gateway.0 gateway "$GATEWAY_CMD"
+  # Excalidraw canvas on :3000 for the global excalidraw MCP server.
+  tmux new-window -t oc -n excalidraw -c "$EXCALIDRAW_DIR" "$EXCALIDRAW_CMD"
+  tmux set-option -w -t oc:excalidraw remain-on-exit on
+  tag_pane oc oc:excalidraw.0 excalidraw "$EXCALIDRAW_CMD"
+  # sms-poller runs on EC2 (openclaw-server). Disabled on Mac to avoid SQS
+  # races where both boxes claim the same message.
+  # SMS_POLLER_CMD="$OC_DIR/scripts/sms-poller.sh 2>&1 | tee -a $(log_path sms-poller)"
+  # tmux new-window -t oc -n sms-poller -c "$OC_DIR" "$SMS_POLLER_CMD"
+  # tmux set-option -w -t oc:sms-poller remain-on-exit on
+  # tag_pane oc oc:sms-poller.0 sms-poller "$SMS_POLLER_CMD"
+  # Keep the Mac awake while the bot is running. Dies with the tmux session.
+  CAFFEINATE_CMD="caffeinate -dims"
+  tmux new-window -t oc -n caffeinate -c "$OC_DIR" "$CAFFEINATE_CMD"
+  tmux set-option -w -t oc:caffeinate remain-on-exit on
+  tag_pane oc oc:caffeinate.0 caffeinate "$CAFFEINATE_CMD"
+  echo "  tmux attach -t oc"
+fi
+
+# --- oc-cli session (separate so agent survives oc restarts) ---
+if [[ "$TARGET" == "all" || "$TARGET" == "oc-cli" ]]; then
+  new_session oc-cli -n main -c "$OC_DIR" "$KIRO_CLI_CMD"
+  tag_pane oc-cli oc-cli:main.0 kiro-cli "$KIRO_CLI_CMD"
+  echo "  tmux attach -t oc-cli"
+fi
+
+# Per-channel kiro-cli sessions (accode-agent, agent-architectures, pwc,
+# infra-rcms-projects) were removed 2026-06-09. Discord talks to agents the
+# kiro-proxy spawns itself (one per channel, parented to the proxy), so these
+# standalone interactive TUIs served no one — local interactive work is done in
+# Claude Code. Channel routing still lives in kiro-proxy-routes.json; nothing
+# about Discord delivery depended on these tmux sessions.
+#
+# Note: sermon, realestate, travel-agent, lifegroup, finances, pi-agent run on
+# the EC2 box (i-0d3dbaec422e1461d); their channels route via the EC2 kiro-proxy.
+
+# --- hermes session ---
+HERMES_DIR=~/code/personal/hermes
+HERMES_GATEWAY_CMD="source ~/.hermes/venv/bin/activate && AWS_PROFILE=personal hermes gateway run 2>&1 | tee -a $(log_path hermes)"
+
+if [[ "$TARGET" == "all" || "$TARGET" == "hermes" ]]; then
+  new_session hermes -n gateway -c "$HERMES_DIR" "$HERMES_GATEWAY_CMD"
+  tag_pane hermes hermes:gateway.0 hermes-gateway "$HERMES_GATEWAY_CMD"
+  tmux new-window -t hermes -n shell -c "$HERMES_DIR"
+  tmux send-keys -t hermes:shell "source ~/.hermes/venv/bin/activate && export AWS_PROFILE=personal" Enter
+  tmux set-option -w -t hermes:shell remain-on-exit on
+  echo "  tmux attach -t hermes"
+fi
+echo "Done."
