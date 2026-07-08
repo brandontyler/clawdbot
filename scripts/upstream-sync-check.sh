@@ -3,10 +3,17 @@
 # Includes: new features, patched-file conflict risk, and dep bumps.
 set -euo pipefail
 
-REPO_DIR="$HOME/code/personal/clawdbot"
+REPO_DIR="$HOME/src/github.com/brandontyler/clawdbot"
 CHANNEL_ID="1475513267433767014"
 
 cd "$REPO_DIR"
+
+# Guard: the 'upstream' remote must exist and point at openclaw, or the whole
+# check silently no-ops (this is exactly how we drifted 22k commits blind).
+if ! git remote get-url upstream >/dev/null 2>&1; then
+  echo "FATAL: no 'upstream' remote — run: git remote add upstream https://github.com/openclaw/openclaw.git" >&2
+  exit 1
+fi
 
 # Fetch quietly
 git fetch upstream --quiet 2>/dev/null || { echo "fetch failed"; exit 1; }
@@ -37,23 +44,32 @@ fi
 
 # --- Patched files that changed upstream (conflict risk) ---
 # Keep in sync with UPSTREAM.md "Upstream Files We Patch" table
+# Git-verified from the fork diff (3e7f2da..mac), not from UPSTREAM.md recollection.
+# Dropped: config-ui-hints.ts + types.discord.ts (never actually patched — phantom
+# entries) and pnpm-workspace.yaml (upstream's allowBuilds map now sets
+# @discordjs/opus:false natively, patch retired). Added: the 4 test/support files
+# whose mocks are coupled to our source patches. attempt.ts is watched at BOTH the
+# old (pi-embedded-runner) and new (embedded-agent-runner) paths — upstream renamed
+# the dir, so whichever tree this scans, one path will exist.
 PATCHED_FILES=(
   "extensions/discord/src/gateway-logging.ts"
   "src/auto-reply/reply/queue/settings.ts"
   "src/auto-reply/reply/typing.ts"
   "extensions/discord/src/monitor/timeouts.ts"
-  "extensions/discord/src/config-ui-hints.ts"
-  "src/config/types.discord.ts"
   "src/cli/program/register.subclis-core.ts"
   "src/cli/program/subcli-descriptors.ts"
   "src/gateway/channel-health-monitor.ts"
   "src/index.ts"
   "src/agents/pi-embedded-runner/run/attempt.ts"
+  "src/agents/embedded-agent-runner/run/attempt.ts"
   "extensions/discord/src/monitor/gateway-plugin.ts"
   "extensions/discord/src/monitor/provider.ts"
   "package.json"
-  "pnpm-workspace.yaml"
   ".gitignore"
+  "extensions/discord/src/monitor/gateway-plugin.test.ts"
+  "extensions/discord/src/monitor/provider.proxy.test.ts"
+  "extensions/discord/src/test-support/provider.test-support.ts"
+  "src/auto-reply/reply/queue/settings.test.ts"
 )
 
 CHANGED_PATCHED=""
