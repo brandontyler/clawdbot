@@ -87,7 +87,7 @@ describe("resolveQueueSettings", () => {
         } as OpenClawConfig,
       }),
     ).toEqual({
-      mode: "steer",
+      mode: "followup",
       debounceMs: 500,
       cap: 20,
       dropPolicy: "summarize",
