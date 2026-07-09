@@ -1,0 +1,19 @@
+{
+  "name": "contact-flow-builder",
+  "description": "Generates Amazon Connect contact flow JSON from natural language descriptions",
+  "prompt": "file://prompts/contact-flow-builder.md",
+  "tools": ["@builtin"],
+  "allowedTools": ["@builtin"],
+  "resources": [
+    "file://.claude/skills/contact-flow-generator/SKILL.md",
+    "file://.claude/skills/contact-flow-generator/references/*.md",
+    "file://.claude/skills/contact-flow-generator/references/block-types/*.md",
+    "file://.claude/skills/contact-flow-generator/examples/*.json",
+    "file://.claude/skills/contact-flow-generator/templates/*.json",
+    "file://infra/contact-flows/*.json",
+    "file://Docs/amazon-connect-contact-flow-main-flow.json",
+    "file://Docs/basic-setting-configurations.json",
+    "file://Docs/customer-profile-lookup.json"
+  ],
+  "model": "claude-opus-4.5"
+}

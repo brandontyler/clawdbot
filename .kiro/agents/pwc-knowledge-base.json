@@ -1,0 +1,11 @@
+{
+  "name": "pwc-knowledge-base",
+  "description": "Expert in PwC Documentaion Knowlege Base",
+  "prompt": "file://prompts/pwc-knowlege-base.md",
+  "tools": ["@builtin"],
+  "allowedTools": ["@builtin"],
+  "resources": [
+      "file://Docs/knowledge-base/*.md"
+  ],
+  "model": "claude-opus-4.5"
+}
