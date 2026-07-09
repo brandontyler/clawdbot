@@ -75,6 +75,20 @@ titles = re.findall(r'base-search-card__title[^>]*>\s*([^<]+)', html)
 companies = re.findall(r'base-search-card__subtitle[^>]*>\s*([^<]+)', html)
 locations = re.findall(r'job-search-card__location[^>]*>\s*([^<]+)', html)
 links = re.findall(r'href=\"(https://www.linkedin.com/jobs/view/[^\"?]+)', html)
+
+# Salary patterns we honor as REAL (not guessed). Only extract from strings.
+# Handles: \$180K-\$250K, \$180,000 - \$250,000, \$75/hr, \$75-\$100/hr, 100k-150k, etc.
+SALARY_RE = re.compile(
+    r'(\\\$?\d{2,3}[Kk](?:[,.]?\d{3})?(?:\s*[-–]\s*\\\$?\d{2,3}[Kk]?)?'
+    r'(?:\s*/\s*(?:hr|hour|yr|year))?'
+    r'|\\\$\d{2,3}(?:,\d{3})*(?:\s*[-–]\s*\\\$?\d{2,3}(?:,\d{3})*)?(?:\s*/\s*(?:hr|hour|yr|year))?'
+    r'|\\\$\d{2,3}(?:\s*[-–]\s*\\\$?\d{2,3})?\s*/\s*(?:hr|hour))'
+)
+
+def extract_salary(s: str) -> str:
+    m = SALARY_RE.search(s or '')
+    return m.group(0).strip() if m else ''
+
 for i in range(min(len(titles), 15)):
     t = titles[i].strip() if i < len(titles) else ''
     c = companies[i].strip() if i < len(companies) else '-'
@@ -82,13 +96,16 @@ for i in range(min(len(titles), 15)):
     link = links[i] if i < len(links) else ''
     if not c: c = '-'
     if not t: continue
+    # Extract salary from title only if literally present (never guess).
+    salary = extract_salary(t)
     # Stable id from LinkedIn job URL (last numeric segment), fallback to title+company hash
     m = re.search(r'/jobs/view/(\d+)', link)
     if m:
         jid = 'li-' + m.group(1)
     else:
         jid = 'li-' + hashlib.md5((t + c).encode()).hexdigest()[:10]
-    print(f'{jid}\tlinkedin\t{c}\t{t} [{l}]\t{link}')
+    # TSV columns: jid, source, poster, title[loc], url, salary
+    print(f'{jid}\tlinkedin\t{c}\t{t} [{l}]\t{link}\t{salary}')
 " >> "$JOBS_FILE" 2>/dev/null
 done
 
@@ -109,7 +126,8 @@ for i, t in enumerate(titles[:10]):
     if not title: continue
     # Stable id from title hash so the same posting isn't re-shown across days
     jid = 'uw-' + hashlib.md5(title.encode()).hexdigest()[:10]
-    print(f'{jid}\tupwork\t-\t{title}\thttps://www.upwork.com/nx/search/jobs/?q=OpenClaw+AI+agent')
+    # 6 TSV columns to match linkedin shape (salary col empty — Upwork search HTML doesn't expose it here)
+    print(f'{jid}\tupwork\t-\t{title}\thttps://www.upwork.com/nx/search/jobs/?q=OpenClaw+AI+agent\t')
 " >> "$JOBS_FILE" 2>/dev/null
 
 UW_COUNT=$(grep -c "upwork" "$JOBS_FILE" 2>/dev/null || echo 0)
@@ -118,7 +136,7 @@ log "  Upwork: found $UW_COUNT results"
 # --- X/Twitter ---
 log "Searching X for AI agent gigs..."
 TWITTER_RESULTS=$(bird search '"AI agent" OR "OpenClaw" OR "Hermes Agent" (hiring OR consultant OR freelance OR "looking for" OR contract) -is:retweet' -n 10 --json 2>/dev/null || echo "[]")
-echo "$TWITTER_RESULTS" | jq -r '.[] | "\(.id)\ttwitter\t\(.author.username)\t\(.text | gsub("\n";" ") | .[0:200])\thttps://x.com/\(.author.username)/status/\(.id)"' >> "$JOBS_FILE" 2>/dev/null
+echo "$TWITTER_RESULTS" | jq -r '.[] | "\(.id)\ttwitter\t\(.author.username)\t\(.text | gsub("\n";" ") | .[0:200])\thttps://x.com/\(.author.username)/status/\(.id)\t"' >> "$JOBS_FILE" 2>/dev/null
 
 TW_COUNT=$(grep -c "twitter" "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  X/Twitter: found $TW_COUNT results"
@@ -138,7 +156,7 @@ log "Filtering via kiro-cli..."
 
 JOB_LIST=""
 i=1
-while IFS=$'\t' read -r jid source poster title url; do
+while IFS=$'\t' read -r jid source poster title url salary; do
   [ -z "$jid" ] && continue
   [ "$i" -gt 25 ] && break
   clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-150)
@@ -156,18 +174,27 @@ AI SKILLS: Builds production AI agent systems daily — OpenClaw, Hermes Agent, 
 WHAT HE BUILT: 12+ automated LLM-powered jobs (job search, email triage, X digest, finance automation, calendar mgmt), multi-agent Discord routing, MCP integrations, voice agent architecture (Dograh+Connect), systemd services on EC2
 CERTS: Claude Certified Architect (in progress), AWS experience
 TELECOM: Amazon Connect, contact flows, IVR, voice bots, SIP, telephony integration
-WANTS: Help people/companies set up AI agents as executive assistants, personal automation, or contact center AI. Consulting, freelance, or full-time.
+WANTS: HANDS-ON individual contributor (IC) or player-coach roles where he writes code and builds systems daily. Not pure management.
 LOCATION: Denton, TX. MUST be REMOTE or DFW/North Texas. Will NOT relocate.
 
-Score 1-5:
-5 = Perfect fit: remote AI agent consulting/setup/deployment, or remote AI+telecom/contact center role
-4 = Strong fit: remote AI architect, LLM engineer, or automation role matching his skills
-3 = Good fit: remote AI/ML role or DFW-local tech role he could do
-2 = Unclear if remote or weak match
-1 = Requires relocation, irrelevant, or not matching his skills. NO EXCEPTIONS for on-site NYC/LA/SF.
+HARD FILTER — score 1 (reject) if the title matches any of these:
+- 'Director' / 'Sr Director' / 'VP' / 'Chief' — pure management, no daily coding
+- 'Senior Manager' / 'Manager' — leading teams, not building
+- 'Enablement' / 'GTM' / 'Sales' / 'Customer Success' / 'Solutions Consultant' — non-engineering
+- 'Recruiter' / 'Talent' / 'People'
+EXCEPTION: player-coach roles are OK even if titled 'Head of' or 'Founding X' AS LONG AS the title explicitly says 'hands-on', 'engineer', 'founding engineer', or 'writes code'. Default assumption for 'Director/Manager' titles = REJECT unless proven otherwise.
 
-Also estimate salary range based on title, company, and seniority.
-Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\",\"pay\":\"<estimated range like 150-200K or 75-100/hr>\"}
+Score 1-5:
+5 = Perfect fit: remote SENIOR ENGINEER / STAFF ENGINEER / PRINCIPAL ENGINEER / AI ENGINEER / AGENT ENGINEER / ML ENGINEER / SOLUTIONS ARCHITECT building AI agents. Hands-on. Codes daily. Consulting or FTE OK.
+4 = Strong fit: remote IC role — AI/LLM engineer, agent builder, automation engineer, or telecom+AI SA. Hands-on.
+3 = Good fit: remote IC AI/ML role or DFW-local IC tech role he could do daily. Still hands-on.
+2 = Unclear if remote, unclear if hands-on, or weak skill match
+1 = Requires relocation, MANAGEMENT track (Director/Manager/VP), GTM/enablement/sales, or clearly irrelevant. NO EXCEPTIONS for on-site NYC/LA/SF.
+
+DO NOT estimate or guess salary. Salary is extracted separately from the source
+listing only when the poster explicitly published it. Do not output a pay field.
+
+Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief>\"}
 
 ${JOB_LIST}"
 
@@ -188,18 +215,19 @@ while IFS= read -r score_line; do
   idx=$(echo "$score_line" | jq -r '.idx // 0' 2>/dev/null)
   score=$(echo "$score_line" | jq -r '.score // 0' 2>/dev/null)
   reason=$(echo "$score_line" | jq -r '.reason // ""' 2>/dev/null)
-  pay=$(echo "$score_line" | jq -r '.pay // ""' 2>/dev/null)
   [ "$score" -lt 3 ] 2>/dev/null && continue
 
   JOB_LINE=$(sed -n "${idx}p" "$JOBS_FILE")
   [ -z "$JOB_LINE" ] && continue
-  IFS=$'\t' read -r jid source poster title url <<< "$JOB_LINE"
+  IFS=$'\t' read -r jid source poster title url salary <<< "$JOB_LINE"
 
   if is_seen "$jid"; then continue; fi
 
   {
     echo "${title}"
-    [ -n "$pay" ] && [ "$pay" != "null" ] && echo "  💰 Est: ${pay}"
+    # Only print salary when the poster explicitly included it in the listing.
+    # No LLM guessing — real numbers only.
+    [ -n "$salary" ] && echo "  💰 ${salary}"
     echo "Source: ${source} | Score: ${score}/5 | ${reason}"
     echo "${url}"
     echo ""
