@@ -63,25 +63,34 @@ mark_seen() {
 log "=== Nathan's Job Search — $DATE_LABEL ==="
 
 # --- LinkedIn (primary) ---
-# Seven tuned searches covering: ISD aides/subs, AV/media at schools, after-school
+# Eight tuned searches covering: ISD aides/subs, AV/media at schools, after-school
 # / youth nonprofit, tutoring centers, district education paraprofessionals,
-# foster care, and film/media teaching (Nathan's expertise + teaching path).
+# foster care, film/media teaching (Nathan's expertise + teaching path), and
+# domestic-violence / women's-shelter / victim-advocacy nonprofits.
 log "Searching LinkedIn..."
 LI_SEARCHES=(
-  # 1. Direct teacher-pipeline jobs near Denton
-  "https://www.linkedin.com/jobs/search?keywords=paraprofessional+OR+%22instructional+aide%22+OR+%22teaching+assistant%22+OR+%22substitute+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=25&position=1&pageNum=0"
-  # 2. After-school / youth program staff (DFW radius)
-  "https://www.linkedin.com/jobs/search?keywords=%22after+school%22+OR+%22youth+program%22+OR+%22youth+development%22+OR+%22youth+coordinator%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
+  # All searches centered on Denton with a 20-mile radius.
+  # 1. Direct teacher-pipeline jobs
+  "https://www.linkedin.com/jobs/search?keywords=paraprofessional+OR+%22instructional+aide%22+OR+%22teaching+assistant%22+OR+%22substitute+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  # 2. After-school / youth program staff
+  "https://www.linkedin.com/jobs/search?keywords=%22after+school%22+OR+%22youth+program%22+OR+%22youth+development%22+OR+%22youth+coordinator%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
   # 3. Big-name youth nonprofits
-  "https://www.linkedin.com/jobs/search?keywords=%22Boys+%26+Girls+Club%22+OR+%22Boys+Girls+Club%22+OR+%22Communities+In+Schools%22+OR+%22Big+Brothers+Big+Sisters%22+OR+%22YMCA%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22Boys+%26+Girls+Club%22+OR+%22Boys+Girls+Club%22+OR+%22Communities+In+Schools%22+OR+%22Big+Brothers+Big+Sisters%22+OR+%22YMCA%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
   # 4. AV / video / media specialist (uses film background) — schools or nonprofits
-  "https://www.linkedin.com/jobs/search?keywords=%22AV+technician%22+OR+%22media+specialist%22+OR+%22video+producer%22+OR+%22video+production%22+%28school+OR+ISD+OR+nonprofit+OR+education%29&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22AV+technician%22+OR+%22media+specialist%22+OR+%22video+producer%22+OR+%22video+production%22+%28school+OR+ISD+OR+nonprofit+OR+education%29&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
   # 5. Tutoring / educational support centers
-  "https://www.linkedin.com/jobs/search?keywords=tutor+OR+%22tutoring%22+OR+%22Sylvan%22+OR+%22Mathnasium%22+OR+%22Kumon%22+OR+%22Varsity+Tutors%22&location=Denton%2C+Texas&f_TPR=r604800&distance=25&position=1&pageNum=0"
-  # 6. Foster care / foster youth / CASA / child welfare
-  "https://www.linkedin.com/jobs/search?keywords=%22foster+care%22+OR+%22foster+youth%22+OR+%22CASA%22+OR+%22child+welfare%22+OR+%22residential+childcare%22+OR+%22Buckner%22+OR+%22ACH+Child%22+OR+%22Pathways+Youth%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
-  # 7. Film/media TEACHING (NEW — combines his expertise with his teaching path)
-  "https://www.linkedin.com/jobs/search?keywords=%22film+teacher%22+OR+%22video+production+teacher%22+OR+%22digital+media+teacher%22+OR+%22media+arts+teacher%22+OR+%22broadcast+journalism+teacher%22+OR+%22film+instructor%22+OR+%22audio+video+production%22+OR+%22cinema+teacher%22&location=Dallas-Fort+Worth+Metroplex&f_TPR=r604800&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=tutor+OR+%22tutoring%22+OR+%22Sylvan%22+OR+%22Mathnasium%22+OR+%22Kumon%22+OR+%22Varsity+Tutors%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  # 6. Foster care / foster youth / child welfare / youth advocacy
+  #    NOTE: org-name/acronym anchors (CASA, Buckner, ACH Child, Pathways Youth)
+  #    returned a near-empty result set on LinkedIn guest search (only ~6 junk
+  #    hits, no foster roles ever surfaced — 2026-07-09 audit). Rebuilt around
+  #    role/topic terms, which return a full result page for the scorer to filter.
+  "https://www.linkedin.com/jobs/search?keywords=%22foster+care%22+OR+%22foster+youth%22+OR+%22child+welfare%22+OR+%22youth+advocate%22+OR+%22child+advocate%22+OR+%22residential+youth%22+OR+%22juvenile+justice%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  # 7. Film/media TEACHING — combines his expertise with his teaching path
+  "https://www.linkedin.com/jobs/search?keywords=%22film+teacher%22+OR+%22video+production+teacher%22+OR+%22digital+media+teacher%22+OR+%22media+arts+teacher%22+OR+%22broadcast+journalism+teacher%22+OR+%22film+instructor%22+OR+%22audio+video+production%22+OR+%22cinema+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  # 8. Domestic-violence / women's-shelter / victim-advocacy / crisis nonprofits
+  #    (his girlfriend's world — Denton County Friends of the Family, Journey to Dream)
+  "https://www.linkedin.com/jobs/search?keywords=%22domestic+violence%22+OR+%22women%27s+shelter%22+OR+%22victim+advocate%22+OR+%22victim+services%22+OR+%22crisis+intervention%22+OR+%22sexual+assault%22+OR+%22Friends+of+the+Family%22+OR+%22human+trafficking%22+OR+%22Journey+to+Dream%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
 )
 
 for url in "${LI_SEARCHES[@]}"; do
@@ -151,29 +160,71 @@ NATHAN'S BACKGROUND:
   Texas College) for a teaching degree.
 - Current background: FILM PRODUCTION (worked in film/video for years).
 - AGE/GRADE PREFERENCE: wants to work with MIDDLE SCHOOL or HIGH SCHOOL
-  students (roughly grades 6-12). Open to upper elementary (4th-5th) but NOT
-  early childhood. EXPLICITLY AVOID: daycare, preschool, pre-K, infant/toddler
-  care, K-2 only roles. The teaching path he wants is older kids.
+  students (roughly grades 6-12). Will tolerate UPPER elementary (4th-5th)
+  but STRONGLY PREFERS 6-12. EXPLICITLY AVOID: daycare, preschool, pre-K,
+  infant/toddler care, kindergarten, 1st grade, 2nd grade, 3rd grade,
+  K-2, K-3, "primary" (which typically means K-2/K-3). If a role is labeled
+  with a specific lower elementary grade (e.g., a First-Grade Co-Teacher,
+  Kindergarten Aide, or 2nd Grade Teacher listing), score it 1. The teaching
+  path he wants is older kids.
 - Looking for a transitional/bridge job that builds toward teaching certification,
   ideally at a school district (paraprofessional, instructional aide, sub, AV/media
   tech) at a MIDDLE or HIGH SCHOOL, OR at a youth-serving nonprofit (Boys & Girls
   Club, YMCA, Communities In Schools, Big Brothers Big Sisters, after-school
   programs that serve teens).
+- ALSO OF INTEREST — HUMAN-SERVICES / VICTIM-ADVOCACY NONPROFITS: Nathan is open
+  to mission-driven nonprofit work serving domestic-violence and abuse survivors,
+  sexual-assault victims, crisis intervention, and at-risk / homeless youth (his
+  girlfriend is deeply involved in the Denton County women's-shelter / abuse-
+  victim community, so this is a genuine shared interest — not a stretch). Key
+  local orgs: Denton County Friends of the Family (DV & sexual-assault survivor
+  services — the anchor org), Journey to Dream / Kyle's Place (teen crisis shelter
+  in Denton), Giving HOPE Inc, Health Services of North Texas, Salvation Army
+  Denton. Relevant roles: victim advocate, case manager, program/volunteer
+  coordinator, prevention educator, shelter youth advocate, crisis counselor-
+  adjacent support. These count even though they are not teaching roles.
 - Open to roles that leverage his film/video background (district media specialist,
   school video production, nonprofit communications/comms-coordinator).
 - *** BULLSEYE: TEACHING FILM/MEDIA at secondary level *** — film teacher, video
   production teacher, digital media teacher, media arts teacher, broadcast
   journalism teacher, audio-video production (AV/TV) teacher. This combines
-  his teaching career path with his film expertise. ALWAYS score these 5.
+  his teaching career path with his film expertise. Score these 5 when
+  attainable WITHOUT a teaching degree (CTE / industry-track, aide/assistant,
+  substitute, or private/uncertified-OK postings). If it is a fully-certified
+  teacher-of-record film role that requires a degree Nathan lacks, apply the
+  CREDENTIAL REALITY rule above (score 2, note the gap).
+- *** EXPLICITLY DECLINED: SPORTS / ATHLETIC roles. *** Nathan is NOT
+  interested in sports at all. Filter out any athletic coach, assistant
+  coach, head coach, athletic coordinator, sport-specific coach (football,
+  basketball, baseball, soccer, track, wrestling, tennis, volleyball, etc.),
+  PE teacher, physical education teacher, athletic trainer, sports program
+  coordinator, or coaching role. Score these 1 regardless of location or
+  grade level.
 - *** EXPLICITLY DECLINED: SPECIAL EDUCATION-only roles. *** Nathan has said
   he does not want SPED aide / SPED paraprofessional / behavior tech / autism
   aide positions. Filter these to score 1, regardless of grade level.
-- Location: Denton, TX. MUST be commutable from Denton (~25 mi radius). NO
+- Location: Denton, TX. MUST be commutable from Denton (~20 mi radius). NO
   RELOCATION. Acceptable cities: Denton, Krum, Sanger, Aubrey, Pilot Point,
-  Argyle, Lewisville, Flower Mound, Highland Village, Lake Dallas, Little Elm,
-  Frisco, The Colony, Northwest ISD, Justin, Roanoke, Trophy Club. AVOID: Dallas
-  proper, Fort Worth proper (unless explicitly remote-friendly).
-- He does NOT yet have a teaching certificate, so anything requiring one is wrong.
+  Argyle, Lewisville, Flower Mound, Highland Village, Lake Dallas, Hickory
+  Creek, Corinth, Little Elm, The Colony, Northwest ISD, Justin, Roanoke,
+  Trophy Club. AVOID: Frisco (too far), Dallas proper, Fort Worth proper
+  (unless explicitly remote-friendly).
+- *** CREDENTIAL REALITY (IMPORTANT): Nathan does NOT have a teaching DEGREE and
+  is NOT state-certified — he has not started his NCTC teaching degree yet. Any
+  role that requires a completed college / teaching / education degree OR a Texas
+  teaching certification as a condition of hire is NOT attainable right now.
+  Full classroom 'Teacher' / 'Teacher of record' postings (e.g. Middle School
+  Humanities Teacher, English Teacher, Science Teacher, Math Teacher, Social
+  Studies Teacher) at public ISDs and most private/charter schools require a
+  degree + certification — SCORE THESE 2 and note the credential gap; do NOT
+  score them 4 or 5.
+  EXCEPTIONS that stay high (degree NOT required to be hired): (a) postings that
+  explicitly welcome uncertified / alternative-certification / degree-in-progress
+  applicants; (b) CTE / career-&-technical film / video / AV / media teaching
+  that can be filled by an INDUSTRY PROFESSIONAL through a work-experience CTE
+  certificate — Nathan's film background qualifies, so these remain a BULLSEYE
+  (score 5); (c) aide / instructional assistant / paraprofessional / substitute /
+  long-term-sub roles, which do NOT require a degree. ***
 
 Score 1-5:
 5 = Direct teacher-path role at MIDDLE or HIGH SCHOOL: ISD paraprofessional,
@@ -196,27 +247,51 @@ Score 1-5:
     (Sylvan/Mathnasium/Varsity Tutors targeting older students), private school
     aide (middle/high), after-school program staff for teens, library aide at
     a middle/high school, nonprofit communications role using his film background.
-    Also: K-12 instructional aide where the grade isn't specified (default to 4
-    since most ISD aide roles cover multiple grades). Foster-adjacent roles
+    Also: K-12 instructional aide where the grade isn't specified AND the
+    posting mentions middle/high or "secondary" anywhere (default aide roles
+    with no grade clue drop to 2 — see below). Foster-adjacent roles
     (residential childcare, transitional living, juvenile-justice mentoring)
     that aren't strictly foster-care orgs but serve the same population.
-3 = General nonprofit/education role he could grow into, parks-rec youth
-    programming serving teens, edtech support, museum/library education,
-    school district admin that exposes him to secondary teachers daily.
-    Elementary-only aide roles default here (acceptable but not preferred).
+    Also: domestic-violence / victim-services / crisis nonprofits (Denton County
+    Friends of the Family, Journey to Dream / Kyle's Place, etc.) when the role
+    serves TEENS/youth or is prevention-education / youth-advocacy that fits Nathan.
+3 = General nonprofit/education role he could grow into that serves teens,
+    parks-rec youth programming for tweens/teens, edtech support, museum/library
+    education programming for older kids, school district admin that exposes him
+    to secondary teachers daily. Upper elementary (4th-5th only) aide roles
+    default here — acceptable but not preferred.
+    Also: general domestic-violence / abuse-survivor / victim-services / human-
+    services nonprofit roles near Denton (victim advocate, case manager, program /
+    volunteer coordinator, shelter support) even without a youth focus — Nathan
+    has a genuine interest here (girlfriend's field) and these are mission-aligned.
 2 = Adjacent but weak: school district admin/clerical, customer service at a
     nonprofit, retail with 'youth team' wording, college-level (not K-12) roles
     even at education orgs (e.g., university career-services coordinator).
-    Location borderline (20-25mi).
+    Location borderline (>20mi from Denton).
+    ALSO SCORE 2: K-12 instructional aide roles where the grade level is NOT
+    specified in the posting and there's no clue in the description about
+    secondary vs elementary — Nathan would need to research whether it's
+    actually middle/high before applying. Better than K-3 but not preferred.
     *** ALSO SCORE 2: Time-limited internships at media/sports/entertainment
     companies even when commutable (Frisco Bowl marketing internship, FC Dallas
     digital media internship, etc.) — internships don't build toward teacher
     certification and end after a semester. ***
 1 = Wrong field. Specifically includes:
+    *** KINDERGARTEN, 1st GRADE, 2nd GRADE, 3rd GRADE, or K-3 / K-2
+    grade-specific roles (e.g., First-Grade Co-Teacher, Kindergarten Aide,
+    Second-Grade Teacher, Primary School Teacher). Nathan wants MIDDLE
+    SCHOOL or HIGH SCHOOL only. Score these 1 regardless of location or
+    school reputation. ***
     *** SPECIAL EDUCATION-only roles (SPED aide, SPED paraprofessional, SPED
     instructional aide, behavior tech for SPED, autism aide) — Nathan is
     explicitly NOT pursuing SPED and has declined SPED-specific positions.
     Filter these out regardless of grade level or location. ***
+    *** SPORTS / ATHLETIC roles — athletic coach, assistant/head coach,
+    athletic coordinator, sport-specific coach (football, basketball, baseball,
+    soccer, track, wrestling, tennis, volleyball, cross country, etc.), PE
+    teacher, physical education teacher, athletic trainer, sports program
+    coordinator. Nathan is NOT into sports. Score these 1 even at MS/HS in
+    Denton. ***
     *** MARKETING, PR, SOCIAL MEDIA, COMMUNICATIONS roles at edtech or
     education-adjacent companies (Turnitin, Coursera, Khan Academy, McGraw
     Hill, Pearson, school-district marketing/comms departments) — these are
@@ -225,8 +300,10 @@ Score 1-5:
     DAYCARE, preschool, pre-K, infant/toddler care, child-development centers
     serving under-5 (e.g. KinderCare, Bright Horizons, Goddard, Primrose,
     Children's Lighthouse, Child Development Schools, Learning Experience).
-    Also: anything requiring a teaching cert he
-    doesn't have, requires relocation, far outside the 25mi commute radius, or
+    Also: anything requiring a completed teaching / education DEGREE or a state
+    teaching certification Nathan does not have (note: full certified
+    teacher-of-record roles score 2 per the CREDENTIAL REALITY rule above, not 1),
+    requires relocation, far outside the 20mi commute radius, or
     unrelated to youth/education.
 
 Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief why this fits Nathan>\"}
@@ -240,7 +317,7 @@ SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
 {
   echo "# 📚 Nathan's Job Search — $DATE_LABEL"
   echo ""
-  echo "_Bridge jobs toward teaching career — North Texas, ~25mi from Denton_"
+  echo "_Bridge jobs toward teaching career — North Texas, ~20mi from Denton_"
   echo ""
 } > "$DIGEST_FILE"
 
