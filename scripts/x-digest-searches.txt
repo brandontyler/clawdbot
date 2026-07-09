@@ -46,7 +46,12 @@ voice_tts|elevenlabs OR vapi OR "voice agent" min_faves:200|3
 # --- AI for productivity (Gmail/Calendar/Drive automation) ---
 ai_productivity|"google workspace" agent OR "gmail" agent min_faves:200|3
 
-# --- SpaceX / Tesla (high engagement bar — only mega-viral) ---
-spacex|from:SpaceX OR starship OR "raptor engine" min_faves:1000|3
-tesla|from:Tesla OR FSD OR cybercab min_faves:1000|3
+# --- SpaceX / Tesla ---
+# Official accounts get their own line (no min_faves) so they can't be crowded
+# out by viral keyword matches when max_results is tight.
+spacex_official|from:SpaceX|5
+tesla_official|from:Tesla|5
+# Topic-only catches viral 3rd-party posts (Starship updates, Cybercab leaks, FSD demos).
+spacex_topics|starship OR "raptor engine" OR "super heavy" min_faves:1000|3
+tesla_topics|cybercab OR optimus OR robotaxi OR FSD min_faves:1000|3
 elonmusk_top|from:elonmusk min_faves:10000|2

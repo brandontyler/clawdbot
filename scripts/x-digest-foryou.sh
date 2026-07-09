@@ -137,29 +137,68 @@ pull_search_supplements() {
     [ -z "$results" ] && continue
 
     # Parse to TSV (same shape as For You parsing, plus a source tag column)
+    # Extract min_faves:N from the query, if present. bird / X's API sometimes
+    # returns tweets below the operator's floor (observed 0-like tweets on
+    # min_faves:1000 queries), so we enforce script-side too.
+    local qmf
+    qmf=$(echo "$query" | grep -oP 'min_faves:\K\d+' | head -1)
+    local floor
+    if [ -n "$qmf" ]; then
+      # min_faves in the query always wins: honor N/2 as the digest-time floor
+      # (leaves slack for bird's occasional bypass; still keeps out zeros).
+      # Applies uniformly to keyword and account queries — an explicit min_faves
+      # is intentional (e.g., elonmusk_top has min_faves:10000 because Elon
+      # posts a LOT and Brandon only wants his top posts).
+      floor=$(( qmf / 2 ))
+      [ "$floor" -lt 3 ] && floor=3
+    else
+      # No min_faves in the query.
+      # Account-only queries (bare 'from:USER' with no keyword clauses) →
+      # trusted source, no floor. Brandon has hand-vetted these authors, so
+      # fresh 0-like posts should surface (SpaceX launch, karpathy insight).
+      # Everything else → default 3-like floor (blocks keyword-search noise).
+      local qtrim
+      qtrim=$(echo "$query" | tr -s ' ' | sed 's/^ *//;s/ *$//')
+      if echo "$qtrim" | grep -qE '^from:[A-Za-z0-9_]+$'; then
+        floor=0
+      else
+        floor=3
+      fi
+    fi
+
     local rows
-    rows=$(echo "$results" | python3 -c "
-import sys, json
+    rows=$(echo "$results" | FLOOR="$floor" python3 -c "
+import sys, json, os
 try:
     data = json.load(sys.stdin)
 except (json.JSONDecodeError, ValueError):
     sys.exit(0)
 limit = int('${max_results}')
-for tweet in (data or [])[:limit]:
+floor = int(os.environ.get('FLOOR', '3'))
+kept = 0
+for tweet in (data or []):
+    if kept >= limit:
+        break
     try:
         tid = tweet.get('id', '')
         author = tweet.get('author', {}) or {}
         user = author.get('username', '')
         name = author.get('name', '')
         text = (tweet.get('text', '') or '').replace('\n', ' ').replace('\t', ' ')
-        likes = tweet.get('likeCount', 0)
-        rts = tweet.get('retweetCount', 0)
+        likes = tweet.get('likeCount', 0) or 0
+        rts = tweet.get('retweetCount', 0) or 0
         created = tweet.get('createdAt', '')
         if not text or not user or not tid:
             continue
         if text.startswith('RT @'):
             continue
+        # Engagement floor — the fix Brandon asked for.
+        # Enforced script-side because bird / X's API occasionally returns
+        # tweets below the min_faves: operator's declared floor.
+        if likes < floor:
+            continue
         print(f'{tid}\t{user}\t{name}\t{likes}\t{rts}\t{created}\t{text[:300]}')
+        kept += 1
     except (KeyError, TypeError):
         pass
 " 2>/dev/null | sed "s/$/	${name}/")
@@ -233,7 +272,8 @@ Brandon wants to see:
 - MCP servers, tool integrations, agent architectures
 - AWS news and services (Amazon Connect, Bedrock, AgentCore, Strands, Lambda, new launches) — Brandon works at AWS
 - SpaceX launches, milestones, engineering achievements
-- Tesla, FSD, robotaxi, Cybercab, Boring Company news and progress
+- Tesla, FSD, robotaxi, Cybercab, Optimus, Boring Company news and progress
+- @Tesla (corporate account) and @SpaceX (corporate account) — ALWAYS score 8+ when posting about their actual products: Cybercab, Optimus, Starship, Falcon, Dragon, FSD updates, factory news, production milestones, engineering tests, launch events. These are official company announcements — score them HIGH even if engagement is modest. Skip only obvious marketing fluff (e.g., generic 'thanks to our customers' or holiday greetings).
 - @elonmusk — ONLY include when it's about SpaceX, Tesla, Neuralink, xAI, Boring Company, or engineering. Skip political takes, culture war, government/DOGE commentary, and casual replies.
 - @SawyerMerritt — breaking Tesla/SpaceX news. Only his biggest posts (he posts a lot too).
 - ENGAGEMENT RULE: For high-volume posters (Elon, Sawyer, Boris Cherny), only surface their top 1-2 posts — the ones with unusually high engagement relative to their normal. If Elon averages 50K likes, only include 100K+ posts. If Sawyer averages 2K, only include 5K+.
@@ -252,14 +292,35 @@ Score LOW (1-3):
 - Company drama or stock price speculation
 
 Score each tweet 1-10. A 10 is something Brandon would stop scrolling to read and maybe act on. A 7 is solid, worth including. Below 7 is noise.
-Reply ONLY with a JSON array of integers. Example: [8,2,7,1,9,3,5]
+
+ALSO categorize each tweet into ONE of these topics (use the exact string, lowercase):
+- claude_code       — Claude Code tips, workflows, official Anthropic content
+- kiro_cli          — Kiro CLI, Kiro one, Kiro dev
+- agent_skills      — SKILL.md, agent skills, ClawHub, npx skills add
+- evals             — Agent evaluation, DeepEval, eval harnesses, rubrics, regression testing
+- agent_loops       — Loop engineering, Ralph loop, autonomous agent loops, agentic workflows
+- mcp               — MCP servers, MCP tools, tool integrations
+- ai_productivity   — Gmail/Calendar/Drive/Workspace AI automation, personal assistants
+- voice_agents      — ElevenLabs, Vapi, voice-first agents, TTS, conversational AI
+- aws               — Amazon Connect, Bedrock, AgentCore, Strands, general AWS AI
+- ai_news           — Model releases (Gemini, GPT, Claude, Llama), industry breakthroughs, research
+- ai_consulting     — AI agencies, freelance, vibe coding, revenue transparency
+- spacex            — SpaceX launches, Starship, Falcon, Dragon, Super Heavy, engineering
+- tesla             — Tesla, FSD, Cybercab, Optimus, Robotaxi, Boring Company, xAI, Neuralink
+- other             — anything not in the list above
+
+Reply ONLY with a JSON array of objects, one per tweet. No prose, no code fences. Example:
+[{\"score\":8,\"topic\":\"claude_code\"},{\"score\":2,\"topic\":\"other\"},{\"score\":7,\"topic\":\"evals\"}]
 
 Tweets:
 ${tweets_text}"
 
-  # Run from $HOME so kiro-cli picks up ~/.kiro/agents/default.json
+  # Run from $HOME so kiro-cli picks up ~/.kiro/agents/default.json.
+  # New response shape: JSON array of {score,topic} objects (was: array of ints).
+  # We now capture the FIRST balanced `[...]` block that begins with `[{` so we
+  # don't accidentally pick up a stray integer array in the model's preamble.
   timeout 60 bash -c "cd \$HOME && kiro-cli chat --no-interactive --wrap never \"\$1\"" -- "$prompt" 2>&1 | \
-    sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[[\d,\s]+\]' | head -1
+    sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[\{[^]]+\}\]' | head -1
 }
 
 # --- Main ---
@@ -402,11 +463,12 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
   # Adaptive threshold: if fewer than 3 posts meet ≥7, lower threshold to the
   # 3rd-highest score so the digest is never near-empty on slow days. Quality
   # bar stays at 7 for normal days, falls back to top-3 on thin days.
+  # (SCORES is now an array of {score,topic} objects — extract .score for math.)
   EFFECTIVE_THRESHOLD="$RELEVANCE_THRESHOLD"
   ADAPTIVE_NOTE=""
-  COUNT_AT_THRESHOLD=$(echo "$SCORES" | jq "[.[] | select(. >= $RELEVANCE_THRESHOLD)] | length" 2>/dev/null || echo 0)
+  COUNT_AT_THRESHOLD=$(echo "$SCORES" | jq "[.[] | .score | select(. >= $RELEVANCE_THRESHOLD)] | length" 2>/dev/null || echo 0)
   if [ "$COUNT_AT_THRESHOLD" -lt 3 ] && [ "$FRESH_COUNT" -ge 3 ]; then
-    THIRD_HIGHEST=$(echo "$SCORES" | jq "[.[]] | sort | reverse | .[2]" 2>/dev/null)
+    THIRD_HIGHEST=$(echo "$SCORES" | jq "[.[] | .score] | sort | reverse | .[2]" 2>/dev/null)
     if [ -n "$THIRD_HIGHEST" ] && [ "$THIRD_HIGHEST" != "null" ]; then
       EFFECTIVE_THRESHOLD="$THIRD_HIGHEST"
       ADAPTIVE_NOTE=" (adaptive: only $COUNT_AT_THRESHOLD met ≥${RELEVANCE_THRESHOLD}, lowered to top-3)"
@@ -428,7 +490,12 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
   i=0
   while IFS=$'\t' read -r tid user name likes rts created text source; do
     [ -z "$tid" ] && continue
-    score=$(echo "$SCORES" | jq -r ".[$i] // 0" 2>/dev/null || echo "5")
+    # New schema: score comes from an object per tweet.
+    score=$(echo "$SCORES" | jq -r ".[$i].score // 0" 2>/dev/null || echo "5")
+    # Topic classification — used for the For You badge so Brandon can see
+    # WHAT the tweet is about, not just where it came from. Supplemental
+    # searches already carry the topic in their source badge.
+    topic=$(echo "$SCORES" | jq -r ".[$i].topic // \"other\"" 2>/dev/null || echo "other")
     # Track source for evaluation breakdown (whether surfaced or not)
     echo "eval:${source:-unknown}" >> "$SOURCE_TALLY"
     if [ "$score" -ge "$EFFECTIVE_THRESHOLD" ] 2>/dev/null; then
@@ -437,7 +504,8 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
       # Render source as friendly badges
       source_display="${source:-unknown}"
       if [ "$source_display" = "foryou" ]; then
-        src_line="📡 For You feed · score ${score}/10"
+        # For You feed → append LLM-classified topic so Brandon knows the subject
+        src_line="📡 For You feed · \`${topic}\` · score ${score}/10"
       elif [[ "$source_display" == *"+"* ]]; then
         # Multiple sources — show all
         src_line="🎯 \`${source_display}\` · score ${score}/10"
