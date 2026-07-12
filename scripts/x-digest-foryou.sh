@@ -22,6 +22,17 @@ DIGEST_FILE="$DIGEST_DIR/digest-${TODAY}.md"
 DYNAMO_TABLE="x-digest-seen"
 PROFILE="personal"
 REGION="us-east-1"
+# The table has TTL enabled on `expires_at` — every item we write MUST carry
+# it or rows live forever (bug fixed 2026-07-12: the foryou rewrite dropped
+# the attribute the v3 script wrote). 30 days: longer than the 7-day search
+# age gate, so nothing can expire and then resurface.
+TTL_DAYS=30
+EXPIRES_AT=$(date -d "+${TTL_DAYS} days" +%s)
+
+# DRY_RUN=1 → full pipeline (pull, dedup, score, build digest file) but NO
+# deliveries (Discord/email/alerts) and NO DynamoDB writes. For testing.
+DRY_RUN="${DRY_RUN:-0}"
+[ "$DRY_RUN" = "1" ] && DIGEST_FILE="${DIGEST_FILE%.md}-dryrun.md"  # don't clobber the real digest
 
 # GraphQL config
 QUERY_ID_FILE="$HOME/.config/bird/home-timeline-qid.txt"
@@ -40,6 +51,7 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 # Sends a one-line alert to the OpenClaw EC2 admin channel.
 alert_discord() {
   local msg="$1"
+  [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: would alert Discord: $msg"; return; }
   local channel="${DIGEST_DISCORD_CHANNEL:-1503414103341797406}"
   local token
   token=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
@@ -116,22 +128,32 @@ pull_foryou() {
 # Emits TSV rows: tid \t user \t name \t likes \t rts \t created \t text
 pull_search_supplements() {
   local searches_file="${SCRIPT_DIR}/x-digest-searches.txt"
+  echo "0 0" > "$DIGEST_DIR/.suppl_status"  # reset (also covers early return)
   if [ ! -f "$searches_file" ]; then
     log "No supplemental searches file at $searches_file — skipping"
     return
   fi
 
-  local total=0
+  # Age gate: without since:, a dormant account's months-old post can surface
+  # (and resurface once its DynamoDB dedup row expires). 7 days keeps posts
+  # eligible while still gaining traction but bounds staleness.
+  local since
+  since=$(date -d '7 days ago' +%Y-%m-%d)
+
+  local total=0 ran=0 failed=0
   while IFS='|' read -r name query max_results; do
     # Skip comments and blank lines
     [[ "$name" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${name// }" ]] && continue
     [ -z "$query" ] && continue
     max_results="${max_results:-5}"
+    [[ "$query" != *"since:"* ]] && query="$query since:$since"
+    ran=$((ran + 1))
 
     local results
     results=$(timeout 15 bird search "$query" --json 2>/dev/null) || {
       log "search '$name' timed out or failed — skipping" >&2
+      failed=$((failed + 1))
       continue
     }
     [ -z "$results" ] && continue
@@ -212,26 +234,51 @@ for tweet in (data or []):
     fi
   done < "$searches_file"
 
-  log "Supplemental searches: $total tweets pulled across all queries" >&2
+  log "Supplemental searches: $total tweets pulled across all queries ($failed/$ran queries failed)" >&2
+  # Surface total-failure to the caller (we run inside $(...), so no globals).
+  # bird silently dying would otherwise degrade this to a For-You-only digest
+  # forever with only per-query log lines to notice.
+  echo "$failed $ran" > "$DIGEST_DIR/.suppl_status"
 }
 
 # --- DynamoDB helpers ---
-is_seen() {
-  local tid="$1"
-  aws dynamodb get-item \
-    --table-name "$DYNAMO_TABLE" \
-    --key "{\"tweet_id\":{\"S\":\"$tid\"}}" \
-    --profile "$PROFILE" --region "$REGION" \
-    --output text 2>/dev/null | grep -q "$tid"
+# Batch dedup: read tweet ids on stdin (one per line), emit the SEEN subset
+# on stdout. Uses batch-get-item (100 keys/call) instead of one get-item
+# subprocess per tweet — the old per-tweet loop cost ~70s of a ~150s run.
+seen_ids_batch() {
+  local ids resp
+  ids=$(cat)
+  [ -z "$ids" ] && return
+  echo "$ids" | xargs -n 100 | while IFS= read -r batch; do
+    local keys=""
+    local tid
+    for tid in $batch; do
+      keys="${keys}{\"tweet_id\":{\"S\":\"$tid\"}},"
+    done
+    keys="${keys%,}"
+    resp=$(aws dynamodb batch-get-item \
+      --request-items "{\"$DYNAMO_TABLE\":{\"Keys\":[${keys}],\"ProjectionExpression\":\"tweet_id\"}}" \
+      --profile "$PROFILE" --region "$REGION" \
+      --query "Responses.\"$DYNAMO_TABLE\"[].tweet_id.S" --output text 2>/dev/null) || {
+      # DynamoDB read failure → treat batch as unseen (graceful degradation;
+      # worst case is a repeat tweet, not a lost one).
+      continue
+    }
+    [ -n "$resp" ] && [ "$resp" != "None" ] && tr '\t' '\n' <<< "$resp"
+  done
 }
 
 batch_mark_seen() {
   local ids_file="$1"
   [ ! -s "$ids_file" ] && return
+  if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN: would mark $(wc -l < "$ids_file" | xargs) tweets seen in DynamoDB"
+    return
+  fi
   local batch_items="" count=0
   while IFS= read -r tid; do
     [ -z "$tid" ] && continue
-    batch_items="${batch_items}{\"PutRequest\":{\"Item\":{\"tweet_id\":{\"S\":\"$tid\"},\"seen_date\":{\"S\":\"$TODAY\"}}}},"
+    batch_items="${batch_items}{\"PutRequest\":{\"Item\":{\"tweet_id\":{\"S\":\"$tid\"},\"seen_date\":{\"S\":\"$TODAY\"},\"expires_at\":{\"N\":\"$EXPIRES_AT\"}}}},"
     count=$((count + 1))
     if [ "$count" -ge 25 ]; then
       batch_items="${batch_items%,}"
@@ -258,12 +305,14 @@ score_tweets() {
 
   local prompt="You are filtering tweets from Brandon's X 'For You' feed for his daily digest.
 
-Brandon wants to see:
+Brandon wants to see (he's an AWS ProServe engineer on Amazon Connect, currently building an agent-evaluation framework, daily tools: Kiro CLI, Claude Code, OpenAI Codex):
+- Amazon Connect — ANY substantive Connect content: new features, Contact Lens, Q in Connect, Cases, CCaaS industry moves, contact-center AI. This is his DAY JOB — score substantive Connect posts 8+, even at low engagement.
+- Eval-driven development & TESTING AGENTS — DeepEval, agent evaluation, eval harnesses, LLM-as-a-judge/verifier, eval metrics, agent benchmarks (Terminal-Bench, SWE-Bench), rubrics, regression testing for agents. He is BUILDING an eval framework right now — score substantive posts here 8+.
 - Claude Code best practices — how to use it better, tips, workflows, what power users are doing
 - Kiro CLI best practices — how people are using it, tips, what's new
+- OpenAI Codex (the coding agent/CLI) — releases, changelog, workflows, comparisons with Claude Code. NOT the old Codex model, NOT unrelated "codex" words (games, manuscripts).
 - How people are using AI to solve REAL problems (not hype, actual use cases)
 - Agent skills (SKILL.md files) — what's popular, what are people installing and using
-- Eval-driven development — DeepEval, agent evaluation, eval harnesses, regression testing for agents
 - Loop Engineering and agentic workflows — autonomous agent loops, agent orchestration patterns
 - AI for productivity — Gmail/Calendar/Drive/Workspace automation, agentic email/calendar assistants
 - Discord / Slack agent integrations — multi-channel agent platforms, chat-driven agents
@@ -285,7 +334,7 @@ Score LOW (1-3):
 - Generic motivational/hustle content
 - Celebrity gossip, politics, culture war
 - Ads/promoted content
-- Non-English content
+- Non-English content — EXCEPT substantive Amazon Connect or Kiro posts: the Japanese AWS community publishes excellent Connect/Kiro case studies and verification write-ups. Score those on substance like any English post (X auto-translates). Non-English content on any OTHER topic: score low. Non-English engagement bait/spam: always low.
 - Pure entertainment (sports, memes)
 - Retweets without added commentary
 - Courses/giveaways/engagement bait
@@ -296,8 +345,9 @@ Score each tweet 1-10. A 10 is something Brandon would stop scrolling to read an
 ALSO categorize each tweet into ONE of these topics (use the exact string, lowercase):
 - claude_code       — Claude Code tips, workflows, official Anthropic content
 - kiro_cli          — Kiro CLI, Kiro one, Kiro dev
+- codex             — OpenAI Codex coding agent/CLI: releases, workflows, comparisons
 - agent_skills      — SKILL.md, agent skills, ClawHub, npx skills add
-- evals             — Agent evaluation, DeepEval, eval harnesses, rubrics, regression testing
+- evals             — Agent evaluation & testing, DeepEval, eval harnesses, eval metrics, LLM-as-a-judge/verifier, agent benchmarks (Terminal-Bench/SWE-Bench), rubrics, regression testing
 - agent_loops       — Loop engineering, Ralph loop, autonomous agent loops, agentic workflows
 - mcp               — MCP servers, MCP tools, tool integrations
 - ai_productivity   — Gmail/Calendar/Drive/Workspace AI automation, personal assistants
@@ -309,18 +359,40 @@ ALSO categorize each tweet into ONE of these topics (use the exact string, lower
 - tesla             — Tesla, FSD, Cybercab, Optimus, Robotaxi, Boring Company, xAI, Neuralink
 - other             — anything not in the list above
 
-Reply ONLY with a JSON array of objects, one per tweet. No prose, no code fences. Example:
-[{\"score\":8,\"topic\":\"claude_code\"},{\"score\":2,\"topic\":\"other\"},{\"score\":7,\"topic\":\"evals\"}]
+Reply ONLY with a JSON array of objects, one per tweet — include the tweet's language as a 2-letter code. For NON-ENGLISH tweets only, also include \"gist\": a one-sentence English summary (max 25 words) of what the tweet actually says, so Brandon can decide whether it's worth opening. Omit \"gist\" for English tweets. No prose, no code fences. Example:
+[{\"score\":8,\"topic\":\"claude_code\",\"lang\":\"en\"},{\"score\":2,\"topic\":\"other\",\"lang\":\"en\"},{\"score\":9,\"topic\":\"aws\",\"lang\":\"ja\",\"gist\":\"Municipal call-center bot using Connect+Lex+Q in Connect RAG improved answer accuracy from 60% to 81%\"}]
 
 Tweets:
 ${tweets_text}"
 
   # Run from $HOME so kiro-cli picks up ~/.kiro/agents/default.json.
-  # New response shape: JSON array of {score,topic} objects (was: array of ints).
-  # We now capture the FIRST balanced `[...]` block that begins with `[{` so we
-  # don't accidentally pick up a stray integer array in the model's preamble.
-  timeout 60 bash -c "cd \$HOME && kiro-cli chat --no-interactive --wrap never \"\$1\"" -- "$prompt" 2>&1 | \
-    sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\[\{[^]]+\}\]' | head -1
+  # Timeout 180: the gist field (added 2026-07-12) makes the model generate
+  # noticeably more output for 40+ tweets; 60s hit the ceiling and killed
+  # scoring on a full-size batch.
+  # Response shape: JSON array of {score,topic,lang,gist?} objects. Extraction
+  # uses a real JSON parser (raw_decode at each '[') instead of the old
+  # grep -oP '\[\{[^]]+\}\]' — that regex died at the first ']' inside any
+  # string value, which free-prose gists can legitimately contain.
+  timeout 180 bash -c "cd \$HOME && kiro-cli chat --no-interactive --wrap never \"\$1\"" -- "$prompt" 2>&1 | \
+    sed 's/\x1b\[[0-9;]*m//g' | python3 -c "
+import sys, json
+buf = sys.stdin.read()
+dec = json.JSONDecoder()
+i = 0
+while True:
+    i = buf.find('[', i)
+    if i < 0:
+        break
+    try:
+        obj, _ = dec.raw_decode(buf, i)
+    except ValueError:
+        i += 1
+        continue
+    if isinstance(obj, list) and obj and all(isinstance(o, dict) and 'score' in o for o in obj):
+        print(json.dumps(obj))
+        break
+    i += 1
+"
 }
 
 # --- Main ---
@@ -374,7 +446,7 @@ for e in entries:
         pass
 ")
 
-TOTAL_RAW=$(echo "$TWEETS_TSV" | grep -c '.' || echo 0)
+TOTAL_RAW=$(echo "$TWEETS_TSV" | grep -c '.' || true)
 log "Parsed $TOTAL_RAW tweets from For You (promoted/RTs filtered)"
 
 # --- Supplemental: topic searches via bird CLI ---
@@ -383,7 +455,14 @@ log "Parsed $TOTAL_RAW tweets from For You (promoted/RTs filtered)"
 # before DynamoDB dedup so cross-source repeats are eliminated.
 log "Running supplemental topic searches..."
 SUPPL_TSV=$(pull_search_supplements)
-SUPPL_COUNT=$(echo "$SUPPL_TSV" | grep -c '.' || echo 0)
+SUPPL_COUNT=$(echo "$SUPPL_TSV" | grep -c '.' || true)
+
+# If EVERY search failed, bird is likely broken (expired cookies, API change)
+# — alert once instead of silently degrading to a For-You-only digest forever.
+read -r SUPPL_FAILED SUPPL_RAN 2>/dev/null < "$DIGEST_DIR/.suppl_status" || { SUPPL_FAILED=0; SUPPL_RAN=0; }
+if [ "$SUPPL_RAN" -gt 0 ] && [ "$SUPPL_FAILED" -eq "$SUPPL_RAN" ]; then
+  alert_discord "⚠️ **x-digest: all $SUPPL_RAN supplemental bird searches failed** — bird CLI may be broken (cookies expired? API change?). Digest continues with For You only."
+fi
 
 if [ "$SUPPL_COUNT" -gt 0 ]; then
   # Merge + cross-source dedup by tid. When a tweet appears in BOTH For You
@@ -413,19 +492,28 @@ for tid in order:
   log "After merging $SUPPL_COUNT supplemental + cross-source dedup: $TOTAL_RAW unique tweets"
 fi
 
-# Dedup against DynamoDB
-FRESH_TSV=""
+# Dedup against DynamoDB — one batch-get per 100 ids instead of a get-item
+# subprocess per tweet (the old loop cost ~70s/run). FRESH file (not a shell
+# var round-tripped through echo -e, which corrupted tweets containing
+# literal \n or \t sequences).
+FRESH_FILE=$(mktemp)
+SEEN_FILE=$(mktemp)
+trap 'rm -f "$FRESH_FILE" "$SEEN_FILE"' EXIT
+
+printf '%s\n' "$TWEETS_TSV" | cut -f1 | grep -E '^[0-9]+$' | seen_ids_batch | sort -u > "$SEEN_FILE"
+
 SKIPPED=0
-while IFS=$'\t' read -r tid user name likes rts created text source; do
+while IFS= read -r row; do
+  tid="${row%%$'\t'*}"
   [ -z "$tid" ] && continue
-  if is_seen "$tid"; then
+  if grep -qxF "$tid" "$SEEN_FILE"; then
     SKIPPED=$((SKIPPED + 1))
   else
-    FRESH_TSV="${FRESH_TSV}${tid}\t${user}\t${name}\t${likes}\t${rts}\t${created}\t${text}\t${source}\n"
+    printf '%s\n' "$row" >> "$FRESH_FILE"
   fi
 done <<< "$TWEETS_TSV"
 
-FRESH_COUNT=$(echo -e "$FRESH_TSV" | grep -c '.' || echo 0)
+FRESH_COUNT=$(grep -c '.' "$FRESH_FILE" || true)
 log "After dedup: $FRESH_COUNT new tweets ($SKIPPED previously seen)"
 
 if [ "$FRESH_COUNT" -eq 0 ]; then
@@ -442,12 +530,12 @@ else
   i=1
   while IFS=$'\t' read -r tid user name likes rts created text source; do
     [ -z "$tid" ] && continue
-    NUMBERED="${NUMBERED}${i}. @${user} (${likes} likes): ${text}\n"
+    NUMBERED="${NUMBERED}${i}. @${user} (${likes} likes): ${text}"$'\n'
     i=$((i + 1))
-  done <<< "$(echo -e "$FRESH_TSV")"
+  done < "$FRESH_FILE"
 
   log "Scoring $FRESH_COUNT tweets via kiro-cli..."
-  SCORES=$(score_tweets "$(echo -e "$NUMBERED")")
+  SCORES=$(score_tweets "$NUMBERED")
 
   if [ -z "$SCORES" ]; then
     # Fail-closed: don't flood Discord with unscored tweets.
@@ -455,6 +543,17 @@ else
 No digest sent. Raw tweets in \`/tmp/x-digest/digest-${TODAY}.md\` on EC2.
 Tweets are NOT marked seen — they will be re-evaluated next run."
     log "FATAL: LLM scoring returned empty — aborting without marking tweets seen"
+    exit 1
+  fi
+
+  # Validate score-array length. A truncated/misaligned response silently
+  # assigns scores to the WRONG tweets (and the mis-scored ones get marked
+  # seen — permanently lost). Fail closed instead, same as empty scores.
+  SCORE_COUNT=$(echo "$SCORES" | jq 'length' 2>/dev/null || echo 0)
+  if [ "$SCORE_COUNT" -ne "$FRESH_COUNT" ]; then
+    alert_discord "⚠️ **x-digest scoring misaligned** — kiro-cli returned $SCORE_COUNT scores for $FRESH_COUNT tweets.
+No digest sent; tweets NOT marked seen — they will be re-evaluated next run."
+    log "FATAL: score count ($SCORE_COUNT) != tweet count ($FRESH_COUNT) — aborting without marking tweets seen"
     exit 1
   fi
 
@@ -487,15 +586,19 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
   MARK_FILE=$(mktemp)
   SOURCE_TALLY=$(mktemp)
   INCLUDED=0
-  i=0
-  while IFS=$'\t' read -r tid user name likes rts created text source; do
+
+  # Annotate each row with its score+topic (paste is safe: SCORE_COUNT was
+  # validated == FRESH_COUNT above), then render best-first. Feed order buried
+  # the 9/10s mid-scroll; sorted output puts the best content on top.
+  SCORED_FILE=$(mktemp)
+  # NOTE: empty TSV fields get SWALLOWED by bash `read` (tab is IFS whitespace,
+  # consecutive tabs collapse) — an empty gist shifted every later column left.
+  # Emit "-" as the empty-gist sentinel and map it back to "" in the loop.
+  paste <(echo "$SCORES" | jq -r '.[] | [(.score // 0), (.topic // "other"), (.lang // "en"), ((.gist // "") | if . == "" then "-" else . end)] | @tsv') "$FRESH_FILE" > "$SCORED_FILE"
+
+  while IFS=$'\t' read -r score topic lang gist tid user name likes rts created text source; do
     [ -z "$tid" ] && continue
-    # New schema: score comes from an object per tweet.
-    score=$(echo "$SCORES" | jq -r ".[$i].score // 0" 2>/dev/null || echo "5")
-    # Topic classification — used for the For You badge so Brandon can see
-    # WHAT the tweet is about, not just where it came from. Supplemental
-    # searches already carry the topic in their source badge.
-    topic=$(echo "$SCORES" | jq -r ".[$i].topic // \"other\"" 2>/dev/null || echo "other")
+    [ "$gist" = "-" ] && gist=""
     # Track source for evaluation breakdown (whether surfaced or not)
     echo "eval:${source:-unknown}" >> "$SOURCE_TALLY"
     if [ "$score" -ge "$EFFECTIVE_THRESHOLD" ] 2>/dev/null; then
@@ -512,9 +615,19 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
       else
         src_line="🎯 \`${source_display}\` search · score ${score}/10"
       fi
+      # Non-English badge — surfaced via the Connect/Kiro substance exception.
+      # Flag it so Brandon expects the auto-translate button before tapping.
+      if [ -n "$lang" ] && [ "$lang" != "en" ]; then
+        src_line="${src_line} · 🌐 ${lang}"
+      fi
       {
         echo "**@${user}** ($name) — ${likes} likes, ${rts} RTs — ${cdt}"
         echo "$src_line"
+        # English gist first for non-English tweets: clicking through costs a
+        # For-You algorithm signal, so Brandon decides from the gist alone.
+        if [ -n "$gist" ]; then
+          echo "> 💬 ${gist}"
+        fi
         echo "${text}"
         echo "https://x.com/${user}/status/${tid}"
         echo ""
@@ -526,8 +639,8 @@ Tweets are NOT marked seen — they will be re-evaluated next run."
       # Still mark low-scoring tweets as seen so they don't reappear
       echo "$tid" >> "$MARK_FILE"
     fi
-    i=$((i + 1))
-  done <<< "$(echo -e "$FRESH_TSV")"
+  done < <(sort -t$'\t' -k1,1nr -k8,8nr "$SCORED_FILE")
+  rm -f "$SCORED_FILE"
 
   # Build source breakdown (top 8 sources by surfaced count, plus evaluated totals)
   EVAL_BREAKDOWN=$(grep '^eval:' "$SOURCE_TALLY" | sed 's/^eval://' | tr '+' '\n' | sort | uniq -c | sort -rn | awk '{printf "%s %d · ", $2, $1}' | sed 's/ · $//')
@@ -556,7 +669,9 @@ fi
 # --- Send to Discord ---
 DISCORD_CHANNEL="${DIGEST_DISCORD_CHANNEL:-1503414103341797406}"
 DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
-if [ -n "$DISCORD_TOKEN" ]; then
+if [ "$DRY_RUN" = "1" ]; then
+  log "DRY_RUN: skipping Discord + email delivery"
+elif [ -n "$DISCORD_TOKEN" ]; then
   chunk=""
   sent=0
   while IFS= read -r line; do
@@ -582,11 +697,13 @@ if [ -n "$DISCORD_TOKEN" ]; then
 fi
 
 # Email digest
-TODAY_LABEL=$(date '+%a %b %d, %Y')
-gog gmail send -a brandon.tyler@gmail.com \
-  --to "brandon.tyler@gmail.com" \
-  --subject "📱 X Digest — $TODAY_LABEL" \
-  --body "$(cat "$DIGEST_FILE")" 2>/dev/null && log "Email sent" || log "Email failed"
+if [ "$DRY_RUN" != "1" ]; then
+  TODAY_LABEL=$(date '+%a %b %d, %Y')
+  gog gmail send -a brandon.tyler@gmail.com \
+    --to "brandon.tyler@gmail.com" \
+    --subject "📱 X Digest — $TODAY_LABEL" \
+    --body "$(cat "$DIGEST_FILE")" 2>/dev/null && log "Email sent" || log "Email failed"
+fi
 
 log "Done. Digest: $DIGEST_FILE"
 cat "$DIGEST_FILE"

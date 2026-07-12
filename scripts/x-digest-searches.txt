@@ -21,27 +21,65 @@ bcherny|from:bcherny min_faves:50|3
 # --- Claude Code / Kiro CLI ---
 claude_code|claude code min_faves:500|5
 kiro_cli|kiro-cli OR "kiro one" min_faves:200|5
+# Official tool-vendor accounts (added 2026-07-12): Brandon's daily toolchain is
+# Kiro + Claude Code + Codex — releases/changelogs shouldn't depend on the algo
+# feed. Keyword-gated to product news; account posts are low-volume anyway.
+tool_official|from:kirodotdev OR from:AnthropicAI OR from:claudeai (Kiro OR Claude OR Code OR release OR update OR launch OR skill OR agent)|4
+
+# --- OpenAI Codex (coding agent / CLI) — added 2026-07-12 per Brandon ---
+# Release/changelog trackers (dedicated accounts, always on-topic).
+codex_releases|from:CodexReleases OR from:Codex_Changelog|3
+# Popular community posts — phrase-anchored to dodge manuscript / Codex
+# Alimentarius / game-"Codex" noise. min_faves:300 keeps it to the popular ones.
+codex_popular|("openai codex" OR "codex cli" OR "codex-cli") min_faves:300|5
 
 # --- Agent skills / SKILL.md ecosystem ---
 agent_skills|SKILL.md OR "agent skill" min_faves:200|5
-skill_announcements|"new skill" OR "skill for" min_faves:300|3
+# skill_announcements REMOVED 2026-07-12: 12 pulled / 0 surfaced over 14 runs —
+# "new skill"/"skill for" pulls generic spam; agent_skills covers the space.
 
-# --- Eval-driven development (Brandon filed openclaw-v3w for this) ---
-evals|deepeval OR "agent eval" OR "eval harness" min_faves:100|5
+# --- Eval-driven development / testing agents (Brandon filed openclaw-v3w;
+#     expanded 2026-07-11 per Brandon: "more of that around testing agents";
+#     widened 2026-07-12 — Brandon is BUILDING an agent-eval framework at work
+#     (DeepEval-style metrics), so this is his active project, not just intel.
+#     Floors lowered 100→50 / 20→10: eval posts are niche, good ones land
+#     at 20-80 likes, the old floors starved the digest's thinnest pipe.) ---
+evals|deepeval OR "agent eval" OR "agent evals" OR "agent evaluation" OR "eval harness" OR "LLM-as-a-judge" OR "LLM as a verifier" OR "agent benchmark" OR "Terminal-Bench" OR "SWE-bench" OR "agent testing" min_faves:50|6
+# Eval / agent-testing authors — teachers + researchers, account+keyword so we
+# pull their eval/testing posts specifically. jackyk02 + Azaliamirh authored the
+# LLM-as-a-Verifier work Brandon flagged (finances-tyf) on 2026-07-11.
+eval_authors|from:HamelHusain OR from:eugeneyan OR from:sh_reya OR from:lateinteraction OR from:jackyk02 OR from:Azaliamirh (eval OR agent OR benchmark OR verifier OR test OR judge OR rubric OR metric) min_faves:10|5
+# Eval-platform principals — what DeepEval-adjacent tools are shipping.
+# ankrgyl=Braintrust founder, arizeai+aparnadhinak=Arize/Phoenix (evals+observability).
+# NOTE: @deepeval + @confident_ai corp accounts verified DEAD 2026-07-12 (0 posts
+# in 30d) — the founders don't post either; DeepEval intel comes via the keyword
+# line above. Re-check quarterly.
+eval_frameworks|from:ankrgyl OR from:arizeai OR from:aparnadhinak (eval OR judge OR metric OR agent OR benchmark OR observability)|4
 
 # --- Loop Engineering / agentic workflows ---
 loop_engineering|"loop engineering" OR "agentic loop" min_faves:50|3
 
-# --- AWS surface area Brandon works on ---
-amazon_connect|"amazon connect" min_faves:50|3
+# --- AWS surface area Brandon works on (ProServe Connect engineer — this is
+#     the DAY JOB block; expanded 2026-07-12) ---
+# Connect is niche: good posts land at 5-20 likes, so NO min_faves — the
+# script-side default floor (3) + LLM filter handle noise. Covers Connect
+# Health, Contact Lens, Q in Connect, Cases, CCaaS moves.
+amazon_connect|"amazon connect" OR "amazon q in connect" OR ("contact lens" (CCaaS OR "contact center" OR agent))|4
+# AWS official firehose, keyword-gated to agentic/Connect/serverless topics so
+# it doesn't flood the merge. Restored 2026-07-12: the For You rewrite dropped
+# v3's official-accounts line — launch news shouldn't depend on the algo feed.
+aws_official|from:awscloud OR from:awsdevelopers OR from:jeffbarr (Connect OR Bedrock OR agent OR AI OR Lambda OR launch OR GA)|4
 bedrock_agentcore|bedrock agentcore OR "agent core" min_faves:50|3
-aws_ai|AWS bedrock OR strands min_faves:200|3
+aws_ai|AWS bedrock OR strands min_faves:100|3
 
 # --- MCP / tool integrations ---
 mcp|"mcp server" OR "mcp tool" min_faves:200|5
 
 # --- Voice / TTS / conversational AI ---
-voice_tts|elevenlabs OR vapi OR "voice agent" min_faves:200|3
+# Rewritten 2026-07-12: old query (elevenlabs OR vapi OR "voice agent"
+# min_faves:200) went 12 pulled / 0 surfaced — pure vendor marketing. Anchor on
+# build/ship substance instead; relevant to Brandon via Connect voice channels.
+voice_tts|("voice agent" OR "voice AI" OR "speech to speech") (built OR building OR shipped OR latency OR pipeline OR benchmark OR open source) min_faves:100|3
 
 # --- AI for productivity (Gmail/Calendar/Drive automation) ---
 ai_productivity|"google workspace" agent OR "gmail" agent min_faves:200|3
