@@ -103,6 +103,7 @@ PDF_RE='https://(s3\.amazonaws\.com/account-media|account-media\.s3\.amazonaws\.
 
 declare -a MATCH_URLS=()      # filtered PDFs (filename contains SERMON_FILENAME_MATCH)
 declare -a MATCH_TITLES=()
+declare -a MATCH_DATES=()     # YYMMDD parsed from each match filename (current-week filter)
 declare -a ALL_URLS=()        # every PDF we found, for the fallback path
 declare -a ALL_TITLES=()
 
@@ -125,11 +126,43 @@ for ap in "${ARTICLE_PATHS[@]}"; do
   ALL_URLS+=("$pdf"); ALL_TITLES+=("$title")
   log "  $ap → $fname"
 
-  # Filter: only keep sermon-notes-*.pdf
+  # Filter: only keep sermon-notes-*.pdf, capturing the MMDDYY date token.
   if [[ "$fname" == *"$SERMON_FILENAME_MATCH"* ]]; then
     MATCH_URLS+=("$pdf"); MATCH_TITLES+=("$title")
+    d=$(echo "$fname" | grep -oP 'sermon-notes-\K[0-9]{6}' | head -1 || true)
+    if [[ -n "$d" ]]; then
+      MATCH_DATES+=("${d:4:2}${d:0:2}${d:2:2}")   # MMDDYY -> YYMMDD for chronological compare
+    else
+      MATCH_DATES+=("")
+    fi
   fi
 done
+
+# Restrict to the CURRENT week only. The this-week page can keep a PRIOR week's
+# companion item linked (e.g. /article/reading-resources still points at last
+# week's sermon-notes-<date>-book-list.pdf) after a new sermon posts. Sermon PDFs
+# are named sermon-notes-<MMDDYY>, so keep only those whose date equals the most
+# recent date among matches: same-week items (sermon + book-list) all print;
+# stale prior-week leftovers are dropped. (Fix 2026-07-12.)
+if (( ${#MATCH_URLS[@]} > 0 )); then
+  latest=""
+  for d in "${MATCH_DATES[@]}"; do
+    [[ -n "$d" ]] || continue
+    if [[ -z "$latest" || "$d" > "$latest" ]]; then latest="$d"; fi
+  done
+  if [[ -n "$latest" ]]; then
+    declare -a CUR_URLS=() CUR_TITLES=()
+    for j in "${!MATCH_URLS[@]}"; do
+      if [[ "${MATCH_DATES[$j]}" == "$latest" ]]; then
+        CUR_URLS+=("${MATCH_URLS[$j]}"); CUR_TITLES+=("${MATCH_TITLES[$j]}")
+      else
+        log "  drop stale prior-week item: $(basename "${MATCH_URLS[$j]}") (older than current week $latest)"
+      fi
+    done
+    MATCH_URLS=("${CUR_URLS[@]}"); MATCH_TITLES=("${CUR_TITLES[@]}")
+    log "Current week 20${latest:0:2}-${latest:2:2}-${latest:4:2} -> ${#MATCH_URLS[@]} item(s) after date filter"
+  fi
+fi
 
 # Decide which set to actually print.
 if (( ${#MATCH_URLS[@]} > 0 )); then
