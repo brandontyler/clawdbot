@@ -71,26 +71,26 @@ log "Searching LinkedIn..."
 LI_SEARCHES=(
   # All searches centered on Denton with a 20-mile radius.
   # 1. Direct teacher-pipeline jobs
-  "https://www.linkedin.com/jobs/search?keywords=paraprofessional+OR+%22instructional+aide%22+OR+%22teaching+assistant%22+OR+%22substitute+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=paraprofessional+OR+%22instructional+aide%22+OR+%22teaching+assistant%22+OR+%22substitute+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
   # 2. After-school / youth program staff
-  "https://www.linkedin.com/jobs/search?keywords=%22after+school%22+OR+%22youth+program%22+OR+%22youth+development%22+OR+%22youth+coordinator%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22after+school%22+OR+%22youth+program%22+OR+%22youth+development%22+OR+%22youth+coordinator%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
   # 3. Big-name youth nonprofits
-  "https://www.linkedin.com/jobs/search?keywords=%22Boys+%26+Girls+Club%22+OR+%22Boys+Girls+Club%22+OR+%22Communities+In+Schools%22+OR+%22Big+Brothers+Big+Sisters%22+OR+%22YMCA%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22Boys+%26+Girls+Club%22+OR+%22Boys+Girls+Club%22+OR+%22Communities+In+Schools%22+OR+%22Big+Brothers+Big+Sisters%22+OR+%22YMCA%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
   # 4. AV / video / media specialist (uses film background) — schools or nonprofits
-  "https://www.linkedin.com/jobs/search?keywords=%22AV+technician%22+OR+%22media+specialist%22+OR+%22video+producer%22+OR+%22video+production%22+%28school+OR+ISD+OR+nonprofit+OR+education%29&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22AV+technician%22+OR+%22media+specialist%22+OR+%22video+producer%22+OR+%22video+production%22+%28school+OR+ISD+OR+nonprofit+OR+education%29&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
   # 5. Tutoring / educational support centers
-  "https://www.linkedin.com/jobs/search?keywords=tutor+OR+%22tutoring%22+OR+%22Sylvan%22+OR+%22Mathnasium%22+OR+%22Kumon%22+OR+%22Varsity+Tutors%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=tutor+OR+%22tutoring%22+OR+%22Sylvan%22+OR+%22Mathnasium%22+OR+%22Kumon%22+OR+%22Varsity+Tutors%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
   # 6. Foster care / foster youth / child welfare / youth advocacy
   #    NOTE: org-name/acronym anchors (CASA, Buckner, ACH Child, Pathways Youth)
   #    returned a near-empty result set on LinkedIn guest search (only ~6 junk
   #    hits, no foster roles ever surfaced — 2026-07-09 audit). Rebuilt around
   #    role/topic terms, which return a full result page for the scorer to filter.
-  "https://www.linkedin.com/jobs/search?keywords=%22foster+care%22+OR+%22foster+youth%22+OR+%22child+welfare%22+OR+%22youth+advocate%22+OR+%22child+advocate%22+OR+%22residential+youth%22+OR+%22juvenile+justice%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22foster+care%22+OR+%22foster+youth%22+OR+%22child+welfare%22+OR+%22youth+advocate%22+OR+%22child+advocate%22+OR+%22residential+youth%22+OR+%22juvenile+justice%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
   # 7. Film/media TEACHING — combines his expertise with his teaching path
-  "https://www.linkedin.com/jobs/search?keywords=%22film+teacher%22+OR+%22video+production+teacher%22+OR+%22digital+media+teacher%22+OR+%22media+arts+teacher%22+OR+%22broadcast+journalism+teacher%22+OR+%22film+instructor%22+OR+%22audio+video+production%22+OR+%22cinema+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22film+teacher%22+OR+%22video+production+teacher%22+OR+%22digital+media+teacher%22+OR+%22media+arts+teacher%22+OR+%22broadcast+journalism+teacher%22+OR+%22film+instructor%22+OR+%22audio+video+production%22+OR+%22cinema+teacher%22&location=Denton%2C+Texas&f_TPR=r604800&distance=45&position=1&pageNum=0"
   # 8. Domestic-violence / women's-shelter / victim-advocacy / crisis nonprofits
   #    (his girlfriend's world — Denton County Friends of the Family, Journey to Dream)
-  "https://www.linkedin.com/jobs/search?keywords=%22domestic+violence%22+OR+%22women%27s+shelter%22+OR+%22victim+advocate%22+OR+%22victim+services%22+OR+%22crisis+intervention%22+OR+%22sexual+assault%22+OR+%22Friends+of+the+Family%22+OR+%22human+trafficking%22+OR+%22Journey+to+Dream%22&location=Denton%2C+Texas&f_TPR=r604800&distance=20&position=1&pageNum=0"
+  "https://www.linkedin.com/jobs/search?keywords=%22domestic+violence%22+OR+%22women%27s+shelter%22+OR+%22victim+advocate%22+OR+%22victim+services%22+OR+%22crisis+intervention%22+OR+%22sexual+assault%22+OR+%22Friends+of+the+Family%22+OR+%22human+trafficking%22+OR+%22Journey+to+Dream%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
 )
 
 for url in "${LI_SEARCHES[@]}"; do
@@ -158,7 +158,12 @@ PROMPT="Filter jobs for NATHAN TYLER (Brandon Tyler's son).
 NATHAN'S BACKGROUND:
 - Long-term goal: become a TEACHER. Planning to enroll at NCTC (North Central
   Texas College) for a teaching degree.
-- Current background: FILM PRODUCTION (worked in film/video for years).
+- Current background: FILM PRODUCTION. Holds an ASSOCIATE'S DEGREE in Film &
+  Production (specializing in film) from KD Conservatory of Film & Dramatic Arts
+  in Dallas, plus hands-on film/video work. This is a real, relevant credential —
+  it makes him a strong fit for CTE / career-technical film & media teaching and
+  industry-track AV/video roles that value production experience + a film credential
+  over a traditional education degree.
 - AGE/GRADE PREFERENCE: wants to work with MIDDLE SCHOOL or HIGH SCHOOL
   students (roughly grades 6-12). Will tolerate UPPER elementary (4th-5th)
   but STRONGLY PREFERS 6-12. EXPLICITLY AVOID: daycare, preschool, pre-K,
@@ -185,14 +190,18 @@ NATHAN'S BACKGROUND:
   adjacent support. These count even though they are not teaching roles.
 - Open to roles that leverage his film/video background (district media specialist,
   school video production, nonprofit communications/comms-coordinator).
-- *** BULLSEYE: TEACHING FILM/MEDIA at secondary level *** — film teacher, video
-  production teacher, digital media teacher, media arts teacher, broadcast
-  journalism teacher, audio-video production (AV/TV) teacher. This combines
-  his teaching career path with his film expertise. Score these 5 when
-  attainable WITHOUT a teaching degree (CTE / industry-track, aide/assistant,
-  substitute, or private/uncertified-OK postings). If it is a fully-certified
-  teacher-of-record film role that requires a degree Nathan lacks, apply the
-  CREDENTIAL REALITY rule above (score 2, note the gap).
+- *** THE HOLY GRAIL / #1 PRIORITY: a role that MIXES his film/production background
+  WITH teaching *** — film teacher, video production teacher, digital media teacher,
+  media arts teacher, broadcast journalism teacher, audio-video production (AV/TV)
+  teacher, film program instructor/sponsor. This is the perfect intersection of his
+  KD Conservatory film degree and his desire to teach — surface these FIRST and rank
+  them highest. Score 5 whenever attainable without a bachelor's-level teaching degree:
+  CTE / career-technical film & media teaching (Texas CTE lets industry pros teach via
+  a work-experience CTE certificate — his film associate's + production experience
+  qualify), plus aide/assistant, substitute, private, or uncertified-OK postings. Only
+  a fully-certified academic teacher-of-record film role that hard-requires a bachelor's
+  + state cert drops to 2-3 per the CREDENTIAL REALITY rule (note the gap) — but even
+  then flag it as a great fit-once-certified.
 - *** EXPLICITLY DECLINED: SPORTS / ATHLETIC roles. *** Nathan is NOT
   interested in sports at all. Filter out any athletic coach, assistant
   coach, head coach, athletic coordinator, sport-specific coach (football,
@@ -203,12 +212,17 @@ NATHAN'S BACKGROUND:
 - *** EXPLICITLY DECLINED: SPECIAL EDUCATION-only roles. *** Nathan has said
   he does not want SPED aide / SPED paraprofessional / behavior tech / autism
   aide positions. Filter these to score 1, regardless of grade level.
-- Location: Denton, TX. MUST be commutable from Denton (~20 mi radius). NO
-  RELOCATION. Acceptable cities: Denton, Krum, Sanger, Aubrey, Pilot Point,
-  Argyle, Lewisville, Flower Mound, Highland Village, Lake Dallas, Hickory
-  Creek, Corinth, Little Elm, The Colony, Northwest ISD, Justin, Roanoke,
-  Trophy Club. AVOID: Frisco (too far), Dallas proper, Fort Worth proper
-  (unless explicitly remote-friendly).
+- Location: centered on Denton, TX. Commutable radius is now ~30-35 mi (widened from
+  20 at Brandon's request). NO RELOCATION. Acceptable cities: Denton, Krum, Sanger,
+  Aubrey, Pilot Point, Argyle, Lewisville, Flower Mound, Highland Village, Lake Dallas,
+  Hickory Creek, Corinth, Little Elm, The Colony, Northwest ISD, Justin, Roanoke, Trophy
+  Club, and now also Frisco, Carrollton, Coppell, Addison, Plano, Grapevine, and north
+  Irving. Score genuinely far spots (35-45 mi) a little lower but do NOT reject outright.
+  *** EXCEPTION for the FILM/MEDIA TEACHING holy grail: extend the radius further — Dallas
+  proper, Richardson, Farmers Branch, and the broader DFW are ACCEPTABLE for film/video/
+  media-teaching roles, since they are rare, high-value, and worth a longer commute (film
+  work is Dallas-centric). Do NOT down-rank a film-teaching role just for being in Dallas.
+  *** Still avoid true relocation / out-of-metro.
 - *** CREDENTIAL REALITY (IMPORTANT): Nathan does NOT have a teaching DEGREE and
   is NOT state-certified — he has not started his NCTC teaching degree yet. Any
   role that requires a completed college / teaching / education degree OR a Texas
