@@ -312,13 +312,14 @@ Brandon wants to see (he's an AWS ProServe engineer on Amazon Connect, currently
 - Kiro CLI best practices — how people are using it, tips, what's new
 - OpenAI Codex (the coding agent/CLI) — releases, changelog, workflows, comparisons with Claude Code. NOT the old Codex model, NOT unrelated "codex" words (games, manuscripts).
 - How people are using AI to solve REAL problems (not hype, actual use cases)
-- Agent skills (SKILL.md files) — what's popular, what are people installing and using
-- Loop Engineering and agentic workflows — autonomous agent loops, agent orchestration patterns
+- Real Estate x AI — HIGH PRIORITY right now: Brandon is preparing a presentation (due this Friday) on how to use AI in real estate and needs inspiration. Surface practical, substantive posts on how agents/brokers actually use AI: listing descriptions, valuations/CMAs, lead-gen, marketing/content, CRM/follow-up, virtual & AI staging, transaction/ops automation, plus notable industry news (Zillow/Redfin AI features, portals, proptech tools). Score substantive RE-AI posts 8+, even at modest engagement. Do NOT score high: generic \"real estate market/bubble/rates\" macro-finance takes, and motivational realtor-hustle posts with no AI substance.
+- Agent skills (SKILL.md files) — TOP INTEREST. New skill releases, what people are building/installing/using, skill-authoring patterns, marketplaces (ClawHub). Score substantive agent-skills posts 8+ and surface these generously.
 - AI for productivity — Gmail/Calendar/Drive/Workspace automation, agentic email/calendar assistants
 - Discord / Slack agent integrations — multi-channel agent platforms, chat-driven agents
 - Voice agents / TTS — ElevenLabs, Vapi, voice-first agent UX
 - What's happening in AI — latest breakthroughs, new tools, what people are excited about
-- MCP servers, tool integrations, agent architectures
+- Agent workflow orchestration & multi-agent systems — how agents are composed, coordinated, and orchestrated (planner/worker patterns, agent handoffs, multi-agent frameworks like LangGraph/CrewAI/Strands). This is a real interest — score good posts here 7-8. Just avoid the \"loop\"-branded niche (see Score LOW).
+- Agent architectures & how agents are built and wired to tools. (MCP is OK when it's genuinely notable/new, but do NOT over-emphasize MCP — skip routine \"here's another MCP server\" posts. Brandon does not want MCP surfaced heavily.)
 - AWS news and services (Amazon Connect, Bedrock, AgentCore, Strands, Lambda, new launches) — Brandon works at AWS
 - SpaceX launches, milestones, engineering achievements
 - Tesla, FSD, robotaxi, Cybercab, Optimus, Boring Company news and progress
@@ -339,6 +340,8 @@ Score LOW (1-3):
 - Retweets without added commentary
 - Courses/giveaways/engagement bait
 - Company drama or stock price speculation
+- \"Loop\"-branded content specifically — \"Loop Engineering\", \"Ralph loop\", \"agentic loops\", self-looping-agent mechanics. It is ONLY the LOOP framing/terminology Brandon wants to avoid. (IMPORTANT: agent workflow orchestration, multi-agent systems, and agent development in general ARE wanted and stay HIGH — do NOT downrank an orchestration/workflow post just because agents run steps; only score low when the post's actual subject is the \"loop\" niche/terminology.)
+- MCP overexposure — routine \"new MCP server\" / \"MCP tutorial\" posts. Not banned, but do not emphasize; only surface MCP when it's genuinely notable.
 
 Score each tweet 1-10. A 10 is something Brandon would stop scrolling to read and maybe act on. A 7 is solid, worth including. Below 7 is noise.
 
@@ -348,13 +351,14 @@ ALSO categorize each tweet into ONE of these topics (use the exact string, lower
 - codex             — OpenAI Codex coding agent/CLI: releases, workflows, comparisons
 - agent_skills      — SKILL.md, agent skills, ClawHub, npx skills add
 - evals             — Agent evaluation & testing, DeepEval, eval harnesses, eval metrics, LLM-as-a-judge/verifier, agent benchmarks (Terminal-Bench/SWE-Bench), rubrics, regression testing
-- agent_loops       — Loop engineering, Ralph loop, autonomous agent loops, agentic workflows
-- mcp               — MCP servers, MCP tools, tool integrations
+- agent_orchestration — Multi-agent systems, agent workflow orchestration, agent frameworks (LangGraph, CrewAI, Strands), planner/worker & handoff patterns
+- mcp               — MCP servers, MCP tools, tool integrations (tag only when MCP is the actual subject)
 - ai_productivity   — Gmail/Calendar/Drive/Workspace AI automation, personal assistants
 - voice_agents      — ElevenLabs, Vapi, voice-first agents, TTS, conversational AI
 - aws               — Amazon Connect, Bedrock, AgentCore, Strands, general AWS AI
 - ai_news           — Model releases (Gemini, GPT, Claude, Llama), industry breakthroughs, research
 - ai_consulting     — AI agencies, freelance, vibe coding, revenue transparency
+- real_estate_ai    — AI in real estate: agent/broker AI use, listing descriptions, valuations/CMA, lead-gen, marketing, virtual/AI staging, proptech, Zillow/Redfin AI features
 - spacex            — SpaceX launches, Starship, Falcon, Dragon, Super Heavy, engineering
 - tesla             — Tesla, FSD, Cybercab, Optimus, Robotaxi, Boring Company, xAI, Neuralink
 - other             — anything not in the list above
@@ -640,6 +644,45 @@ No digest sent; tweets NOT marked seen — they will be re-evaluated next run."
       echo "$tid" >> "$MARK_FILE"
     fi
   done < <(sort -t$'\t' -k1,1nr -k8,8nr "$SCORED_FILE")
+
+  # --- Real Estate × AI topic boost (Brandon actively wants this niche) ---
+  # Root cause of "never a single RE post": RE-AI is low-volume and its posts
+  # (industry news, practitioner tips) tend to score ~6 as bare tweets — solid
+  # for this niche but just under the global 7 gate, so they were filtered every
+  # day. Fix: give RE-sourced posts a slightly lower but still-quality bar and
+  # surface up to RE_MAX of them that the main loop didn't already take.
+  # This is a QUALITY gate, NOT a guarantee: a dry day (nothing >= RE_THRESHOLD)
+  # still yields zero — we never pad the digest with weak (<=5) posts. Keyed off
+  # SOURCE because the model often mistags RE news as other/ai_news.
+  RE_THRESHOLD=6
+  RE_MAX=2
+  re_added=0
+  while IFS=$'\t' read -r score topic lang gist tid user name likes rts created text source; do
+    [ -z "$tid" ] && continue
+    [ "$re_added" -ge "$RE_MAX" ] && break
+    case "$source" in *real_estate_ai*) : ;; *) continue ;; esac
+    # score in [RE_THRESHOLD, EFFECTIVE_THRESHOLD): good-for-niche but not
+    # already surfaced by the main loop (avoids double-render).
+    { [ "$score" -ge "$RE_THRESHOLD" ] && [ "$score" -lt "$EFFECTIVE_THRESHOLD" ]; } 2>/dev/null || continue
+    [ "$gist" = "-" ] && gist=""
+    cdt=$(TZ='America/Chicago' date -d "$created" '+%a %b %d, %l:%M %p CDT' 2>/dev/null || echo "$created")
+    {
+      echo "**@${user}** ($name) — ${likes} likes, ${rts} RTs — ${cdt}"
+      echo "📌 \`Real Estate × AI\` · \`${source}\` · score ${score}/10"
+      if [ -n "$gist" ]; then
+        echo "> 💬 ${gist}"
+      fi
+      echo "${text}"
+      echo "https://x.com/${user}/status/${tid}"
+      echo ""
+    } >> "$DIGEST_FILE"
+    INCLUDED=$((INCLUDED + 1))
+    re_added=$((re_added + 1))
+    grep -qxF "$tid" "$MARK_FILE" || echo "$tid" >> "$MARK_FILE"
+    echo "surfaced:${source:-unknown}" >> "$SOURCE_TALLY"
+    log "RE-AI boost surfaced: @${user} (score ${score}, source ${source})"
+  done < <(sort -t$'\t' -k1,1nr "$SCORED_FILE")
+
   rm -f "$SCORED_FILE"
 
   # Build source breakdown (top 8 sources by surfaced count, plus evaluated totals)

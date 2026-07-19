@@ -33,10 +33,16 @@ codex_releases|from:CodexReleases OR from:Codex_Changelog|3
 # Alimentarius / game-"Codex" noise. min_faves:300 keeps it to the popular ones.
 codex_popular|("openai codex" OR "codex cli" OR "codex-cli") min_faves:300|5
 
-# --- Agent skills / SKILL.md ecosystem ---
-agent_skills|SKILL.md OR "agent skill" min_faves:200|5
-# skill_announcements REMOVED 2026-07-12: 12 pulled / 0 surfaced over 14 runs —
-# "new skill"/"skill for" pulls generic spam; agent_skills covers the space.
+# --- Agent skills / SKILL.md ecosystem (TOP INTEREST — boosted 2026-07-14 per
+#     Brandon: "I want skills to show up more". Floor 200->100, cap 5->8, broader
+#     terms, plus a dedicated skill-authors account line.) ---
+agent_skills|"SKILL.md" OR "agent skill" OR "agent skills" OR "npx skills" OR "claude skill" OR ClawHub min_faves:100|8
+agent_skills_authors|from:obra OR from:nutlope OR from:mattpocock OR from:kepano OR from:nichochar (skill OR SKILL.md OR "npx skills")|4
+
+# --- Agent workflow orchestration / multi-agent (added 2026-07-14 per Brandon:
+#     orchestration IS wanted; it was only the "loop" terminology to avoid.
+#     Query deliberately omits the word "loop".) ---
+agent_orchestration|"multi-agent" OR "multi agent" OR "agent orchestration" OR "agent workflow" (framework OR orchestration OR workflow OR handoff OR planner OR coordinate OR agents) min_faves:100|4
 
 # --- Eval-driven development / testing agents (Brandon filed openclaw-v3w;
 #     expanded 2026-07-11 per Brandon: "more of that around testing agents";
@@ -56,9 +62,6 @@ eval_authors|from:HamelHusain OR from:eugeneyan OR from:sh_reya OR from:lateinte
 # line above. Re-check quarterly.
 eval_frameworks|from:ankrgyl OR from:arizeai OR from:aparnadhinak (eval OR judge OR metric OR agent OR benchmark OR observability)|4
 
-# --- Loop Engineering / agentic workflows ---
-loop_engineering|"loop engineering" OR "agentic loop" min_faves:50|3
-
 # --- AWS surface area Brandon works on (ProServe Connect engineer — this is
 #     the DAY JOB block; expanded 2026-07-12) ---
 # Connect is niche: good posts land at 5-20 likes, so NO min_faves — the
@@ -72,8 +75,9 @@ aws_official|from:awscloud OR from:awsdevelopers OR from:jeffbarr (Connect OR Be
 bedrock_agentcore|bedrock agentcore OR "agent core" min_faves:50|3
 aws_ai|AWS bedrock OR strands min_faves:100|3
 
-# --- MCP / tool integrations ---
-mcp|"mcp server" OR "mcp tool" min_faves:200|5
+# --- MCP / tool integrations (de-emphasized 2026-07-14 per Brandon: "don't
+#     emphasize MCP too much" — floor 200->500, cap 5->2, only the biggest news) ---
+mcp|"mcp server" OR "mcp tool" min_faves:500|2
 
 # --- Voice / TTS / conversational AI ---
 # Rewritten 2026-07-12: old query (elevenlabs OR vapi OR "voice agent"
@@ -83,6 +87,21 @@ voice_tts|("voice agent" OR "voice AI" OR "speech to speech") (built OR building
 
 # --- AI for productivity (Gmail/Calendar/Drive automation) ---
 ai_productivity|"google workspace" agent OR "gmail" agent min_faves:200|3
+
+# --- Real Estate x AI (added 2026-07-15 per Brandon: nothing RE-AI was ever
+#     surfacing because it lived only in the unused x-digest-topics.txt, never
+#     in this file. Brandon has a presentation next Fri on using AI in real
+#     estate and wants inspiration.) Reuses the hand-vetted queries from the
+#     old topics file. Tier 1 = verified voices + portals/media; Tier 2 =
+#     popular practitioner buzz anchored on realtor/agent/broker terms (NOT
+#     bare "real estate", which is a macro-finance magnet). The LLM relevance
+#     filter strips remaining off-topic collisions. ---
+# Tuned 2026-07-18 (Brandon): added alexgroberman (RE + AI Search Optimization/AEO)
+# and recap_david (AI listing->cinematic video) — both verified active + posting
+# RE-AI content in a live pull; the fixed-9 list was missing the practitioner
+# voices actually driving the conversation. Broadened the community line below too.
+real_estate_ai_voices|from:RyanSerhant OR from:tomferry OR from:robhahn OR from:Inman OR from:HousingWire OR from:ByronLazine OR from:TheBrokeAgent OR from:zillow OR from:Redfin OR from:alexgroberman OR from:recap_david (AI OR ChatGPT OR "artificial intelligence" OR automation OR "machine learning")|6
+real_estate_ai_community|(realtor OR "real estate agent" OR "listing agent" OR "real estate broker" OR "real estate marketing" OR "home staging" OR "virtual staging" OR "AI staging" OR "listing description" OR "property video" OR "real estate leads") (AI OR ChatGPT OR "artificial intelligence" OR automation OR "AI agent") min_faves:50 lang:en -filter:replies -filter:retweets -crypto -web3 -giveaway -stock -shares -dividend -bubble|6
 
 # --- SpaceX / Tesla ---
 # Official accounts get their own line (no min_faves) so they can't be crowded
