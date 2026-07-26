@@ -112,14 +112,16 @@ build_sermon_study() {
     echo "Build an original, careful exegetical study of ${passage} using your own resources. Do the real work in the text — don't just summarize a commentary. This is an INDEPENDENT study Brandon reads alongside the preached sermon so he can compare. Include, in order:"
     echo
     echo "1. PASSAGE OVERVIEW — one paragraph: who, where, when in the book's flow."
-    echo "2. WORD WORK — 4-6 key Hebrew or Greek terms/phrases: transliteration, gloss, and why the word choice matters. Note LXX/NT echoes where relevant."
-    echo "3. HISTORICAL & LITERARY CONTEXT."
-    echo "4. STRUCTURE — a clean outline of the passage's movements."
-    echo "5. CROSS-REFERENCES — the most important intertextual links, one line each."
-    echo "6. INTERPRETIVE QUESTIONS — 4-6 good study/discussion questions."
-    echo "7. THEOLOGICAL TAKEAWAY — 2-3 sentences on the enduring point."
+    echo "2. GENRE AND HOW IT SHAPES READING — name the genre and how it should govern the reading (e.g. narrative teaches via plot, characterization, and the narrator's verdicts, not verse-by-verse propositions; an epistle argues; poetry works by imagery/parallelism)."
+    echo "3. WORD WORK — 4-6 key Hebrew or Greek terms/phrases: transliteration, gloss, and why the word choice matters. Note LXX/NT echoes where relevant."
+    echo "4. HISTORICAL & LITERARY CONTEXT."
+    echo "5. STRUCTURE — a clean outline of the passage's movements."
+    echo "6. CROSS-REFERENCES — the most important intertextual links, one line each."
+    echo "7. INTERPRETIVE QUESTIONS — 4-6 good study/discussion questions."
+    echo "8. TEACHING SYNTHESIS — a one-line BIG IDEA (subject + complement, per Haddon Robinson), a FALLEN CONDITION FOCUS (the human condition the text addresses, per Bryan Chapell), and a one-line REDEMPTIVE TRAJECTORY (how the passage points to Christ / the gospel)."
+    echo "9. THEOLOGICAL TAKEAWAY — 2-3 sentences on the enduring point."
     echo
-    echo "FORMAT: plain readable text for a printed 1-2 page study cover sheet. Simple ALL-CAPS or numbered section headers, short paragraphs, hyphen bullets. NO Discord markdown (no ##, no **bold**, no backticks). Aim 600-900 words. Begin your reply DIRECTLY with the study title line — no preamble sentence, no sign-off, no '---' separators. Research/writing only: do not edit files or take any actions."
+    echo "FORMAT: plain readable text for a printed 1-2 page study cover sheet. Simple ALL-CAPS or numbered section headers, short paragraphs, hyphen bullets. NO Discord markdown (no ##, no **bold**, no backticks). Aim 800-1100 words. Begin your reply DIRECTLY with the study title line — no preamble sentence, no sign-off, no '---' separators. Research/writing only: do not edit files or take any actions."
   } > "$qfile"
 
   log "  study: asking #sermon to build a study of '${passage}' (waiting up to 600s)..." 1>&2
