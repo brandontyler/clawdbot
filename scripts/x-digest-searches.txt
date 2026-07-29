@@ -79,11 +79,15 @@ aws_ai|AWS bedrock OR strands min_faves:100|3
 #     emphasize MCP too much" — floor 200->500, cap 5->2, only the biggest news) ---
 mcp|"mcp server" OR "mcp tool" min_faves:500|2
 
-# --- Voice / TTS / conversational AI ---
-# Rewritten 2026-07-12: old query (elevenlabs OR vapi OR "voice agent"
-# min_faves:200) went 12 pulled / 0 surfaced — pure vendor marketing. Anchor on
-# build/ship substance instead; relevant to Brandon via Connect voice channels.
-voice_tts|("voice agent" OR "voice AI" OR "speech to speech") (built OR building OR shipped OR latency OR pipeline OR benchmark OR open source) min_faves:100|3
+# --- Voice agents (broadened 2026-07-29 per Brandon: "latest and greatest in
+#     voice agents" — TTS is just one slice). Leads with the voice-agent concept
+#     + current players/frameworks (Vapi, LiveKit, Pipecat, Retell, Cartesia,
+#     OpenAI Realtime API), gated by a light news/substance clause so it catches
+#     launches/demos/breakthroughs without flooding on vendor marketing. The LLM
+#     relevance filter + scoring prompt gate topicality. (Prior 2026-07-12 note:
+#     the old "elevenlabs OR vapi OR voice agent" min_faves:200 query pulled pure
+#     marketing, 0 surfaced — hence the substance clause is kept, just wider.) ---
+voice_agents|("voice agent" OR "voice agents" OR "voice AI" OR "conversational AI" OR "speech-to-speech" OR "realtime voice" OR "voice assistant" OR Vapi OR LiveKit OR Pipecat OR Retell OR Cartesia OR "Realtime API") (launch OR release OR shipped OR built OR building OR demo OR framework OR latency OR benchmark OR "open source" OR update) min_faves:75 lang:en -filter:replies -filter:retweets|5
 
 # --- AI for productivity (Gmail/Calendar/Drive automation) ---
 ai_productivity|"google workspace" agent OR "gmail" agent min_faves:200|3
@@ -111,4 +115,20 @@ tesla_official|from:Tesla|5
 # Topic-only catches viral 3rd-party posts (Starship updates, Cybercab leaks, FSD demos).
 spacex_topics|starship OR "raptor engine" OR "super heavy" min_faves:1000|3
 tesla_topics|cybercab OR optimus OR robotaxi OR FSD min_faves:1000|3
+# --- Tesla CYBERCAB (added 2026-07-27 per Brandon: wants to BUY one, needs to
+#     know when it's coming out — surface ALL Cybercab news generously). Three
+#     lines: (1) broad Cybercab pull with a LOW floor + high cap so even
+#     modest-engagement product news surfaces (the LLM filter scores Cybercab
+#     9+, so downstream gating handles noise); (2) timing/availability-anchored
+#     query at an even lower floor to catch early release-date / pricing /
+#     ordering signals; (3) @SawyerMerritt (breaking Tesla news) keyword-gated
+#     to Cybercab. ---
+cybercab_news|cybercab OR "cyber cab" min_faves:50|8
+cybercab_timing|(cybercab OR "cyber cab" OR robotaxi) (launch OR release OR "coming out" OR "on sale" OR order OR reserve OR reservation OR delivery OR deliveries OR production OR price OR pricing OR unveil OR "release date" OR available OR availability OR 2026 OR 2027) min_faves:20|6
+cybercab_sawyer|from:SawyerMerritt (cybercab OR "cyber cab" OR robotaxi) min_faves:100|4
+# @nymbusjp (Genma_Jp) — added 2026-07-29 per Brandon: substantive, data-driven
+# Robotaxi/Cybercab trajectory analysis (fleet-scaling models off Tesla earnings
+# numbers). His value is the occasional deep thread, not the daily reply debates
+# — min_faves:50 catches the analysis and skips the low-engagement reply noise.
+cybercab_nymbus|from:nymbusjp min_faves:50|3
 elonmusk_top|from:elonmusk min_faves:10000|2

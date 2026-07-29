@@ -316,13 +316,14 @@ Brandon wants to see (he's an AWS ProServe engineer on Amazon Connect, currently
 - Agent skills (SKILL.md files) — TOP INTEREST. New skill releases, what people are building/installing/using, skill-authoring patterns, marketplaces (ClawHub). Score substantive agent-skills posts 8+ and surface these generously.
 - AI for productivity — Gmail/Calendar/Drive/Workspace automation, agentic email/calendar assistants
 - Discord / Slack agent integrations — multi-channel agent platforms, chat-driven agents
-- Voice agents / TTS — ElevenLabs, Vapi, voice-first agent UX
+- Voice agents — TOP INTEREST: the latest and greatest in AI voice agents. Realtime/conversational voice, speech-to-speech, new frameworks & tools (Vapi, LiveKit, Pipecat, Retell, Cartesia, Deepgram, OpenAI Realtime API, ElevenLabs Agents), latency/quality breakthroughs, notable demos, launches, and how people are building voice agents. TTS is just ONE slice of this — surface it, but don't over-index on pure TTS or vendor marketing. Score substantive voice-agent posts 8+.
 - What's happening in AI — latest breakthroughs, new tools, what people are excited about
 - Agent workflow orchestration & multi-agent systems — how agents are composed, coordinated, and orchestrated (planner/worker patterns, agent handoffs, multi-agent frameworks like LangGraph/CrewAI/Strands). This is a real interest — score good posts here 7-8. Just avoid the \"loop\"-branded niche (see Score LOW).
 - Agent architectures & how agents are built and wired to tools. (MCP is OK when it's genuinely notable/new, but do NOT over-emphasize MCP — skip routine \"here's another MCP server\" posts. Brandon does not want MCP surfaced heavily.)
 - AWS news and services (Amazon Connect, Bedrock, AgentCore, Strands, Lambda, new launches) — Brandon works at AWS
 - SpaceX launches, milestones, engineering achievements
 - Tesla, FSD, robotaxi, Cybercab, Optimus, Boring Company news and progress
+- Tesla CYBERCAB — TOP PRIORITY right now: Brandon wants to BUY a Cybercab and needs to know WHEN it will be available. Score 9+ on ANY substantive Cybercab news — production timeline, launch/release date, pricing, ordering/reservations, delivery estimates, unveilings, and the robotaxi rollout or regulatory approvals that gate its availability. Surface these generously even at modest engagement, and especially prioritize anything about timing ("when", release date, production ramp, deliveries).
 - @Tesla (corporate account) and @SpaceX (corporate account) — ALWAYS score 8+ when posting about their actual products: Cybercab, Optimus, Starship, Falcon, Dragon, FSD updates, factory news, production milestones, engineering tests, launch events. These are official company announcements — score them HIGH even if engagement is modest. Skip only obvious marketing fluff (e.g., generic 'thanks to our customers' or holiday greetings).
 - @elonmusk — ONLY include when it's about SpaceX, Tesla, Neuralink, xAI, Boring Company, or engineering. Skip political takes, culture war, government/DOGE commentary, and casual replies.
 - @SawyerMerritt — breaking Tesla/SpaceX news. Only his biggest posts (he posts a lot too).
@@ -354,7 +355,7 @@ ALSO categorize each tweet into ONE of these topics (use the exact string, lower
 - agent_orchestration — Multi-agent systems, agent workflow orchestration, agent frameworks (LangGraph, CrewAI, Strands), planner/worker & handoff patterns
 - mcp               — MCP servers, MCP tools, tool integrations (tag only when MCP is the actual subject)
 - ai_productivity   — Gmail/Calendar/Drive/Workspace AI automation, personal assistants
-- voice_agents      — ElevenLabs, Vapi, voice-first agents, TTS, conversational AI
+- voice_agents      — Voice agents, realtime/conversational voice AI, speech-to-speech, voice frameworks (Vapi/LiveKit/Pipecat/Retell/Cartesia/Deepgram, OpenAI Realtime API), TTS, voice-first UX
 - aws               — Amazon Connect, Bedrock, AgentCore, Strands, general AWS AI
 - ai_news           — Model releases (Gemini, GPT, Claude, Llama), industry breakthroughs, research
 - ai_consulting     — AI agencies, freelance, vibe coding, revenue transparency
