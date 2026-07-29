@@ -23,6 +23,7 @@ import gzip
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.parse
 import urllib.request
@@ -45,6 +46,15 @@ def _load_discord_token() -> str:
         return ""
 
 DISCORD_TOKEN = _load_discord_token()
+
+# ─── SMS delivery (primary — Brandon reads texts, not Discord in the AM) ──
+# Toll-free origination number lives in the corp Isengard account (035405309532).
+# On EC2 the instance role resolves there, so we OMIT --profile. Never pass
+# --profile personal for SMS: that profile points at account 870152575626 where
+# the toll-free number does not exist (aws-sms skill note).
+SMS_TO = os.environ.get("COMMUTE_SMS_TO", "+19405363405")          # Brandon
+SMS_ORIGINATION = os.environ.get("COMMUTE_SMS_FROM", "+18778495397")  # registered TFN
+SMS_ENABLED = os.environ.get("COMMUTE_SMS", "1") != "0"
 
 DRIVETEXAS_API = "https://dtx-e-cdn.maplarge.com/Api/ProcessDirect"
 TXDOT_PHASE2_URL = "https://www.txdot.gov/35ephase2/road-closures.html"
@@ -100,27 +110,10 @@ def dtx_query(table: str, where_clauses: list, take: int = 200) -> dict:
 
 
 # ─── Google Maps live travel time scrape ────────────────────────────────
-def fetch_live_travel_time(origin: str, destination: str, depart_unix: int | None = None) -> dict:
-    """Scrape drive-time from Google Maps via dev-browser. Returns {minutes, distance_mi, alt_minutes, raw}.
-    If depart_unix is provided, uses depart-at forecast (Google's historical-traffic prediction for that time).
-    Otherwise uses 'now' which is current live traffic."""
+def _scrape_travel_time_once(js: str) -> dict:
+    """One dev-browser scrape attempt. Returns {minutes, alt_minutes, distance_mi}
+    on success or {"error": ...} on failure. The retry loop lives in the caller."""
     import subprocess
-    if depart_unix:
-        url = (f"https://www.google.com/maps?saddr={urllib.parse.quote(origin)}"
-               f"&daddr={urllib.parse.quote(destination)}&dirflg=d&ttype=dep&t={depart_unix}")
-    else:
-        url = f"https://www.google.com/maps/dir/{urllib.parse.quote(origin)}/{urllib.parse.quote(destination)}/"
-    js = f'''
-const page = await browser.newPage();
-await page.setViewportSize({{ width: 1280, height: 900 }});
-await page.goto({json.dumps(url)}, {{ waitUntil: "domcontentloaded", timeout: 30000 }});
-await page.waitForTimeout(13000);
-const text = await page.evaluate(() => document.body.innerText);
-const ranges = text.match(/\\d+\\s*hr\\s*\\d+\\s*min|\\d+\\s*min/g) || [];
-const dist = text.match(/\\d+(\\.\\d+)?\\s*mi/g) || [];
-console.log(JSON.stringify({{times: ranges.slice(0, 6), dist: dist.slice(0, 3)}}));
-await page.close();
-'''
     try:
         result = subprocess.run(
             ["dev-browser", "--headless", "--timeout", "60"],
@@ -152,6 +145,44 @@ await page.close();
         return {"error": "no-output", "stderr": result.stderr[:200]}
     except Exception as e:
         return {"error": str(e)[:200]}
+
+
+def fetch_live_travel_time(origin: str, destination: str, depart_unix: int | None = None, attempts: int = 2) -> dict:
+    """Scrape drive-time from Google Maps via dev-browser. Returns {minutes, distance_mi, alt_minutes, raw}.
+    If depart_unix is provided, uses depart-at forecast (Google's historical-traffic prediction for that time).
+    Otherwise uses 'now' which is current live traffic.
+
+    Retries up to `attempts` times (default 2) before giving up: a single
+    dev-browser/Google hiccup otherwise blanks the digest's most important
+    line (the drive time renders as 'n/a'). A short pause separates attempts.
+    """
+    import time
+    if depart_unix:
+        url = (f"https://www.google.com/maps?saddr={urllib.parse.quote(origin)}"
+               f"&daddr={urllib.parse.quote(destination)}&dirflg=d&ttype=dep&t={depart_unix}")
+    else:
+        url = f"https://www.google.com/maps/dir/{urllib.parse.quote(origin)}/{urllib.parse.quote(destination)}/"
+    js = f'''
+const page = await browser.newPage();
+await page.setViewportSize({{ width: 1280, height: 900 }});
+await page.goto({json.dumps(url)}, {{ waitUntil: "domcontentloaded", timeout: 30000 }});
+await page.waitForTimeout(13000);
+const text = await page.evaluate(() => document.body.innerText);
+const ranges = text.match(/\\d+\\s*hr\\s*\\d+\\s*min|\\d+\\s*min/g) || [];
+const dist = text.match(/\\d+(\\.\\d+)?\\s*mi/g) || [];
+console.log(JSON.stringify({{times: ranges.slice(0, 6), dist: dist.slice(0, 3)}}));
+await page.close();
+'''
+    last = {"error": "no-attempts"}
+    for attempt in range(1, attempts + 1):
+        last = _scrape_travel_time_once(js)
+        if "error" not in last:
+            return last
+        if attempt < attempts:
+            print(f"  [warn] travel-time scrape attempt {attempt}/{attempts} failed "
+                  f"({last.get('error')}) — retrying", file=sys.stderr)
+            time.sleep(3)
+    return last
 
 
 def fetch_route_conditions(table: str, route: str, county: int) -> list[dict]:
@@ -284,8 +315,8 @@ def is_daytime_construction(row: dict, now: datetime) -> bool:
 # Anything else (other freeways, other directions) is NOT relevant and
 # must be filtered out — the Kiro CLI Qwen3 model handles this precisely.
 
-TRAFFIC_SPOTTER_ACCOUNTS = ["chipwfox4", "krldtraffic"]
-SPOTTER_WINDOW_HOURS = 2  # how far back to look
+TRAFFIC_SPOTTER_ACCOUNTS = ["chipwfox4", "DFWscanner", "krldtraffic"]
+SPOTTER_WINDOW_HOURS = 3  # how far back to look (3h: catches a midday wreck still snarling the PM commute; LLM drops 'cleared' items >30min old)
 SPOTTER_BIRD_TIMEOUT = 30  # seconds
 SPOTTER_KIRO_TIMEOUT = 90  # seconds — matches other scripts (nathan-jobs, x-bookmark-review, email-triage)
 DENTON_SCANNER_URL = "https://www.facebook.com/Denton.Scanner"  # public FB page; unauth scrape returns only the latest post (still high-value)
@@ -570,6 +601,43 @@ def fetch_traffic_spotters(now: datetime) -> tuple[str, list[dict]]:
 
 
 # ─── Format the briefing ─────────────────────────────────────────────────
+def gather_route_conditions(now: datetime):
+    """Fetch, dedupe, filter, and split DriveTexas conditions for Brandon's route.
+
+    Returns (incidents, construction) where incidents are wrecks/closures/floods
+    (type codes A/D/X/F/I) and construction is daytime-only lane work.
+    Shared by both the Discord briefing and the SMS briefing.
+    """
+    all_rows = []
+    for table in ("conditionsLine", "futureConditionsLine", "conditionsPoint"):
+        for route in (ROUTE_IH35E, ROUTE_IH635, ROUTE_FM1171):
+            for county in (DALLAS_CO, DENTON_CO):
+                try:
+                    rows = fetch_route_conditions(table, route, county)
+                    for r in rows:
+                        r["_table"] = table
+                    all_rows.extend(rows)
+                except Exception as e:
+                    print(f"  [warn] dtx {table}/{route}/{county}: {e}", file=sys.stderr)
+
+    # Dedupe
+    seen = set()
+    unique = []
+    for r in all_rows:
+        key = (r.get("CONDSTARTTS"), r.get("CONDLMTFROMDSCR"), (r.get("CONDDSCR") or "")[:50])
+        if key in seen: continue
+        seen.add(key)
+        if is_brandons_route(r) and is_relevant_window(r, now):
+            unique.append(r)
+    unique.sort(key=lambda r: (r.get("CONDSTARTTS") or 0))
+
+    # Split: real incidents (A/D/X/F = wrecks/closures/floods) vs construction (C/M)
+    incident_codes = {"A", "D", "X", "F", "I"}
+    incidents = [r for r in unique if r.get("CNSTRNTTYPECD") in incident_codes]
+    construction = [r for r in unique if r.get("CNSTRNTTYPECD") not in incident_codes and is_daytime_construction(r, now)]
+    return incidents, construction
+
+
 def build_briefing(now: datetime) -> str:
     """Compose the Discord message body."""
     out = []
@@ -594,11 +662,15 @@ def build_briefing(now: datetime) -> str:
         if now > in_dt + timedelta(hours=1): in_dt += timedelta(days=1)
         out_unix = int(out_dt.timestamp())
         in_unix = int(in_dt.timestamp())
+        # Only forecast the leg that's actually upcoming when this briefing runs.
+        # A 3:15pm departure computed at 5:30am is just Google's historical average,
+        # not live conditions. AM run → AM leg; PM run (~2:45pm) → PM leg, each ~30min
+        # before departure so the depart-at forecast reflects near-live traffic.
         # Baselines: 6am outbound is light traffic (~35 min). 3:15pm inbound is pre-rush (~40 min).
-        legs = [
-            ("Denton → Galleria @ 6:00 AM", "Denton, TX", "Galleria Dallas, TX", out_unix, 35),
-            ("Galleria → Denton @ 3:15 PM", "Galleria Dallas, TX", "Denton, TX", in_unix, 40),
-        ]
+        if now.hour < 12:
+            legs = [("Denton → Galleria @ 6:00 AM", "Denton, TX", "Galleria Dallas, TX", out_unix, 35)]
+        else:
+            legs = [("Galleria → Denton @ 3:15 PM", "Galleria Dallas, TX", "Denton, TX", in_unix, 40)]
         for label, origin, dest, ts, baseline in legs:
             leg = fetch_live_travel_time(origin, dest, depart_unix=ts)
             if "error" in leg:
@@ -632,33 +704,7 @@ def build_briefing(now: datetime) -> str:
     out.append("")
 
     # ── Section 2: Live incidents on route (last 6h, all type codes) ──
-    all_rows = []
-    for table in ("conditionsLine", "futureConditionsLine", "conditionsPoint"):
-        for route in (ROUTE_IH35E, ROUTE_IH635, ROUTE_FM1171):
-            for county in (DALLAS_CO, DENTON_CO):
-                try:
-                    rows = fetch_route_conditions(table, route, county)
-                    for r in rows:
-                        r["_table"] = table
-                    all_rows.extend(rows)
-                except Exception as e:
-                    print(f"  [warn] dtx {table}/{route}/{county}: {e}", file=sys.stderr)
-
-    # Dedupe
-    seen = set()
-    unique = []
-    for r in all_rows:
-        key = (r.get("CONDSTARTTS"), r.get("CONDLMTFROMDSCR"), (r.get("CONDDSCR") or "")[:50])
-        if key in seen: continue
-        seen.add(key)
-        if is_brandons_route(r) and is_relevant_window(r, now):
-            unique.append(r)
-    unique.sort(key=lambda r: (r.get("CONDSTARTTS") or 0))
-
-    # Split: real incidents (A/D/X/F = wrecks/closures/floods) vs construction (C/M)
-    incident_codes = {"A", "D", "X", "F", "I"}
-    incidents = [r for r in unique if r.get("CNSTRNTTYPECD") in incident_codes]
-    construction = [r for r in unique if r.get("CNSTRNTTYPECD") not in incident_codes and is_daytime_construction(r, now)]
+    incidents, construction = gather_route_conditions(now)
 
     if incidents:
         out.append(f"**🚨 Active incidents on your route ({len(incidents)})**")
@@ -677,7 +723,7 @@ def build_briefing(now: datetime) -> str:
     out.append("")
 
     # ── Section 2.5: X/Twitter traffic-spotter reports (last 2h) ──
-    # Sources: @chipwfox4 (Fox 4 Dallas), @krldtraffic (KRLD 1080), Denton Scanner FB.
+    # Sources: @chipwfox4 (Fox 4 Dallas), @DFWscanner (DFW Scanner), @krldtraffic (KRLD 1080), Denton Scanner FB.
     # LLM-filtered to Brandon's actual SB/EB (AM) or WB/NB (PM) corridor,
     # plus major opposite-direction incidents (full closures, hazmat, fatal, etc).
     spot_direction, spotter_incidents = fetch_traffic_spotters(now)
@@ -707,7 +753,7 @@ def build_briefing(now: datetime) -> str:
             out.append(head)
             out.append(f"   🛣️ {lanes}")
             if summary: out.append(f"   _{summary}_")
-        out.append(f"_Sources: @chipwfox4 · @krldtraffic · Denton Scanner · classified by kiro-cli_")
+        out.append(f"_Sources: @chipwfox4 · @DFWscanner · @krldtraffic · Denton Scanner · classified by kiro-cli_")
         out.append("")
 
     # ── Section 3: Daytime construction (overnight stuff filtered out) ──
@@ -763,16 +809,147 @@ def post_to_discord(message: str) -> dict:
     return {"chunks": len(chunks), "results": results}
 
 
+# ─── SMS briefing (compact, plain text) ──────────────────────────────────
+def build_sms_briefing(now: datetime) -> str:
+    """Compose a short, text-message-friendly briefing.
+
+    Reuses the same data sources as build_briefing() but formats tight:
+    travel times + any real incidents + daytime construction, no markdown.
+    """
+    lines = []
+    lines.append(f"Commute {now.strftime('%a %-m/%d')}")
+
+    weekday_idx = now.weekday()
+    is_commute_day = weekday_idx in (0, 1, 2)  # Mon/Tue/Wed
+
+    if is_commute_day:
+        out_dt = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        in_dt = now.replace(hour=15, minute=15, second=0, microsecond=0)
+        if now > out_dt + timedelta(hours=1): out_dt += timedelta(days=1)
+        if now > in_dt + timedelta(hours=1): in_dt += timedelta(days=1)
+        # Only forecast the leg that's actually upcoming when this briefing runs.
+        # A 3:15pm departure computed at 5:30am is just Google's historical average,
+        # not live conditions — useless. So the AM run (5:30am) covers only the AM
+        # leg (~30min before the 6am departure) and the PM run (~2:45pm) covers only
+        # the PM leg (~30min before the 3:15pm departure), when the forecast is near-live.
+        if now.hour < 12:
+            legs = [("AM Denton>Galleria 6:00a", "Denton, TX", "Galleria Dallas, TX", int(out_dt.timestamp()), 35)]
+        else:
+            legs = [("PM Galleria>Denton 3:15p", "Galleria Dallas, TX", "Denton, TX", int(in_dt.timestamp()), 40)]
+        for label, origin, dest, ts, baseline in legs:
+            leg = fetch_live_travel_time(origin, dest, depart_unix=ts)
+            if "error" in leg:
+                lines.append(f"{label}: n/a")
+                continue
+            mins = leg["minutes"]
+            delta = mins - baseline
+            if delta >= 10: tag = f" (+{delta} HEAVY)"
+            elif delta >= 5: tag = f" (+{delta})"
+            elif delta <= -2: tag = f" (-{-delta})"
+            else: tag = ""
+            lines.append(f"{label}: {mins}m{tag}")
+    else:
+        lines.append(f"{now.strftime('%A')} = no scheduled commute")
+
+    # Incidents + construction (same gather as the full briefing)
+    incidents, construction = gather_route_conditions(now)
+
+    if incidents:
+        lines.append(f"INCIDENTS ({len(incidents)}):")
+        for r in incidents[:3]:
+            route_name = r["RTENM"].replace("IH00", "I-").replace("FM", "FM-")
+            direction = r.get("TRVLDRCTCD", "")
+            from_loc = (r.get("CONDLMTFROMDSCR") or "")[:45]
+            lines.append(f"- {route_name} {direction} @ {from_loc}".rstrip())
+    else:
+        lines.append("Incidents: none")
+
+    # Real-time spotter wrecks (X: @chipwfox4 / @DFWscanner / @krldtraffic + Denton Scanner FB),
+    # LLM-filtered to Brandon's actual direction. This real-time crash layer is the point of the tool.
+    _spot_dir, spotter_incidents = fetch_traffic_spotters(now)
+    if spotter_incidents:
+        lines.append(f"SPOTTER WRECKS ({len(spotter_incidents)}):")
+        for inc in spotter_incidents[:3]:
+            hwy = (inc.get("hwy") or "?").strip()
+            loc = (inc.get("loc") or "").strip()
+            itype = (inc.get("type") or "incident").strip()
+            opp = " [opp dir]" if inc.get("opposite_direction") else ""
+            seg = f"{hwy} {loc}".strip()
+            lines.append(f"- {seg}: {itype}{opp}".rstrip())
+    else:
+        lines.append("Spotters: clear")
+
+    if construction:
+        lines.append(f"Daytime construction ({len(construction)}):")
+        for r in construction[:2]:
+            route_name = r["RTENM"].replace("IH00", "I-").replace("FM", "FM-")
+            direction = r.get("TRVLDRCTCD", "")
+            from_loc = (r.get("CONDLMTFROMDSCR") or "")[:45]
+            lines.append(f"- {route_name} {direction} @ {from_loc}".rstrip())
+    else:
+        lines.append("Construction: none")
+
+    return "\n".join(lines)
+
+
+def send_sms(text: str) -> dict:
+    """Send the briefing via AWS End User Messaging (pinpoint-sms-voice-v2).
+
+    Omit --profile so the EC2 instance role (corp Isengard account, where the
+    toll-free number is registered) is used. Never --profile personal here.
+    """
+    cmd = [
+        "aws", "pinpoint-sms-voice-v2", "send-text-message",
+        "--destination-phone-number", SMS_TO,
+        "--origination-identity", SMS_ORIGINATION,
+        "--message-body", text,
+        "--message-type", "TRANSACTIONAL",
+        "--configuration-set-name", "sms-default",
+        "--region", "us-east-1",
+        "--output", "json",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return {"ok": False, "error": f"exec failed: {e}"}
+    if r.returncode != 0:
+        return {"ok": False, "error": (r.stderr or r.stdout).strip()[:400]}
+    try:
+        out = json.loads(r.stdout or "{}")
+    except Exception:
+        out = {"raw": (r.stdout or "")[:200]}
+    return {"ok": True, "result": out}
+
+
 # ─── Main ────────────────────────────────────────────────────────────────
 def main():
     now = datetime.now(tz=CDT)
-    msg = build_briefing(now)
+
     if "--dry-run" in sys.argv:
-        print(msg)
+        # Show both so we can eyeball formatting.
+        print("=== SMS ===")
+        print(build_sms_briefing(now))
+        if "--discord" in sys.argv:
+            print("\n=== DISCORD ===")
+            print(build_briefing(now))
         return 0
-    res = post_to_discord(msg)
-    print(json.dumps(res, indent=2))
-    return 0
+
+    result = {}
+
+    # Primary delivery: SMS (Brandon reads texts in the morning, not Discord).
+    if SMS_ENABLED:
+        sms = build_sms_briefing(now)
+        result["sms"] = send_sms(sms)
+
+    # Optional Discord archive (off by default; COMMUTE_ALSO_DISCORD=1 to enable).
+    if os.environ.get("COMMUTE_ALSO_DISCORD") == "1":
+        try:
+            result["discord"] = post_to_discord(build_briefing(now))
+        except Exception as e:
+            result["discord"] = {"ok": False, "error": str(e)}
+
+    print(json.dumps(result, indent=2, default=str))
+    return 0 if (not SMS_ENABLED or result.get("sms", {}).get("ok")) else 1
 
 
 if __name__ == "__main__":

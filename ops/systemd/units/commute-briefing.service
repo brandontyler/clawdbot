@@ -1,5 +1,5 @@
 [Unit]
-Description=Commute Briefing — daily "what's broken on your drive" Discord post
+Description=Commute Briefing — daily "what's broken on your drive" SMS text to Brandon
 
 [Service]
 Type=oneshot
