@@ -600,6 +600,217 @@ def fetch_traffic_spotters(now: datetime) -> tuple[str, list[dict]]:
         return _commute_direction(now), []
 
 
+# ─── HERE Traffic API v7 — real-time north-corridor incident layer ───────
+# The TxDOT DriveTexas feed is effectively construction-only (research bead
+# openclaw-commute-north-coverage-i7x: a 500-row statewide sample carried ZERO
+# type-A accidents), and the X spotters skew to DFW-core/Mid-Cities, blind to
+# the quiet Denton→Corinth→Lewisville stretch. HERE fills that gap: a real
+# crash/closure/jam feed, refreshed ~every 2 min, queried along a CORRIDOR that
+# traces Brandon's actual I-35E ↔ I-635 ↔ DNT route (±HERE_CORRIDOR_RADIUS_M
+# meters), so it isolates the north corridor no human account watches.
+#
+# Auth: needs a HERE API key (free tier ≫ our ~2–6 calls/day). Set it via env
+# HERE_API_KEY, or drop it in ~/.config/commute-briefing/here.env as
+# `HERE_API_KEY=...`. With NO key present, every function here no-ops (returns
+# []) and the briefing runs exactly as before — nothing breaks.
+
+HERE_INCIDENTS_URL = "https://data.traffic.hereapi.com/v7/incidents"
+HERE_CORRIDOR_RADIUS_M = int(os.environ.get("COMMUTE_HERE_RADIUS", "1000"))  # band half-width along the route
+HERE_TIMEOUT = 20  # seconds
+
+# Waypoints tracing Brandon's commute (lat, lng), Denton → I-635 → Dallas North
+# Tollway → Galleria. A generous ±1km corridor tolerates minor waypoint drift
+# while still excluding off-route freeways (I-35W is ~30km west). Tune the
+# radius down once verified against live data if it pulls in parallel arterials.
+HERE_ROUTE_WAYPOINTS = [
+    (33.2148, -97.1331),  # Denton — I-35E @ US-380
+    (33.1600, -97.0600),  # Corinth — near FM2181/Swisher Rd
+    (33.1150, -97.0250),  # Lake Dallas / Hickory Creek
+    (33.0460, -96.9940),  # Lewisville — FM407
+    (32.9900, -96.9600),  # Carrollton — near PGBT
+    (32.9160, -96.9250),  # I-35E @ I-635 (LBJ) junction
+    (32.9250, -96.8700),  # I-635 mid
+    (32.9250, -96.8330),  # I-635 @ Dallas North Tollway
+    (32.9300, -96.8210),  # Galleria
+]
+
+# HERE incident `type` values we treat as real "is my drive screwed" signal.
+# Construction/roadworks is intentionally EXCLUDED — the TxDOT section already
+# covers daytime lane work, and we don't want to double-report it here.
+HERE_INCIDENT_TYPES = {
+    "accident", "congestion", "disabledVehicle", "roadHazard",
+    "laneRestriction", "roadClosure", "plannedEvent",
+}
+HERE_MAJOR_CRITICALITY = {"major", "critical"}
+
+
+def _load_here_api_key() -> str:
+    """HERE API key: env var first, else ~/.config/commute-briefing/here.env."""
+    if os.environ.get("HERE_API_KEY"):
+        return os.environ["HERE_API_KEY"].strip()
+    env_path = os.path.expanduser("~/.config/commute-briefing/here.env")
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "HERE_API_KEY":
+                    return v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        print(f"  [warn] reading here.env failed: {e}", file=sys.stderr)
+    return ""
+
+
+# HERE Flexible Polyline encoding (2D). Spec + reference:
+# https://github.com/heremaps/flexible-polyline — verified against the canonical
+# test vector in the dry-run self-test (commute-briefing.py --test-here).
+_FP_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+_FP_FORMAT_VERSION = 1
+
+
+def _fp_encode_uint(value: int, out: list) -> None:
+    while value >> 5:
+        out.append(_FP_TABLE[(value & 0x1F) | 0x20])
+        value >>= 5
+    out.append(_FP_TABLE[value])
+
+
+def _fp_encode_scaled(value: int, out: list) -> None:
+    negative = value < 0
+    value <<= 1
+    if negative:
+        value = ~value
+    _fp_encode_uint(value, out)
+
+
+def encode_flexible_polyline(coords: list, precision: int = 5) -> str:
+    """Encode [(lat, lng), ...] into a HERE Flexible Polyline string (2D)."""
+    out: list = []
+    _fp_encode_uint(_FP_FORMAT_VERSION, out)
+    header = (0 << 7) | (0 << 4) | precision  # third_dim absent, its precision 0
+    _fp_encode_uint(header, out)
+    factor = 10 ** precision
+    last_lat = last_lng = 0
+    for lat, lng in coords:
+        lat_i = round(lat * factor)
+        lng_i = round(lng * factor)
+        _fp_encode_scaled(lat_i - last_lat, out)
+        _fp_encode_scaled(lng_i - last_lng, out)
+        last_lat, last_lng = lat_i, lng_i
+    return "".join(out)
+
+
+def _parse_iso8601(ts: str):
+    """Parse HERE ISO8601 (e.g. 2021-07-06T10:22:01Z) → aware datetime, or None."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _here_incident_relevant(inc: dict, now: datetime) -> bool:
+    """Keep active/imminent real incidents; drop ended, construction, and
+    multi-month permanents. `inc` is a HERE incidentDetails object."""
+    itype = (inc.get("type") or "").strip()
+    crit = (inc.get("criticality") or "").strip().lower()
+    closed = bool(inc.get("roadClosed"))
+    # Type/criticality gate: real incident type, OR a closure, OR major/critical.
+    if not (itype in HERE_INCIDENT_TYPES or closed or crit in HERE_MAJOR_CRITICALITY):
+        return False
+    start = _parse_iso8601(inc.get("startTime"))
+    end = _parse_iso8601(inc.get("endTime"))
+    # Drop long-term permanents (>60 days) — those are known construction, not news.
+    if start and end and (end - start) > timedelta(days=60):
+        return False
+    # Drop already-ended incidents.
+    if end and end < now:
+        return False
+    # Drop ones starting >24h out.
+    if start and start > now + timedelta(hours=24):
+        return False
+    return True
+
+
+def fetch_here_incidents(now: datetime) -> list:
+    """Query HERE for incidents along Brandon's route corridor. Returns a list of
+    normalized dicts sorted worst-first. Never raises — [] on any failure or when
+    no API key is configured."""
+    api_key = _load_here_api_key()
+    if not api_key:
+        return []
+    try:
+        polyline = encode_flexible_polyline(HERE_ROUTE_WAYPOINTS)
+        params = {
+            "in": f"corridor:{polyline};r={HERE_CORRIDOR_RADIUS_M}",
+            "locationReferencing": "none",
+            "lang": "en-US",
+            "apiKey": api_key,
+        }
+        url = f"{HERE_INCIDENTS_URL}?{urllib.parse.urlencode(params)}"
+        rq = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(rq, timeout=HERE_TIMEOUT) as r:
+            raw = r.read()
+            if r.headers.get("content-encoding") == "gzip":
+                raw = gzip.decompress(raw)
+            payload = json.loads(raw)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read()[:200].decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        print(f"  [warn] HERE incidents HTTP {e.code}: {body}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  [warn] HERE incidents fetch failed: {e}", file=sys.stderr)
+        return []
+
+    out = []
+    seen = set()
+    for item in payload.get("results", []):
+        inc = item.get("incidentDetails") or {}
+        if not _here_incident_relevant(inc, now):
+            continue
+        desc = ((inc.get("summary") or {}).get("value")
+                or (inc.get("description") or {}).get("value") or "").strip()
+        key = (inc.get("id") or desc[:60])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "type": (inc.get("type") or "incident").strip(),
+            "criticality": (inc.get("criticality") or "").strip().lower(),
+            "closed": bool(inc.get("roadClosed")),
+            "desc": desc,
+            "start": _parse_iso8601(inc.get("startTime")),
+            "end": _parse_iso8601(inc.get("endTime")),
+        })
+
+    # Worst-first: closures, then critical/major, then the rest.
+    crit_rank = {"critical": 0, "major": 1, "minor": 2, "low": 3, "": 4}
+    out.sort(key=lambda i: (0 if i["closed"] else 1, crit_rank.get(i["criticality"], 4)))
+    return out
+
+
+def _here_emoji(inc: dict) -> str:
+    if inc.get("closed"):
+        return "🚫"
+    t = inc.get("type", "")
+    return {
+        "accident": "💥",
+        "congestion": "🐌",
+        "disabledVehicle": "🚗",
+        "roadHazard": "🪨",
+        "laneRestriction": "🚧",
+    }.get(t, "⚠️")
+
+
 # ─── Format the briefing ─────────────────────────────────────────────────
 def gather_route_conditions(now: datetime):
     """Fetch, dedupe, filter, and split DriveTexas conditions for Brandon's route.
@@ -722,6 +933,30 @@ def build_briefing(now: datetime) -> str:
         out.append("**🚨 Active incidents on your route: none** ✅")
     out.append("")
 
+    # ── Section 2b: HERE Traffic API — real-time corridor incidents ──
+    # Fills the north-corridor gap TxDOT (construction-only) and the DFW-core X
+    # spotters both miss. No key configured → empty, section is skipped silently.
+    here_incidents = fetch_here_incidents(now)
+    here_key_on = bool(_load_here_api_key())
+    if here_incidents:
+        out.append(f"**🚨 HERE traffic — incidents on your corridor ({len(here_incidents)})**")
+        for inc in here_incidents[:6]:
+            emoji = _here_emoji(inc)
+            crit = inc.get("criticality") or ""
+            tag = f" · {crit}" if crit else ""
+            closed = " · ROAD CLOSED" if inc.get("closed") else ""
+            when = fmt_when(
+                int(inc["start"].timestamp() * 1000) if inc.get("start") else 0,
+                int(inc["end"].timestamp() * 1000) if inc.get("end") else 0,
+            )
+            desc = (inc.get("desc") or inc.get("type") or "incident")[:160]
+            out.append(f"• {emoji} _{inc.get('type','incident')}{tag}{closed}_ — {when}")
+            out.append(f"   {desc}")
+        out.append("_Source: HERE Traffic API v7 (route corridor, ~2-min refresh)_")
+    elif here_key_on:
+        out.append("**🚨 HERE traffic — corridor clear** ✅ _(checked route corridor)_")
+    out.append("")
+
     # ── Section 2.5: X/Twitter traffic-spotter reports (last 2h) ──
     # Sources: @chipwfox4 (Fox 4 Dallas), @DFWscanner (DFW Scanner), @krldtraffic (KRLD 1080), Denton Scanner FB.
     # LLM-filtered to Brandon's actual SB/EB (AM) or WB/NB (PM) corridor,
@@ -774,7 +1009,7 @@ def build_briefing(now: datetime) -> str:
         out.append("**🚧 No daytime construction on your route** ✅")
 
     out.append("")
-    out.append("_Live travel time: Google Maps · Incidents: TxDOT DriveTexas + X spotters + Denton Scanner · Updates Mon-Fri 5:30am CDT_")
+    out.append("_Live travel time: Google Maps · Incidents: HERE Traffic + TxDOT DriveTexas + X spotters · Updates Mon-Fri 5:30am CDT_")
     return "\n".join(out)
 
 
@@ -864,6 +1099,21 @@ def build_sms_briefing(now: datetime) -> str:
     else:
         lines.append("Incidents: none")
 
+    # HERE Traffic API — real-time corridor incidents (the north-corridor fix).
+    # Shows "HERE: clear" when the key is set but nothing's on-route, so the text
+    # visibly proves the check ran (vs. the old silent "Incidents: none").
+    here_incidents = fetch_here_incidents(now)
+    if here_incidents:
+        lines.append(f"HERE ({len(here_incidents)}):")
+        for inc in here_incidents[:3]:
+            crit = inc.get("criticality") or ""
+            closed = " CLOSED" if inc.get("closed") else ""
+            desc = (inc.get("desc") or inc.get("type") or "incident")[:60]
+            tag = f" [{crit}]" if crit else ""
+            lines.append(f"- {desc}{tag}{closed}".rstrip())
+    elif _load_here_api_key():
+        lines.append("HERE corridor: clear")
+
     # Real-time spotter wrecks (X: @chipwfox4 / @DFWscanner / @krldtraffic + Denton Scanner FB),
     # LLM-filtered to Brandon's actual direction. This real-time crash layer is the point of the tool.
     _spot_dir, spotter_incidents = fetch_traffic_spotters(now)
@@ -924,6 +1174,32 @@ def send_sms(text: str) -> dict:
 # ─── Main ────────────────────────────────────────────────────────────────
 def main():
     now = datetime.now(tz=CDT)
+
+    if "--test-here" in sys.argv:
+        # 1) Verify the flexible-polyline encoder against the canonical test vector.
+        sample = [
+            (50.1022829, 8.6982122), (50.1020076, 8.6956695),
+            (50.1006313, 8.6914960), (50.0987800, 8.6875156),
+        ]
+        expected = "BFoz5xJ67i1B1B7PzIhaxL7Y"
+        got = encode_flexible_polyline(sample)
+        ok = got == expected
+        print(f"flexible-polyline encoder: {'PASS' if ok else 'FAIL'}")
+        print(f"  expected: {expected}")
+        print(f"  got:      {got}")
+        # 2) Show the encoded route corridor.
+        print(f"route corridor polyline: {encode_flexible_polyline(HERE_ROUTE_WAYPOINTS)}")
+        print(f"corridor radius: {HERE_CORRIDOR_RADIUS_M}m")
+        # 3) Live call if a key is configured.
+        if _load_here_api_key():
+            print("HERE_API_KEY: present — making a live corridor call...")
+            incidents = fetch_here_incidents(now)
+            print(f"live incidents on route: {len(incidents)}")
+            print(json.dumps(incidents, indent=2, default=str))
+        else:
+            print("HERE_API_KEY: NOT set — set it in ~/.config/commute-briefing/here.env "
+                  "or env to enable live incidents.")
+        return 0 if ok else 1
 
     if "--dry-run" in sys.argv:
         # Show both so we can eyeball formatting.

@@ -7,4 +7,8 @@ ExecStart=/usr/bin/python3 /home/ubuntu/openclaw/scripts/commute-briefing.py
 WorkingDirectory=/home/ubuntu/openclaw
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+# HERE Traffic API key for the north-corridor incident layer. Optional (the '-'
+# prefix means a missing file is not an error); the script also reads this same
+# path directly as a fallback.
+EnvironmentFile=-/home/ubuntu/.config/commute-briefing/here.env
 TimeoutStartSec=180
