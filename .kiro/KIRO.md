@@ -114,7 +114,7 @@ journalctl --user -u openclaw-gateway -f
 | Timer | Schedule (CDT) | What |
 |-------|----------------|------|
 | `fire-jobs.timer` | 6:30am | North TX firefighter job search |
-| `x-digest.timer` | 6:00am | X/Twitter digest |
+| `x-digest.timer` | 5:30am | X/Twitter digest |
 | `x-bookmark-review.timer` | 6:15am | X bookmark review |
 
 ### Key Differences from Laptop

@@ -15,7 +15,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TODAY=$(date +%Y-%m-%d)
 DATE_LABEL=$(TZ='America/Chicago' date '+%a %b %d, %Y')
-DIGEST_DIR="/tmp/x-digest"
+# Digest archive lives under ~/logs (persistent) — NOT /tmp, which is tmpfs on
+# this host and gets wiped on reboot (mx5 item 5). Retention pruned to 90 days
+# right after mkdir below.
+DIGEST_DIR="${HOME}/logs/x-digest/digests"
 DIGEST_FILE="$DIGEST_DIR/digest-${TODAY}.md"
 
 # DynamoDB dedup
@@ -36,7 +39,11 @@ DRY_RUN="${DRY_RUN:-0}"
 
 # GraphQL config
 QUERY_ID_FILE="$HOME/.config/bird/home-timeline-qid.txt"
-BEARER="AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+# X public web Bearer — not a secret (every x.com web client ships the same
+# token), but it lives with the other bird creds now instead of inline (mx5
+# item 9). File is created by hand / docs/setup.md: ~/.config/bird/bearer.txt
+BEARER_FILE="$HOME/.config/bird/bearer.txt"
+BEARER=$(cat "$BEARER_FILE" 2>/dev/null || true)
 FEATURES='{"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"creator_subscriptions_tweet_preview_api_enabled":true,"communities_web_enable_tweet_community_results_fetch":true,"c9s_tweet_anatomy_moderator_badge_enabled":true,"articles_preview_enabled":true,"responsive_web_edit_tweet_api_enabled":true,"graphql_is_translatable_rweb_tweet_is_translatable_enabled":true,"view_counts_everywhere_api_enabled":true,"longform_notetweets_consumption_enabled":true,"tweet_awards_web_tipping_enabled":false,"freedom_of_speech_not_reach_fetch_enabled":true,"standardized_nudges_misinfo":true,"rweb_video_timestamps_enabled":true,"longform_notetweets_rich_text_read_enabled":true,"longform_notetweets_inline_media_enabled":true,"responsive_web_enhance_cards_enabled":false}'
 
 # LLM config
@@ -44,6 +51,8 @@ RELEVANCE_THRESHOLD=7
 
 source ~/.profile
 mkdir -p "$DIGEST_DIR"
+# Retention: keep 90 days of digest archives, prune older (mx5 item 5).
+find "$DIGEST_DIR" -maxdepth 1 -type f -name 'digest-*.md' -mtime +90 -delete 2>/dev/null || true
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -520,6 +529,7 @@ done <<< "$TWEETS_TSV"
 
 FRESH_COUNT=$(grep -c '.' "$FRESH_FILE" || true)
 log "After dedup: $FRESH_COUNT new tweets ($SKIPPED previously seen)"
+INCLUDED=0  # defined here so the summary line is safe on the no-fresh path (mx5 item 10)
 
 if [ "$FRESH_COUNT" -eq 0 ]; then
   log "No new tweets — skipping digest"
@@ -545,7 +555,7 @@ else
   if [ -z "$SCORES" ]; then
     # Fail-closed: don't flood Discord with unscored tweets.
     alert_discord "⚠️ **x-digest scoring failed** — kiro-cli returned no scores for $FRESH_COUNT tweets.
-No digest sent. Raw tweets in \`/tmp/x-digest/digest-${TODAY}.md\` on EC2.
+No digest sent. Raw tweets in \`$DIGEST_FILE\` on EC2.
 Tweets are NOT marked seen — they will be re-evaluated next run."
     log "FATAL: LLM scoring returned empty — aborting without marking tweets seen"
     exit 1
@@ -747,6 +757,19 @@ if [ "$DRY_RUN" != "1" ]; then
     --to "brandon.tyler@gmail.com" \
     --subject "📱 X Digest — $TODAY_LABEL" \
     --body "$(cat "$DIGEST_FILE")" 2>/dev/null && log "Email sent" || log "Email failed"
+fi
+
+# --- Per-run summary + stats JSONL (mx5 item 10) ---
+# One grep-able `[summary]` line makes "why did today look weird" audits fast,
+# and the JSONL gives a trend series (surface rate, volume, runtime) over time.
+: "${INCLUDED:=0}"; : "${TOTAL_RAW:=0}"; : "${FRESH_COUNT:=0}"; : "${SKIPPED:=0}"; : "${SUPPL_COUNT:=0}"
+RATE=0
+[ "${FRESH_COUNT:-0}" -gt 0 ] 2>/dev/null && RATE=$(( INCLUDED * 100 / FRESH_COUNT ))
+STATS_FILE="${HOME}/logs/x-digest/stats.jsonl"
+log "[summary] ${TODAY}: pulled=${TOTAL_RAW} suppl=${SUPPL_COUNT} fresh=${FRESH_COUNT} seen=${SKIPPED} surfaced=${INCLUDED} rate=${RATE}% secs=${SECONDS}"
+if [ "$DRY_RUN" != "1" ]; then
+  printf '{"date":"%s","pulled":%d,"suppl":%d,"fresh":%d,"seen":%d,"surfaced":%d,"rate_pct":%d,"secs":%d}\n' \
+    "$TODAY" "$TOTAL_RAW" "$SUPPL_COUNT" "$FRESH_COUNT" "$SKIPPED" "$INCLUDED" "$RATE" "$SECONDS" >> "$STATS_FILE" 2>/dev/null || true
 fi
 
 log "Done. Digest: $DIGEST_FILE"
