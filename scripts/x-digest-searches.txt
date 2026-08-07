@@ -17,6 +17,11 @@
 # --- Always-include people ---
 karpathy|from:karpathy|3
 bcherny|from:bcherny min_faves:50|3
+# Lance Martin (@RLanceMartin) — now at Anthropic (ex-LangChain, ex-Uber);
+# high-signal on agent harnesses, context engineering, evals. Floor 100:
+# his replies get 2-13 likes (noise), substantive posts ~90-700 (median 91,
+# top ~693), so 100 surfaces his popular posts and drops reply-chatter.
+lance_martin|from:RLanceMartin min_faves:100|3
 
 # --- Claude Code / Kiro CLI ---
 claude_code|claude code min_faves:500|5
