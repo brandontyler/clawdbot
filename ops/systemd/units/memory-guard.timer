@@ -1,0 +1,11 @@
+[Unit]
+Description=Run memory-guard daily (Cognitive-State poisoning scan)
+
+[Timer]
+# 6:45am CDT — after the morning scrape jobs have run, so any poisoning they
+# might have persisted is caught the same morning.
+OnCalendar=*-*-* 06:45:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

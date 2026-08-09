@@ -1,0 +1,10 @@
+[Unit]
+Description=Memory-guard — daily Cognitive-State poisoning scan of agent memory + skills (bead openclaw-79b)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/memory-guard-cron.sh
+WorkingDirectory=/home/ubuntu/openclaw
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=120
