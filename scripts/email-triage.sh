@@ -13,6 +13,7 @@
 set -uo pipefail
 
 source ~/.profile
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DISCORD_CHANNEL="${EMAIL_DISCORD_CHANNEL:-1503414103341797406}"
 DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
@@ -87,6 +88,13 @@ for i, t in enumerate(threads[:${MAX_SCORE}]):
     date = t.get('date', '?')[:16]
     print(f'{i+1}. From: {sender} | Subject: {subject} | Date: {date}')
 " 2>/dev/null)
+
+# Agent-trap hardening (bead openclaw-79b): defang untrusted email text
+# (sender/subject are attacker-controllable) before it enters the kiro-cli
+# prompt — strips invisible/bidi chars + forged chat-template tokens, flags injection.
+THREADS=$(printf '%s' "$THREADS" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/email-sanitize.json 2>/dev/null)
+_erisk=$(python3 -c "import json;print(json.load(open('/tmp/email-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
+[ "$_erisk" != "low" ] && log "[sanitize] scraped email text risk=$_erisk $(cat /tmp/email-sanitize.json 2>/dev/null)"
 
 SCORE_COUNT=$(echo "$THREADS" | grep -c '^[0-9]' || echo 0)
 log "Scoring $SCORE_COUNT emails via kiro-cli..."

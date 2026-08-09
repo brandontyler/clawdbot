@@ -29,6 +29,23 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+# Agent-trap hardening (bead openclaw-79b): defang untrusted scraped tweet/FB
+# text before it reaches kiro-cli. Same-dir module; degrade to identity if absent.
+try:
+    from sanitize_untrusted import sanitize as _sanitize_untrusted
+except Exception:  # pragma: no cover
+    _sanitize_untrusted = None
+
+
+def _san_text(s: str) -> str:
+    """Sanitize one untrusted string (strip invisibles, defang chat tokens). Safe no-op on failure."""
+    if _sanitize_untrusted is None or not s:
+        return s
+    try:
+        return _sanitize_untrusted(s)[0]
+    except Exception:
+        return s
+
 # ─── Config ──────────────────────────────────────────────────────────────
 CDT = timezone(timedelta(hours=-5))  # CDT (DST), close enough for a briefing
 DISCORD_CHANNEL_ID = os.environ.get("COMMUTE_DISCORD_CHANNEL", "1503414103341797406")  # #openclaw-ec2
@@ -515,7 +532,7 @@ def _kiro_classify_tweets(tweets: list[dict], direction: str) -> list[dict]:
     }[direction]
 
     tweet_block = "\n".join(
-        f"[{i+1}] {t['dt'].astimezone(CDT).strftime('%-I:%M %p')} — {t['text'][:500]}"
+        f"[{i+1}] {t['dt'].astimezone(CDT).strftime('%-I:%M %p')} — {_san_text(t['text'])[:500]}"
         for i, t in enumerate(tweets)
     )
 

@@ -11,6 +11,7 @@
 # scoring, DynamoDB dedupe (60-day TTL), Discord + Gmail delivery.
 set -uo pipefail
 source ~/.profile
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TODAY=$(date +%Y-%m-%d)
 DATE_LABEL=$(date '+%A, %B %d %Y')
@@ -152,6 +153,13 @@ while IFS=$'\t' read -r jid source poster title url; do
 "
   i=$((i + 1))
 done < "$JOBS_FILE"
+
+# Agent-trap hardening (bead openclaw-79b): defang untrusted scraped job text
+# (titles/companies from LinkedIn + X) before it enters the kiro-cli prompt —
+# strips invisible/bidi chars + forged chat-template tokens, flags injection.
+JOB_LIST=$(printf '%s' "$JOB_LIST" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/nathan-sanitize.json 2>/dev/null)
+_nrisk=$(python3 -c "import json;print(json.load(open('/tmp/nathan-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
+[ "$_nrisk" != "low" ] && log "[sanitize] scraped job text risk=$_nrisk $(cat /tmp/nathan-sanitize.json 2>/dev/null)"
 
 PROMPT="Filter jobs for NATHAN TYLER (Brandon Tyler's son).
 
