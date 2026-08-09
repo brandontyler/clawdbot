@@ -132,6 +132,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Scan persistent agent memory for poisoning signals.")
     ap.add_argument("targets", nargs="*", help="files/dirs to scan (default: memory.md + skills)")
     ap.add_argument("--check", action="store_true", help="exit 1 if any HIGH finding")
+    ap.add_argument("--beads", action="store_true", help="also scan the bead store (.beads/issues.jsonl)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
@@ -139,7 +140,17 @@ def main() -> int:
     if args.self_test:
         return _self_test()
 
-    files = _iter_files(args.targets or DEFAULT_TARGETS)
+    targets = list(args.targets) if args.targets else list(DEFAULT_TARGETS)
+    if args.beads:
+        # Bead notes/descriptions are another persistence surface the agent
+        # writes to. The JSONL mirror carries the full text; scanning it as raw
+        # text catches invisible Unicode / forged chat tokens regardless of field.
+        for cand in (os.path.join(os.getcwd(), ".beads", "issues.jsonl"),
+                     os.path.expanduser("~/openclaw/.beads/issues.jsonl")):
+            if os.path.isfile(cand) and cand not in targets:
+                targets.append(cand)
+                break
+    files = _iter_files(targets)
     results = scan_files(files)
     any_high = any(r.get("high") for r in results.values())
 

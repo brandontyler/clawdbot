@@ -3,6 +3,7 @@
 # Input: TSV file (jid\ttitle\turl\tsource\tlocation) as $1
 # Output: Markdown digest to stdout
 set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INPUT="${1:?Usage: fire-jobs-digest.sh <new-jobs.tsv>}"
 [ ! -s "$INPUT" ] && exit 0
@@ -23,6 +24,12 @@ Location: ${location}"
 done < "$INPUT"
 
 [ -z "$JOB_DETAILS" ] && exit 0
+
+# Agent-trap hardening (bead openclaw-79b): defang scraped job text before the prompt.
+# stderr only — this script's stdout is the markdown digest.
+JOB_DETAILS=$(printf '%s' "$JOB_DETAILS" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/firedigest-sanitize.json 2>/dev/null)
+_frisk=$(python3 -c "import json;print(json.load(open('/tmp/firedigest-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
+[ "$_frisk" != "low" ] && echo "[sanitize] fire-jobs-digest untrusted-text risk=$_frisk" >&2
 
 PROMPT="Write a personalized job digest email for Brady Tyler. Be encouraging but concise.
 

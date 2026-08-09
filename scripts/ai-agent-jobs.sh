@@ -3,6 +3,7 @@
 # For Brandon: OpenClaw, Hermes, personal AI assistant setup roles
 set -uo pipefail
 source ~/.profile
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TODAY=$(date +%Y-%m-%d)
 LOGFILE="/home/ubuntu/logs/ai-agent-jobs/$(date +%Y-%m-%d).log"
@@ -166,6 +167,11 @@ while IFS=$'\t' read -r jid source poster title url salary; do
 "
   i=$((i + 1))
 done < "$JOBS_FILE"
+
+# Agent-trap hardening (bead openclaw-79b): defang scraped job text (LinkedIn + X) before scoring.
+JOB_LIST=$(printf '%s' "$JOB_LIST" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/aiagent-sanitize.json 2>/dev/null)
+_arisk=$(python3 -c "import json;print(json.load(open('/tmp/aiagent-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
+[ "$_arisk" != "low" ] && echo "[sanitize] ai-agent-jobs untrusted-text risk=$_arisk" >&2
 
 PROMPT="Filter jobs for Brandon Tyler. Match against his FULL background:
 

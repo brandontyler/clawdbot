@@ -3,6 +3,7 @@
 # Input: TSV file (jid\ttitle\turl\tsource\tlocation) as $1
 # Output: JSONL to stdout — jobs scoring 3+ relevance
 set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INPUT="${1:?Usage: fire-jobs-filter.sh <jobs.tsv>}"
 [ ! -s "$INPUT" ] && exit 0
@@ -18,6 +19,12 @@ while IFS=$'\t' read -r jid title url source location; do
 done < "$INPUT"
 
 [ -z "$JOB_LIST" ] && exit 0
+
+# Agent-trap hardening (bead openclaw-79b): defang scraped job text before scoring.
+# stderr only — this script's stdout is the JSONL result.
+JOB_LIST=$(printf '%s' "$JOB_LIST" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/firefilter-sanitize.json 2>/dev/null)
+_frisk=$(python3 -c "import json;print(json.load(open('/tmp/firefilter-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
+[ "$_frisk" != "low" ] && echo "[sanitize] fire-jobs-filter untrusted-text risk=$_frisk" >&2
 
 PROMPT="You are a job relevance filter for Brady Tyler.
 

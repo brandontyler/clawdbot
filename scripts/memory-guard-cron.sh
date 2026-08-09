@@ -7,7 +7,7 @@ set -uo pipefail
 source ~/.profile 2>/dev/null || true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-REPORT=$(python3 "$SCRIPT_DIR/memory-guard.py" --check 2>&1); RC=$?
+REPORT=$(python3 "$SCRIPT_DIR/memory-guard.py" --check --beads 2>&1); RC=$?
 
 if [ "$RC" -ne 0 ]; then
   CHANNEL="${MEMGUARD_DISCORD_CHANNEL:-1503414103341797406}"

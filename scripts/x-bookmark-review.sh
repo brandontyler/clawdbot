@@ -25,6 +25,7 @@ SEEN_DIR="$HOME/.local/share/x-bookmark-review"
 SEEN_FILE="$SEEN_DIR/seen.tsv"
 
 source ~/.profile
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$WORK_DIR" "$SEEN_DIR"
 touch "$SEEN_FILE"
 
@@ -144,6 +145,10 @@ done < "$new_bookmarks"
 
 # --- LLM summarization (one line per bookmark) ---
 log "Summarizing bookmarks via kiro-cli..."
+# Agent-trap hardening (bead openclaw-79b): defang scraped bookmark text before scoring.
+BOOKMARK_LIST=$(printf '%s' "$BOOKMARK_LIST" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/xbookmark-sanitize.json 2>/dev/null)
+_brisk=$(python3 -c "import json;print(json.load(open('/tmp/xbookmark-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
+[ "$_brisk" != "low" ] && log "[sanitize] bookmark text risk=$_brisk"
 
 PROMPT="For each X bookmark below, write one short factual line describing what the post is about — name tools, people, claims, or topics. Do not editorialize. Do not categorize. Do not recommend actions.
 
