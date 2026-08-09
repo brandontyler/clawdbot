@@ -312,6 +312,23 @@ score_tweets() {
   count=$(echo "$tweets_text" | grep -c '^[0-9]' || echo 0)
   [ "$count" -eq 0 ] && return
 
+  # Agent-trap hardening (bead openclaw-agent-trap-hardening): defang untrusted
+  # scraped tweet text before it enters the scoring prompt. Strips invisible/bidi
+  # chars + forged chat-template tokens and flags prompt-injection phrasing.
+  # NOTE: log to stderr only — this fn's stdout is captured as SCORES.
+  local _san_report
+  _san_report=$(mktemp)
+  tweets_text=$(printf '%s' "$tweets_text" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report "$_san_report" 2>/dev/null)
+  if [ -s "$_san_report" ]; then
+    local _risk
+    _risk=$(python3 -c "import json;print(json.load(open('$_san_report')).get('risk','low'))" 2>/dev/null || echo low)
+    if [ "$_risk" != "low" ]; then
+      echo "[$(date '+%H:%M:%S')] [sanitize] untrusted-text risk=$_risk report=$(cat "$_san_report")" >&2
+      [ "$_risk" = "high" ] && alert_discord "🛡️ **x-digest sanitizer**: high-risk injection signal in scraped tweets today — content was defanged before scoring. See cron.log."
+    fi
+  fi
+  rm -f "$_san_report"
+
   local prompt="You are filtering tweets from Brandon's X 'For You' feed for his daily digest.
 
 Brandon wants to see (he's an AWS ProServe engineer on Amazon Connect, currently building an agent-evaluation framework, daily tools: Kiro CLI, Claude Code, OpenAI Codex):
