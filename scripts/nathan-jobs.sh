@@ -64,10 +64,11 @@ mark_seen() {
 log "=== Nathan's Job Search — $DATE_LABEL ==="
 
 # --- LinkedIn (primary) ---
-# Eight tuned searches covering: ISD aides/subs, AV/media at schools, after-school
+# Ten tuned searches covering: ISD aides/subs, AV/media at schools, after-school
 # / youth nonprofit, tutoring centers, district education paraprofessionals,
-# foster care, film/media teaching (Nathan's expertise + teaching path), and
-# domestic-violence / women's-shelter / victim-advocacy nonprofits.
+# foster care, film/media teaching (Nathan's expertise + teaching path),
+# domestic-violence / women's-shelter / victim-advocacy nonprofits, nonprofit
+# management/operations, and video-production-at-a-nonprofit (a 2nd holy grail).
 log "Searching LinkedIn..."
 LI_SEARCHES=(
   # All searches centered on Denton with a 20-mile radius.
@@ -92,6 +93,11 @@ LI_SEARCHES=(
   # 8. Domestic-violence / women's-shelter / victim-advocacy / crisis nonprofits
   #    (his girlfriend's world — Denton County Friends of the Family, Journey to Dream)
   "https://www.linkedin.com/jobs/search?keywords=%22domestic+violence%22+OR+%22women%27s+shelter%22+OR+%22victim+advocate%22+OR+%22victim+services%22+OR+%22crisis+intervention%22+OR+%22sexual+assault%22+OR+%22Friends+of+the+Family%22+OR+%22human+trafficking%22+OR+%22Journey+to+Dream%22&location=Denton%2C+Texas&f_TPR=r604800&distance=30&position=1&pageNum=0"
+  # 9. Nonprofit MANAGEMENT / operations / development / volunteer coordination (added 2026-08-16)
+  "https://www.linkedin.com/jobs/search?keywords=nonprofit+%28%22program+manager%22+OR+%22operations+manager%22+OR+%22program+coordinator%22+OR+%22development+coordinator%22+OR+%22volunteer+coordinator%22+OR+%22volunteer+manager%22+OR+%22program+director%22+OR+%22nonprofit+management%22%29&location=Denton%2C+Texas&f_TPR=r604800&distance=35&position=1&pageNum=0"
+  # 10. *** 2nd HOLY GRAIL: VIDEO PRODUCTION at a nonprofit/mission org *** (added 2026-08-16)
+  #     Combines his film degree with mission-driven work (nonprofit comms/media/video).
+  "https://www.linkedin.com/jobs/search?keywords=%28%22video+producer%22+OR+%22video+production%22+OR+videographer+OR+multimedia+OR+%22media+producer%22+OR+%22content+creator%22+OR+%22communications+coordinator%22+OR+%22digital+media%22%29+%28nonprofit+OR+%22non-profit%22+OR+ministry+OR+church+OR+foundation%29&location=Denton%2C+Texas&f_TPR=r604800&distance=45&position=1&pageNum=0"
 )
 
 for url in "${LI_SEARCHES[@]}"; do
@@ -101,10 +107,10 @@ for url in "${LI_SEARCHES[@]}"; do
 import sys, re, hashlib
 html = sys.stdin.read()
 titles    = re.findall(r'base-search-card__title[^>]*>\s*([^<]+)', html)
-companies = re.findall(r'base-search-card__subtitle[^>]*>\s*([^<]+)', html)
+companies = re.findall(r'hidden-nested-link[^>]*>\s*([^<]+)', html)  # company is in the nested anchor, not the subtitle text node
 locations = re.findall(r'job-search-card__location[^>]*>\s*([^<]+)', html)
 links     = re.findall(r'href=\"(https://www.linkedin.com/jobs/view/[^\"?]+)', html)
-for i in range(min(len(titles), 15)):
+for i in range(min(len(titles), 10)):
     t = titles[i].strip() if i < len(titles) else ''
     c = companies[i].strip() if i < len(companies) else '-'
     l = locations[i].strip() if i < len(locations) else ''
@@ -141,11 +147,14 @@ fi
 # --- LLM Filter via kiro-cli ---
 log "Filtering via kiro-cli..."
 
+# Dedup raw results by job-id (preserve first-seen/priority order): overlapping
+# searches double-list jobs, and dedup keeps idx aligned with the digest lookup.
+awk -F'\t' '!seen[$1]++' "$JOBS_FILE" > "${JOBS_FILE}.dd" && mv "${JOBS_FILE}.dd" "$JOBS_FILE"
 JOB_LIST=""
 i=1
 while IFS=$'\t' read -r jid source poster title url; do
   [ -z "$jid" ] && continue
-  [ "$i" -gt 50 ] && break
+  [ "$i" -gt 200 ] && break   # raised from 50: with 10 searches, later ones (nonprofit mgmt, video+nonprofit, film-teaching holy grail) were being truncated before scoring
   clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-160)
   company=""
   [ "$poster" != "-" ] && [ -n "$poster" ] && company=" @ ${poster}"
@@ -196,6 +205,13 @@ NATHAN'S BACKGROUND:
   Denton. Relevant roles: victim advocate, case manager, program/volunteer
   coordinator, prevention educator, shelter youth advocate, crisis counselor-
   adjacent support. These count even though they are not teaching roles.
+- ALSO OF INTEREST — NONPROFIT MANAGEMENT / OPERATIONS (added 2026-08-16 at Brandon's
+  request): Nathan is open to nonprofit MANAGEMENT/operations roles — program manager,
+  operations manager, program/development coordinator, volunteer manager/coordinator,
+  program director, grants/fundraising coordinator, nonprofit administrator. Strongest
+  at youth-, education-, media-, or human-services-aligned orgs. Score these as solid
+  fits (4); bump to 5 if they also touch video/media or youth. A no-degree-required
+  coordinator/manager role at a mission-driven nonprofit is a genuinely good bridge job.
 - Open to roles that leverage his film/video background (district media specialist,
   school video production, nonprofit communications/comms-coordinator).
 - *** THE HOLY GRAIL / #1 PRIORITY: a role that MIXES his film/production background
@@ -210,6 +226,15 @@ NATHAN'S BACKGROUND:
   a fully-certified academic teacher-of-record film role that hard-requires a bachelor's
   + state cert drops to 2-3 per the CREDENTIAL REALITY rule (note the gap) — but even
   then flag it as a great fit-once-certified.
+- *** SECOND HOLY GRAIL (added 2026-08-16 — Brandon's explicit #1 wish): FILM/VIDEO
+  PRODUCTION at a NONPROFIT / mission org. *** Any role pairing his film-production
+  background with a nonprofit, ministry, church, or foundation — nonprofit video
+  producer, multimedia/communications producer, digital media coordinator,
+  videographer/visual storyteller, content creator for a mission org. This is the OTHER
+  perfect intersection (his KD Conservatory film degree + mission-driven work). Surface
+  these FIRST and score 5, same top tier as film-teaching. Extend the radius like the
+  film-teaching exception — Dallas / Richardson / broader DFW are ACCEPTABLE since
+  nonprofit media roles are rare and high-value.
 - *** EXPLICITLY DECLINED: SPORTS / ATHLETIC roles. *** Nathan is NOT
   interested in sports at all. Filter out any athletic coach, assistant
   coach, head coach, athletic coordinator, sport-specific coach (football,
@@ -265,6 +290,11 @@ Score 1-5:
     combines his teaching career path with his film expertise. Even
     'sponsor' or 'advisor' roles for school film/media clubs at secondary
     level qualify. ***
+    *** ALSO SCORE 5 — 2nd HOLY GRAIL: FILM/VIDEO PRODUCTION at a NONPROFIT /
+    mission org — nonprofit video producer, multimedia/communications producer,
+    digital media coordinator, videographer/visual storyteller, or content creator
+    at a nonprofit, ministry, church, or foundation. Pairs his film degree with
+    mission-driven work; surface FIRST, Dallas/broader-DFW radius acceptable. ***
 4 = Adjacent secondary-grade roles: tutoring center for middle/high school
     (Sylvan/Mathnasium/Varsity Tutors targeting older students), private school
     aide (middle/high), after-school program staff for teens, library aide at
@@ -277,6 +307,10 @@ Score 1-5:
     Also: domestic-violence / victim-services / crisis nonprofits (Denton County
     Friends of the Family, Journey to Dream / Kyle's Place, etc.) when the role
     serves TEENS/youth or is prevention-education / youth-advocacy that fits Nathan.
+    Also: NONPROFIT MANAGEMENT / OPERATIONS at mission-driven orgs — program
+    manager, operations manager, program/development/volunteer coordinator,
+    program director, grants/fundraising, nonprofit administrator (bump to 5 if
+    the role also touches video/media or youth).
 3 = General nonprofit/education role he could grow into that serves teens,
     parks-rec youth programming for tweens/teens, edtech support, museum/library
     education programming for older kids, school district admin that exposes him
@@ -318,7 +352,11 @@ Score 1-5:
     education-adjacent companies (Turnitin, Coursera, Khan Academy, McGraw
     Hill, Pearson, school-district marketing/comms departments) — these are
     corporate roles, not teacher-path. Nathan is targeting CLASSROOM
-    work, not corporate education sector. Score 1 even if remote/flexible. ***
+    work, not corporate education sector. Score 1 even if remote/flexible.
+    *** EXCEPTION: this score-1 rule covers CORPORATE / edtech / for-profit
+    marketing & comms ONLY. NONPROFIT / ministry / church / foundation
+    video-production, multimedia, or communications roles are the 2nd HOLY
+    GRAIL — score them 4-5, NEVER 1. ***
     DAYCARE, preschool, pre-K, infant/toddler care, child-development centers
     serving under-5 (e.g. KinderCare, Bright Horizons, Goddard, Primrose,
     Children's Lighthouse, Child Development Schools, Learning Experience).
@@ -332,7 +370,7 @@ Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief why thi
 
 ${JOB_LIST}"
 
-RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
+RAW=$(cd "$HOME" && timeout 300 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
 SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
 
 # --- Build digest ---
