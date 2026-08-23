@@ -369,7 +369,7 @@ fi
 # also regex-extract as a safety net and normalize en/em dashes. Non-fatal.
 PASSAGE_REF=""
 if [[ -n "$PDF_TEXT" ]]; then
-  PASSAGE_REF=$(cd "$HOME" && timeout 60 kiro-cli chat --no-interactive --wrap never "From these sermon notes, identify the single primary Bible passage being taught. Reply with ONLY the reference in the form Book Chapter:Verses (for example: 1 Kings 12:25-33). No other words.
+  PASSAGE_REF=$(cd "$HOME" && timeout 60 kiro-cli chat --model auto --no-interactive --wrap never "From these sermon notes, identify the single primary Bible passage being taught. Reply with ONLY the reference in the form Book Chapter:Verses (for example: 1 Kings 12:25-33). No other words.
 
 ${PDF_TEXT}" 2>&1 | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/[–—]/-/g' | grep -v "^$" | grep -v "Credits:\|Time:" | grep -oiE '([1-3][[:space:]])?[A-Za-z]+[[:space:]]+[0-9]+:[0-9]+(-[0-9]+)?' | head -1) || PASSAGE_REF=""
   if [[ -n "$PASSAGE_REF" ]]; then
@@ -382,7 +382,7 @@ fi
 # Short 2-3 sentence summary for the Discord notification.
 if [[ -n "$PDF_TEXT" ]] && (( ! DRY_RUN )); then
   log "Generating sermon summary from $PRIMARY_TITLE..."
-  SUMMARY=$(cd "$HOME" && timeout 60 kiro-cli chat --no-interactive --wrap never "Summarize this sermon in 2-3 sentences. What is the main topic, key scripture, and one takeaway? Be concise.
+  SUMMARY=$(cd "$HOME" && timeout 60 kiro-cli chat --model auto --no-interactive --wrap never "Summarize this sermon in 2-3 sentences. What is the main topic, key scripture, and one takeaway? Be concise.
 
 ${PDF_TEXT}" 2>&1 | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -v "^$" | grep -v "Credits:\|Time:" | tail -5 | head -3) || SUMMARY=""
 fi
@@ -400,6 +400,25 @@ if [[ -n "$PASSAGE_REF" ]] && (( ! DRY_RUN )); then
   fi
 elif (( DRY_RUN )); then
   log "[DRY RUN] would ask #sermon to build a study of: ${PASSAGE_REF:-<passage undetected>}"
+fi
+
+# Render the study as a QUALITY typeset PDF (WeasyPrint) so it prints as a clean
+# cover sheet instead of a monospace email body — nicer to read and carry to
+# church. Falls back to the plain-text body if rendering fails. (Brandon req 2026-08-23)
+STUDY_PDF=""
+if [[ -n "$STUDY" ]]; then
+  _study_txt="$TMPDIR/sermon-study.txt"
+  printf '%s' "$STUDY" > "$_study_txt"
+  _study_pdf="$TMPDIR/sermon-study.pdf"
+  if python3 "$HOME/openclaw/scripts/render_study_pdf.py" \
+       "$_study_txt" "$_study_pdf" "Sermon Study — ${PRIMARY_TITLE:-$PASSAGE_REF}" 2>&1 \
+       | sed 's/^/    render_study_pdf: /' >&2; then
+    if [[ -f "$_study_pdf" ]] && (( $(stat -c%s "$_study_pdf") > 1500 )); then
+      STUDY_PDF="$_study_pdf"
+      log "Study PDF rendered ($(stat -c%s "$_study_pdf") bytes)"
+    fi
+  fi
+  [[ -z "$STUDY_PDF" ]] && log "Study PDF unavailable — will fall back to the text body"
 fi
 
 # Preview mode: send ONLY the assembled study cover page to a preview address
@@ -422,10 +441,14 @@ ${STUDY}"
     pv_body="PREVIEW: study unavailable (passage: ${PASSAGE_REF:-<none>}). Check the journal logs for the #sermon bridge result."
   fi
   log "Preview: emailing study cover page to $PREVIEW_EMAIL (not the printer)"
+  _pv_attach=(); [[ -n "$STUDY_PDF" ]] && _pv_attach=(--attach "$STUDY_PDF")
+  [[ -n "$STUDY_PDF" ]] && pv_body="$pv_body
+
+(The quality PDF that will actually print is attached to this preview.)"
   if gog gmail send -a brandon.tyler@gmail.com \
       --to "$PREVIEW_EMAIL" \
       --subject "[PREVIEW] Sermon Study Cover Page - ${PASSAGE_REF:-passage} (not printed)" \
-      --body "$pv_body"; then
+      --body "$pv_body" "${_pv_attach[@]}"; then
     log "Preview email sent to $PREVIEW_EMAIL."
   else
     log "Preview email FAILED (see gog output above)."
@@ -434,9 +457,24 @@ ${STUDY}"
   exit 0
 fi
 
-# Step 3c: Send each PDF. The primary sermon email body = the summary (so the
-# printed cover page is the useful summary, not a generic line). Companion
-# items (book list) keep a short generic body.
+# Step 3c: Print the study as its own QUALITY PDF first (nicer than a text body),
+# then send each notes file. The study PDF is grounded + typeset (render_study_pdf).
+if [[ -n "$STUDY_PDF" ]]; then
+  if gog gmail send -a brandon.tyler@gmail.com \
+      --to "$PRINT_EMAIL" \
+      --subject "Sermon Study - ${PASSAGE_REF:-$PRIMARY_TITLE}" \
+      --body "Independent grounded study — read alongside the sermon notes." \
+      --attach "$STUDY_PDF" 2>&1; then
+    log "  emailed study PDF → $PRINT_EMAIL"
+    REPORT_LINES+=("📖 Study PDF — ${PASSAGE_REF:-$PRIMARY_TITLE}")
+    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+  else
+    log "  ERROR: study PDF send failed — study will ride as the primary notes body instead"
+    REPORT_LINES+=("❌ study PDF send failed")
+    STUDY_PDF=""   # trigger the text-body fallback on the primary notes email
+  fi
+fi
+
 for j in "${!SEND_PATHS[@]}"; do
   local_pdf="${SEND_PATHS[$j]}"
   title="${SEND_TITLES[$j]}"
@@ -445,9 +483,10 @@ for j in "${!SEND_PATHS[@]}"; do
 
   body="Sermon notes attached."
   if [[ "$local_pdf" == "$PRIMARY_PDF" ]]; then
-    if [[ -n "$STUDY" ]]; then
+    if [[ -z "$STUDY_PDF" && -n "$STUDY" ]]; then
+      # Fallback ONLY: study PDF unavailable, so embed the study text as the body.
       body="Sermon Study — ${title}
-(Independent study prepared by the #sermon agent — read alongside the sermon notes that follow.)
+(Independent study — read alongside the sermon notes that follow.)
 
 ${STUDY}"
     elif [[ -n "$SUMMARY" ]]; then
