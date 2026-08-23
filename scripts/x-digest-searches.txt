@@ -137,3 +137,7 @@ cybercab_sawyer|from:SawyerMerritt (cybercab OR "cyber cab" OR robotaxi) min_fav
 # — min_faves:50 catches the analysis and skips the low-engagement reply noise.
 cybercab_nymbus|from:nymbusjp min_faves:50|3
 elonmusk_top|from:elonmusk min_faves:10000|2
+# @realmadhuguru (Madhu Guru, ex-Google/Gemini) — added 2026-08-22 per Brandon: daily
+# "How to build great evals" series + eval methodology. No min_faves floor (his posts
+# run modest but we want EVERY new part); LLM filter already scores evals high.
+madhuguru_evals|from:realmadhuguru (eval OR evals OR "great evals" OR "failure mode")|3
