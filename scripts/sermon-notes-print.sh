@@ -167,9 +167,13 @@ if [[ ${#ARTICLE_PATHS[@]} -eq 0 ]]; then
 fi
 log "Found ${#ARTICLE_PATHS[@]} article(s): ${ARTICLE_PATHS[*]}"
 
-# Step 2: For each article, follow the link and extract its first PDF.
+# Step 2: For each article, follow the link and extract its first sermon media
+# file. Denton publishes notes as PDF *or* DOCX (e.g. 2026-08-23 the notes were
+# a .docx: sermon-notes-082326.docx). Matching pdf-only silently skipped the
+# real sermon article and let a stale reading-resources book-list PDF win the
+# selection, so match pdf|docx|doc (docx before doc so the longer ext wins).
 # Match both S3 URL styles (path- and virtual-hosted-style).
-PDF_RE='https://(s3\.amazonaws\.com/account-media|account-media\.s3\.amazonaws\.com)/21140/uploaded/[^"]+\.pdf'
+MEDIA_RE='https://(s3\.amazonaws\.com/account-media|account-media\.s3\.amazonaws\.com)/21140/uploaded/[^"]+\.(pdf|docx|doc)'
 
 declare -a MATCH_URLS=()      # filtered PDFs (filename contains SERMON_FILENAME_MATCH)
 declare -a MATCH_TITLES=()
@@ -179,7 +183,7 @@ declare -a ALL_TITLES=()
 
 for ap in "${ARTICLE_PATHS[@]}"; do
   aurl="$BASE$ap"
-  pdf=$(curl -sL "$aurl" | grep -oP "$PDF_RE" | head -1 || true)
+  pdf=$(curl -sL "$aurl" | grep -oP "$MEDIA_RE" | head -1 || true)
   if [[ -z "$pdf" ]]; then
     log "  $ap → no PDF"
     continue
@@ -308,15 +312,30 @@ SUMMARY=""
 # detection. Cheap local parse — safe to run even in dry-run.
 PDF_TEXT=""
 if [[ -n "$PRIMARY_PDF" && -f "$PRIMARY_PDF" ]]; then
-  PDF_TEXT=$(python3 -c "
-import PyPDF2
+  PDF_TEXT=$(PRIMARY_PDF="$PRIMARY_PDF" python3 <<'PY' 2>/dev/null
+import os, re, html, zipfile
+p = os.environ["PRIMARY_PDF"]
+ext = os.path.splitext(p)[1].lower()
+text = ""
 try:
-    reader = PyPDF2.PdfReader('$PRIMARY_PDF')
-    text = ' '.join(page.extract_text() or '' for page in reader.pages[:3])
-    print(text[:1500])
+    if ext == ".docx":
+        # .docx is a zip of XML — extract paragraph text with the stdlib only
+        # (no python-docx dependency). Sermon notes are now sometimes DOCX.
+        with zipfile.ZipFile(p) as z:
+            xml = z.read("word/document.xml").decode("utf-8", "ignore")
+        xml = re.sub(r"</w:p>", "\n", xml)     # paragraph breaks
+        text = html.unescape(re.sub(r"<[^>]+>", "", xml))  # strip tags
+    else:
+        import PyPDF2
+        reader = PyPDF2.PdfReader(p)
+        text = " ".join(page.extract_text() or "" for page in reader.pages[:3])
 except Exception:
-    pass
-" 2>/dev/null | tr -d '"\\`$')
+    text = ""
+# Drop chars that would break later interpolation into the LLM prompt strings.
+text = text.translate({ord(c): None for c in '"`$\\'})
+print(text[:1500])
+PY
+)
 fi
 
 # Detect the primary Bible passage from the notes (for logging + to hand to the
