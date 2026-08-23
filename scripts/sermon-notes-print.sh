@@ -96,6 +96,32 @@ post_discord() {
 build_sermon_study() {
   local passage="$1" theme="${2:-}"
   [[ -n "$passage" ]] || { printf ''; return 0; }
+
+  # Preferred: PSR's GROUNDED passage-study endpoint — the study is built from the
+  # tagged Hebrew/Greek text + lexicon, TSK cross-references, and public-domain
+  # commentaries, then citation-verified, so it can't hallucinate word work or
+  # references (sermon-sermon-study-quality-kch). Falls back to the #sermon bridge.
+  local _psr_api="https://psr-functions-dev.azurewebsites.net"
+  local _admin_key
+  _admin_key=$(grep -h '^ADMIN_KEY=' "$HOME/code/personal/sermon/.env" 2>/dev/null | head -1 | cut -d= -f2-)
+  if [[ -n "$_admin_key" ]] && command -v jq >/dev/null 2>&1; then
+    log "  study: requesting GROUNDED study from PSR for '${passage}'..." 1>&2
+    local _body _resp _grounded
+    _body=$(jq -n --arg r "$passage" --arg t "$theme" '{ref:$r, title:$t}')
+    _resp=$(curl -sS -X POST "$_psr_api/api/passage-study" \
+      -H "x-admin-key: $_admin_key" -H "Content-Type: application/json" \
+      -d "$_body" --max-time 220 2>/dev/null) || _resp=""
+    _grounded=$(printf '%s' "$_resp" | jq -r 'if (.ok==true) and ((.studyText//"")!="") then .studyText else empty end' 2>/dev/null)
+    if [[ -n "$_grounded" ]]; then
+      log "  study: grounded PSR study OK ($(printf '%s' "$_grounded" | wc -c | tr -d ' ') chars)" 1>&2
+      printf '%s' "$_grounded"
+      return 0
+    fi
+    log "  study: PSR grounded endpoint unavailable/empty — falling back to #sermon bridge" 1>&2
+  fi
+
+  # Fallback: ask the #sermon channel agent (via bridge-send A2A) to build the
+  # study parametrically. Non-fatal — degrades to empty stdout for the caller.
   if ! command -v bridge-send >/dev/null 2>&1; then
     log "  study: bridge-send not on PATH — skipping" 1>&2
     printf ''; return 0
