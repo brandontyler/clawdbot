@@ -15,13 +15,12 @@
 # Settings → uncheck "Get notified when an ePrint is sent" (currently enabled).
 # See www.hp.com/go/eprinthelp for troubleshooting.
 #
-# Multi-item handling (added 2026-07-05):
+# Multi-item handling (added 2026-07-05; tightened 2026-09-27):
 # The publications page can list multiple articles this-week (e.g. the sermon
 # plus a companion "Reading Resources" book list). We iterate over ALL articles,
-# extract each PDF, and print any whose filename matches `sermon-notes*`. This
-# skips evergreen items like "Read the Bible in a Year Plan" that live on the
-# same category page permanently. Safety net: if no sermon-notes-*.pdf matches,
-# we fall back to printing the first PDF found (preserves pre-fix behavior).
+# but print only `sermon-notes-<MMDDYY>` files dated for the applicable Sunday in
+# America/Chicago. Stale, undated, and unrelated files are skipped; if a guest
+# teacher publishes no notes, the job exits successfully without printing.
 #
 # Independent study cover page (added 2026-07-26, Brandon req):
 # After identifying the primary sermon PDF we (1) detect the main Bible passage
@@ -62,12 +61,25 @@ REGION="us-east-1"
 DISCORD_CHANNEL="1503414103341797406"
 PROJECT_DIR="$HOME/code/personal/clawdbot"
 
-# Filter: only print PDFs whose filename contains this substring. Anything
-# else on the this-week page (like "read-the-bible-in-a-year-plan.pdf") is
-# assumed evergreen and skipped.
+# Filter: only print media whose filename contains this substring and whose
+# embedded MMDDYY date is the applicable Sunday. Anything else on this-week is
+# stale, undated, or unrelated and must fail closed.
 SERMON_FILENAME_MATCH="sermon-notes"
+SERMON_TIMEZONE="America/Chicago"
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+# Persistent timers may catch up after Sunday, so target the most recent Sunday
+# rather than assuming the process itself starts on Sunday. The override keeps
+# date-boundary behavior deterministic in regression tests.
+REFERENCE_DATE="${SERMON_NOTES_REFERENCE_DATE:-$(TZ="$SERMON_TIMEZONE" date +%F)}"
+if ! REFERENCE_DATE=$(TZ="$SERMON_TIMEZONE" date -d "$REFERENCE_DATE" +%F 2>/dev/null); then
+  log "ERROR: invalid SERMON_NOTES_REFERENCE_DATE"
+  exit 1
+fi
+REFERENCE_DOW=$(TZ="$SERMON_TIMEZONE" date -d "$REFERENCE_DATE" +%w)
+CURRENT_SUNDAY=$(TZ="$SERMON_TIMEZONE" date -d "$REFERENCE_DATE -${REFERENCE_DOW} days" +%F)
+CURRENT_SUNDAY_YYMMDD=$(TZ="$SERMON_TIMEZONE" date -d "$CURRENT_SUNDAY" +%y%m%d)
 
 post_discord() {
   # Post directly via Discord REST API — same pattern x-digest-foryou.sh uses.
@@ -201,11 +213,10 @@ log "Found ${#ARTICLE_PATHS[@]} article(s): ${ARTICLE_PATHS[*]}"
 # Match both S3 URL styles (path- and virtual-hosted-style).
 MEDIA_RE='https://(s3\.amazonaws\.com/account-media|account-media\.s3\.amazonaws\.com)/21140/uploaded/[^"]+\.(pdf|docx|doc)'
 
-declare -a MATCH_URLS=()      # filtered PDFs (filename contains SERMON_FILENAME_MATCH)
+declare -a MATCH_URLS=()      # media whose filename contains SERMON_FILENAME_MATCH
 declare -a MATCH_TITLES=()
-declare -a MATCH_DATES=()     # YYMMDD parsed from each match filename (current-week filter)
-declare -a ALL_URLS=()        # every PDF we found, for the fallback path
-declare -a ALL_TITLES=()
+declare -a MATCH_DATES=()     # YYMMDD parsed from each matching filename
+declare -a SEEN_URLS=()       # dedupe repeated article media URLs
 
 for ap in "${ARTICLE_PATHS[@]}"; do
   aurl="$BASE$ap"
@@ -216,68 +227,53 @@ for ap in "${ARTICLE_PATHS[@]}"; do
   fi
   # Dedupe on URL
   local_seen=0
-  for existing in "${ALL_URLS[@]:-}"; do
+  for existing in "${SEEN_URLS[@]:-}"; do
     if [[ "$existing" == "$pdf" ]]; then local_seen=1; break; fi
   done
   if (( local_seen )); then continue; fi
 
   fname=$(basename "$pdf")
   title=$(echo "$ap" | sed 's|/article/||; s/-/ /g')
-  ALL_URLS+=("$pdf"); ALL_TITLES+=("$title")
+  SEEN_URLS+=("$pdf")
   log "  $ap → $fname"
 
-  # Filter: only keep sermon-notes-*.pdf, capturing the MMDDYY date token.
+  # Keep only sermon-notes media and capture its MMDDYY date token.
   if [[ "$fname" == *"$SERMON_FILENAME_MATCH"* ]]; then
     MATCH_URLS+=("$pdf"); MATCH_TITLES+=("$title")
     d=$(echo "$fname" | grep -oP 'sermon-notes-\K[0-9]{6}' | head -1 || true)
     if [[ -n "$d" ]]; then
-      MATCH_DATES+=("${d:4:2}${d:0:2}${d:2:2}")   # MMDDYY -> YYMMDD for chronological compare
+      MATCH_DATES+=("${d:4:2}${d:0:2}${d:2:2}")   # MMDDYY -> YYMMDD for exact comparison
     else
       MATCH_DATES+=("")
     fi
   fi
 done
 
-# Restrict to the CURRENT week only. The this-week page can keep a PRIOR week's
-# companion item linked (e.g. /article/reading-resources still points at last
-# week's sermon-notes-<date>-book-list.pdf) after a new sermon posts. Sermon PDFs
-# are named sermon-notes-<MMDDYY>, so keep only those whose date equals the most
-# recent date among matches: same-week items (sermon + book-list) all print;
-# stale prior-week leftovers are dropped. (Fix 2026-07-12.)
-if (( ${#MATCH_URLS[@]} > 0 )); then
-  latest=""
-  for d in "${MATCH_DATES[@]}"; do
-    [[ -n "$d" ]] || continue
-    if [[ -z "$latest" || "$d" > "$latest" ]]; then latest="$d"; fi
-  done
-  if [[ -n "$latest" ]]; then
-    declare -a CUR_URLS=() CUR_TITLES=()
-    for j in "${!MATCH_URLS[@]}"; do
-      if [[ "${MATCH_DATES[$j]}" == "$latest" ]]; then
-        CUR_URLS+=("${MATCH_URLS[$j]}"); CUR_TITLES+=("${MATCH_TITLES[$j]}")
-      else
-        log "  drop stale prior-week item: $(basename "${MATCH_URLS[$j]}") (older than current week $latest)"
-      fi
-    done
-    MATCH_URLS=("${CUR_URLS[@]}"); MATCH_TITLES=("${CUR_TITLES[@]}")
-    log "Current week 20${latest:0:2}-${latest:2:2}-${latest:4:2} -> ${#MATCH_URLS[@]} item(s) after date filter"
+# Accept only files explicitly dated for the applicable Sunday. Choosing the
+# newest date still reprints stale notes when a guest teacher publishes none.
+# A missing or malformed date is therefore a normal no-print outcome, not a
+# reason to fall back to another file.
+declare -a CUR_URLS=() CUR_TITLES=()
+for j in "${!MATCH_URLS[@]}"; do
+  if [[ "${MATCH_DATES[$j]}" == "$CURRENT_SUNDAY_YYMMDD" ]]; then
+    CUR_URLS+=("${MATCH_URLS[$j]}"); CUR_TITLES+=("${MATCH_TITLES[$j]}")
+  else
+    item_date="undated"
+    d="${MATCH_DATES[$j]}"
+    [[ -n "$d" ]] && item_date="20${d:0:2}-${d:2:2}-${d:4:2}"
+    log "  skip non-current item: $(basename "${MATCH_URLS[$j]}") (dated $item_date; expected $CURRENT_SUNDAY)"
   fi
+done
+MATCH_URLS=("${CUR_URLS[@]}"); MATCH_TITLES=("${CUR_TITLES[@]}")
+log "Current Sunday $CURRENT_SUNDAY -> ${#MATCH_URLS[@]} item(s) after date filter"
+
+if (( ${#MATCH_URLS[@]} == 0 )); then
+  log "No sermon notes dated $CURRENT_SUNDAY were published; nothing to print."
+  exit 0
 fi
 
-# Decide which set to actually print.
-if (( ${#MATCH_URLS[@]} > 0 )); then
-  PRINT_URLS=("${MATCH_URLS[@]}"); PRINT_TITLES=("${MATCH_TITLES[@]}")
-  log "Filtered to ${#PRINT_URLS[@]} sermon-notes PDF(s)"
-elif (( ${#ALL_URLS[@]} > 0 )); then
-  # Fallback: print just the first PDF (preserves pre-fix behavior)
-  PRINT_URLS=("${ALL_URLS[0]}"); PRINT_TITLES=("${ALL_TITLES[0]}")
-  log "No sermon-notes-*.pdf match — falling back to first PDF: ${PRINT_URLS[0]}"
-else
-  log "ERROR: no PDFs found on any article"
-  post_discord "⚠️ Sermon notes print failed: no PDFs on any of ${#ARTICLE_PATHS[@]} article(s)"
-  EXPECTED_FAIL=1
-  exit 1
-fi
+PRINT_URLS=("${MATCH_URLS[@]}"); PRINT_TITLES=("${MATCH_TITLES[@]}")
+log "Filtered to ${#PRINT_URLS[@]} current-Sunday sermon-notes file(s)"
 
 # Step 3: Download all PDFs first, so the sermon summary can be generated
 # BEFORE sending — HP ePrint prints the email body as the cover page, so we
