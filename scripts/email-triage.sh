@@ -130,7 +130,7 @@ ${THREADS}
 
 Reply ONLY with a JSON array of integers, one per email, in order. Example: [3,8,2,9,4]"
 
-SCORES_RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1 | \
+SCORES_RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --model claude-opus-5.5 --no-interactive --wrap never "$PROMPT" 2>&1 | \
   sed 's/\x1b\[[0-9;]*m//g')
 SCORES=$(echo "$SCORES_RAW" | grep -oP '\[[\d,\s]+\]' | head -1)
 

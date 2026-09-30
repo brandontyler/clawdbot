@@ -158,7 +158,7 @@ Output exactly one JSON object per line, one per bookmark, in the form:
 Bookmarks:
 ${BOOKMARK_LIST}"
 
-RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
+RAW=$(cd "$HOME" && timeout 90 kiro-cli chat --model claude-opus-5.5 --no-interactive --wrap never "$PROMPT" 2>&1)
 SUMMARIES_JSON=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]*"idx"[^}]*\}')
 
 llm_count=$(echo "$SUMMARIES_JSON" | grep -c '{' || echo 0)

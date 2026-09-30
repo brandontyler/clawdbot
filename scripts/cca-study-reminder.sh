@@ -85,7 +85,7 @@ if not_started:
     print(f'Next up: {not_started[0]}')
 " 2>/dev/null)
 
-TIP=$(cd "$HOME" && timeout 45 kiro-cli chat --no-interactive --wrap never "You are a study coach for the Claude Certified Architect (CCA-F) exam. Give ONE specific, actionable study tip for today. Context: Week ${WEEK}, Day ${DAY}. Topic area: ${FOCUS}. ${PROGRESS}. Keep it to 1-2 sentences. Be specific — reference a concept, API method, or pattern they should practice." 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:\|^>" | head -2)
+TIP=$(cd "$HOME" && timeout 45 kiro-cli chat --model claude-opus-5.5 --no-interactive --wrap never "You are a study coach for the Claude Certified Architect (CCA-F) exam. Give ONE specific, actionable study tip for today. Context: Week ${WEEK}, Day ${DAY}. Topic area: ${FOCUS}. ${PROGRESS}. Keep it to 1-2 sentences. Be specific — reference a concept, API method, or pattern they should practice." 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -v "^$" | grep -v "Credits:\|Time:\|^>" | head -2)
 
 if [ -n "$TIP" ]; then
   MSG="${MSG}

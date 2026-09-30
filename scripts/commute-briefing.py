@@ -563,7 +563,7 @@ Reply ONLY with the JSON array — no preface, no explanation, no markdown fence
     # cd $HOME, default agent, default model (auto), --no-interactive --wrap never, strip ANSI.
     cmd = (
         f"cd \"$HOME\" && timeout {SPOTTER_KIRO_TIMEOUT} "
-        f"kiro-cli chat --no-interactive --wrap never \"$PROMPT\" 2>&1 "
+        f"kiro-cli chat --model claude-opus-5.5 --no-interactive --wrap never \"$PROMPT\" 2>&1 "
         f"| sed 's/\\x1b\\[[0-9;]*m//g'"
     )
     try:

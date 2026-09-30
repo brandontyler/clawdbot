@@ -112,7 +112,7 @@ Raw notes:
 ${raw_notes}"
 
   local cleaned
-  cleaned=$(cd "$PROJECT_DIR" && echo "$prompt" | timeout 60 kiro-cli chat --no-interactive --trust-all-tools 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^\s*[-•⚡✦]' || echo "$raw_notes")
+  cleaned=$(cd "$PROJECT_DIR" && echo "$prompt" | timeout 60 kiro-cli chat --model claude-opus-5.5 --no-interactive --trust-all-tools 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^\s*[-•⚡✦]' || echo "$raw_notes")
 
   local summary="📱 **${count} SMS note(s) saved to \`${id}\`**"$'\n'"${cleaned}"
   post_discord "$summary"
