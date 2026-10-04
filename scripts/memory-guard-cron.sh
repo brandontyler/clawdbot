@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # memory-guard-cron.sh — daily Cognitive-State poisoning check (bead openclaw-79b).
-# Runs memory-guard.py --check over ~/.kiro/memory.md + SKILL.md files and, on any
+# Runs memory-guard.py --check over every routed channel's .kiro memory + SKILL.md files and, on any
 # HIGH finding (invisible Unicode / forged chat-template token), posts a Discord
 # alert to #openclaw-ec2. This removes the "silent" from silent memory poisoning.
 set -uo pipefail

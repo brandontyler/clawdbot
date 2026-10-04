@@ -5,7 +5,7 @@ memory-guard.py — detect Cognitive-State poisoning in persistent agent memory.
 Part of agent-trap hardening (bead openclaw-79b). The DeepMind "AI Agent Traps"
 Cognitive State trap: an agent that ingested a trap persists malicious content
 into long-term memory / skills, which then silently re-injects into EVERY future
-session. Given how heavily we lean on ~/.kiro/memory.md + SKILL.md files, this is
+session. Given how heavily we lean on per-channel .kiro/memory.md + SKILL.md files, this is
 our single biggest structural exposure.
 
 Real-time interception of the model's built-in write/edit/br tools isn't cleanly
@@ -49,10 +49,45 @@ except Exception as e:  # pragma: no cover
     sys.stderr.write(f"memory-guard: cannot import sanitize_untrusted detectors: {e}\n")
     sys.exit(2)
 
-DEFAULT_TARGETS = [
-    os.path.expanduser("~/.kiro/memory.md"),
-    os.path.expanduser("~/.kiro/skills"),  # recursed for SKILL.md
-]
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROUTES_FILE = os.path.join(REPO_ROOT, "kiro-proxy-routes.json")
+
+
+def routed_memory_files(routes_file: str = ROUTES_FILE) -> list[str]:
+    """Hot and archive memory for every routed channel workspace.
+
+    These are the memory files Kiro agents load or read on demand, so they are
+    the primary persistence surface to scan. A missing routes file (fresh
+    checkout) yields no targets; an unreadable one is reported on stderr.
+    """
+    try:
+        with open(routes_file, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as e:
+        sys.stderr.write(f"memory-guard: cannot read routes file {routes_file}: {e}\n")
+        return []
+    routes = data.get("routes", data) if isinstance(data, dict) else data
+    entries = routes.values() if isinstance(routes, dict) else routes
+    files: list[str] = []
+    for entry in entries:
+        cwd = entry.get("cwd") if isinstance(entry, dict) else None
+        if not isinstance(cwd, str):
+            continue
+        for name in ("memory.md", "memory-archive.md"):
+            path = os.path.join(cwd, ".kiro", name)
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def default_targets() -> list[str]:
+    return [
+        os.path.expanduser("~/.kiro/memory.md"),  # legacy global memory, if present
+        *routed_memory_files(),
+        os.path.expanduser("~/.kiro/skills"),  # recursed for SKILL.md
+    ]
 
 
 def _iter_files(targets: list[str]) -> list[str]:
@@ -123,6 +158,16 @@ def _self_test() -> int:
     meta = scan_text("Detect phrases like ignore all previous instructions here.\n")
     check("phrase found", len(meta["injection_phrases"]) >= 1)
     check("phrase-only not high", meta["high"] is False)
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        routes = os.path.join(tmp, "routes.json")
+        with open(routes, "w", encoding="utf-8") as fh:
+            json.dump({"a": {"cwd": "/w/one"}, "b": {"cwd": "/w/one"}, "c": {"cwd": "/w/two"}, "d": "bad"}, fh)
+        found = routed_memory_files(routes)
+        check("routes → per-channel memory targets",
+              found == ["/w/one/.kiro/memory.md", "/w/one/.kiro/memory-archive.md",
+                        "/w/two/.kiro/memory.md", "/w/two/.kiro/memory-archive.md"])
+        check("missing routes file → no targets", routed_memory_files(os.path.join(tmp, "none.json")) == [])
 
     print(f"\n{'ALL PASS' if fails == 0 else str(fails) + ' FAILED'}")
     return 0 if fails == 0 else 1
@@ -140,7 +185,7 @@ def main() -> int:
     if args.self_test:
         return _self_test()
 
-    targets = list(args.targets) if args.targets else list(DEFAULT_TARGETS)
+    targets = list(args.targets) if args.targets else default_targets()
     if args.beads:
         # Bead notes/descriptions are another persistence surface the agent
         # writes to. The JSONL mirror carries the full text; scanning it as raw
