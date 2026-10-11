@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Versioned deployment bucket for the OpenClaw first-party link service
+
+Parameters:
+  OwnerTag:
+    Type: String
+    Default: brandon
+  ChannelTag:
+    Type: String
+    Default: openclaw-ec2
+
+Resources:
+  DeploymentBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: ExpireDeploymentPackages
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+Outputs:
+  DeploymentBucketName:
+    Value: !Ref DeploymentBucket
+  DeploymentBucketArn:
+    Value: !GetAtt DeploymentBucket.Arn

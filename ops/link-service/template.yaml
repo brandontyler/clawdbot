@@ -1,0 +1,314 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: First-party revocable links for private OpenClaw S3 artifacts
+
+Parameters:
+  CodeBucket:
+    Type: String
+  CodeKey:
+    Type: String
+  CodeVersion:
+    Type: String
+  CallerRoleName:
+    Type: String
+    Default: openclaw-server-role
+  ArtifactBucket:
+    Type: String
+    Default: kiro-sessions-035405309532
+  ArtifactPrefix:
+    Type: String
+    Default: artifacts/
+    AllowedValues:
+      - artifacts/
+  DefaultTTLSeconds:
+    Type: Number
+    Default: 604800
+    MinValue: 60
+    MaxValue: 2592000
+  MaxObjectBytes:
+    Type: Number
+    Default: 10485760
+  OwnerTag:
+    Type: String
+    Default: brandon
+  ChannelTag:
+    Type: String
+    Default: openclaw-ec2
+
+Resources:
+  LinkTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-links
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: code
+          AttributeType: S
+      KeySchema:
+        - AttributeName: code
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  SnapshotBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-snapshots-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireSnapshots
+            Status: Enabled
+            ExpirationInDays: 35
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  LinkFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Least-privilege execution role for the OpenClaw link resolver
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LinkServiceRuntime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LinkTableRecords
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt LinkTable.Arn
+              - Sid: ReadAllowlistedSourceArtifacts
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}*
+              - Sid: ReadWriteSnapshots
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub ${SnapshotBucket.Arn}/*
+              - Sid: WriteFunctionLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-handler:*
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  LinkFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LinkFunctionLogGroup
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-handler
+      Description: Public private-artifact resolver with role-gated direct management
+      Runtime: python3.12
+      Handler: app.handler
+      Role: !GetAtt LinkFunctionRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+        S3ObjectVersion: !Ref CodeVersion
+      MemorySize: 128
+      Timeout: 10
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref LinkTable
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          ARTIFACT_PREFIX: !Ref ArtifactPrefix
+          SNAPSHOT_BUCKET: !Ref SnapshotBucket
+          DEFAULT_TTL_SECONDS: !Ref DefaultTTLSeconds
+          MAX_TTL_SECONDS: '2592000'
+          PRESIGN_SECONDS: '60'
+          MAX_OBJECT_BYTES: !Ref MaxObjectBytes
+          CODE_LENGTH: '8'
+          PUBLIC_BASE_URL: !GetAtt LinkApi.ApiEndpoint
+          MANAGEMENT_PRINCIPAL_ARN: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${CallerRoleName}
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  LinkFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-handler
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  LinkApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: openclaw-link-service
+      Description: First-party revocable private artifact links
+      ProtocolType: HTTP
+      DisableExecuteApiEndpoint: false
+      Tags:
+        Project: url-shortener
+        Owner: !Ref OwnerTag
+        Channel: !Ref ChannelTag
+
+  LinkIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref LinkApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt LinkFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 10000
+
+  ResolveRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LinkApi
+      RouteKey: GET /{code}
+      AuthorizationType: NONE
+      Target: !Join ['/', ['integrations', !Ref LinkIntegration]]
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref LinkApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 10
+      Tags:
+        Project: url-shortener
+        Owner: !Ref OwnerTag
+        Channel: !Ref ChannelTag
+
+  InvocationSpikeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Link resolver invocation spike; investigate abuse or automation loop
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LinkFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  FunctionErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Link service Lambda errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LinkFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Project
+          Value: url-shortener
+        - Key: Owner
+          Value: !Ref OwnerTag
+        - Key: Channel
+          Value: !Ref ChannelTag
+
+  PublicResolveInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LinkFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${LinkApi}/*/GET/*
+
+  ManagementInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LinkFunction
+      Principal: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${CallerRoleName}
+
+Outputs:
+  ApiEndpoint:
+    Description: Public resolver base URL; management uses direct Lambda invocation
+    Value: !GetAtt LinkApi.ApiEndpoint
+  LinkTableName:
+    Value: !Ref LinkTable
+  LinkFunctionName:
+    Value: !Ref LinkFunction
+  SnapshotBucketName:
+    Value: !Ref SnapshotBucket
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  ArtifactPrefixValue:
+    Value: !Ref ArtifactPrefix
