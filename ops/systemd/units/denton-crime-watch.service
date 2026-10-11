@@ -1,0 +1,23 @@
+[Unit]
+Description=Weekly Denton neighborhood crime digest (#openclaw-ec2)
+
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/openclaw/scripts/denton-crime-watch.sh
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.16.0/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Optional private file (chmod 600) example:
+#   DENTON_HOME_ADDRESS="HOUSE_NUMBER Street Name, Denton, TX"
+# It may also lower the bounded timeout/body settings defined below.
+Environment=DENTON_CRIME_FETCH_TIMEOUT_SECS=20
+Environment=DENTON_CRIME_MODEL_TIMEOUT_SECS=150
+Environment=DENTON_CRIME_DISCORD_TIMEOUT_SECS=20
+Environment=DENTON_CRIME_MAX_DIGEST_CHARS=9000
+EnvironmentFile=-/home/ubuntu/.config/openclaw/denton-crime-watch.env
+# Validated maxima: 3 fetches × (30s + 5s grace) + 180s model +
+# at most 6 Discord chunks × 30s = 465s. Keep ample process/setup margin.
+TimeoutStartSec=600
+MemoryMax=800M
+CPUQuota=100%
