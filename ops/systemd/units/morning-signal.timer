@@ -1,0 +1,10 @@
+[Unit]
+Description=Build the Morning Signal podcast at 5:15 AM Central, Monday–Wednesday
+
+[Timer]
+OnCalendar=Mon..Wed *-*-* 05:15:00 America/Chicago
+# Catch up after a reboot; the script skips catch-up runs that start after 11:00.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

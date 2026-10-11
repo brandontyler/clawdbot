@@ -1,0 +1,8 @@
+{
+  "name": "morning-signal",
+  "description": "Headless writer for the Morning Signal podcast script. Web search only; no fetch, file, shell, or messaging tools, because its inputs include untrusted scraped social posts.",
+  "tools": ["web_search"],
+  "allowedTools": ["web_search"],
+  "resources": [],
+  "model": "gpt-5.6-sol"
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=Morning Signal — Brandon's weekday audio briefing to #openclaw-ec2 (Mon–Wed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/openclaw
+ExecStart=/usr/bin/python3 /home/ubuntu/openclaw/scripts/morning-signal.py --voice kokoro
+# Posts the short text fallback if the run above died or timed out without
+# delivering anything. A no-op when the episode or a fallback was posted.
+ExecStopPost=/usr/bin/python3 /home/ubuntu/openclaw/scripts/morning-signal.py --ensure-delivered
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.22.2/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Main run is bounded to 05:50 by its own deadlines; this is the hard backstop.
+TimeoutStartSec=42min
+StandardOutput=append:/home/ubuntu/logs/morning-podcast/morning-signal.log
+StandardError=append:/home/ubuntu/logs/morning-podcast/morning-signal.log
