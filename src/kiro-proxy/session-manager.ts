@@ -31,9 +31,24 @@ const HIBERNATE_PATH =
   process.env.KIRO_PROXY_HIBERNATE_PATH ??
   `${process.env.HOME}/.openclaw/kiro-proxy-hibernated.json`;
 
+const DEFAULT_PROMPT_LOCK_TIMEOUT_MS = 120_000;
+const AUTO_COMPACTION_PCT = 60;
+const AUTO_COMPACTION_RETRY_COOLDOWN_MS = 30_000;
+const RECENT_COMPACTION_GRACE_MS = 10_000;
+const COMPACTION_START_TIMEOUT_MS = 15_000;
+const COMPACTION_COMPLETE_TIMEOUT_MS = 180_000;
+const CONTEXT_USAGE_SETTLE_TIMEOUT_MS = 2_000;
+const COMPACTION_POLL_INTERVAL_MS = 100;
 const CONTEXT_WARN_PCT = 80;
 const CONTEXT_CRITICAL_PCT = 90;
-const CONTEXT_RESET_PCT = 95;
+
+export type DirectCompactionResult = {
+  compacted: boolean;
+  reason: string;
+  beforePct?: number;
+  afterPct?: number;
+  error?: string;
+};
 
 /** Check if an error is the "invalid conversation history" crash. */
 export function isInvalidHistoryError(err: unknown): boolean {
@@ -83,10 +98,14 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MEDIA_ATTACHED_LINE_PATTERN = /^\s*\[media attached(?:\s+\d+\/\d+)?:\s+[^\]]*\]\s*$/;
 
 function stripMediaAttachedLines(text: string): string {
-  if (!text.includes("[media attached")) return text;
+  if (!text.includes("[media attached")) {
+    return text;
+  }
   const lines = text.split("\n");
   const kept = lines.filter((line) => !MEDIA_ATTACHED_LINE_PATTERN.test(line));
-  if (kept.length === lines.length) return text;
+  if (kept.length === lines.length) {
+    return text;
+  }
   // Collapse runs of blank lines created by removal so the prompt isn't
   // peppered with empty paragraphs.
   return kept
@@ -159,7 +178,9 @@ function extractTextAndImages(
   const textParts: string[] = [];
   const images: Array<{ data: string; mimeType: string }> = [];
   for (const part of content) {
-    if (!part || typeof part !== "object") continue;
+    if (!part || typeof part !== "object") {
+      continue;
+    }
     const p = part as { type?: string; text?: string; image_url?: { url?: string } };
     if (p.type === "text" && typeof p.text === "string") {
       textParts.push(p.text);
@@ -327,7 +348,18 @@ type HibernatedSession = {
 type ManagedSession = {
   session: KiroSession;
   handle: KiroSessionHandle;
+  /** Tail promise for the FIFO per-session prompt/compaction queue. */
   promptLock: Promise<void>;
+  promptLockHeld: boolean;
+  promptQueueDepth: number;
+  autoCompactionQueued: boolean;
+  directCompactionInFlight: boolean;
+  lastAutoCompactionAttemptAt: number;
+  lastCompactionCompletedAt: number;
+  lastCompactionFailedAt: number;
+  compactionStartedCount: number;
+  compactionCompletedCount: number;
+  compactionFailedCount: number;
 };
 
 /** Load hibernated sessions from disk. */
@@ -355,11 +387,15 @@ function saveHibernated(map: Map<string, HibernatedSession>): void {
 
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
+  /** Resolves when the current owner has finished registering or failing a cold start. */
+  private readonly sessionCreationBarriers = new Map<string, Promise<void>>();
   private readonly hibernated: Map<string, HibernatedSession>;
   private readonly reporters = new Map<string, ProgressReporter>();
   private readonly sessionOpts: KiroSessionOptions;
+  private readonly autoCompaction: boolean;
   private readonly channelRoutes: Record<string, ChannelRoute>;
   private readonly idleMs: number;
+  private readonly promptLockTimeoutMs: number;
   private readonly log: (msg: string) => void;
   private gcTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -384,12 +420,19 @@ export class SessionManager {
     opts: {
       channelRoutes?: Record<string, ChannelRoute>;
       idleSecs?: number;
+      autoCompaction?: boolean;
+      promptLockTimeoutMs?: number;
       log?: (msg: string) => void;
     } = {},
   ) {
     this.sessionOpts = sessionOpts;
+    this.autoCompaction = opts.autoCompaction !== false;
     this.channelRoutes = opts.channelRoutes ?? {};
     this.idleMs = (opts.idleSecs ?? DEFAULT_IDLE_SECS) * 1000;
+    this.promptLockTimeoutMs = Math.max(
+      1,
+      opts.promptLockTimeoutMs ?? DEFAULT_PROMPT_LOCK_TIMEOUT_MS,
+    );
     this.log = opts.log ?? (() => {});
     this.hibernated = loadHibernated();
     if (this.hibernated.size > 0) {
@@ -430,6 +473,7 @@ export class SessionManager {
     sessionKey: string,
     messages: OpenAIMessage[],
     openclawSessionKey?: string,
+    signal?: AbortSignal,
   ): Promise<{
     session: KiroSession;
     promptText: string;
@@ -437,157 +481,181 @@ export class SessionManager {
     managed: ManagedSession;
     unlockPrompt?: () => void;
   }> {
-    const existing = this.sessions.get(sessionKey);
+    let existing = this.sessions.get(sessionKey);
 
-    if (existing && existing.session.alive) {
-      // Wait for any in-flight prompt to finish before sending the next one.
-      // Timeout after 120s to prevent infinite hangs when kiro-cli is zombie.
-      const PROMPT_LOCK_TIMEOUT_MS = 120_000;
-      const lockResult = await Promise.race([
-        existing.promptLock.then(() => "resolved" as const),
-        new Promise<"timeout">((r) => setTimeout(() => r("timeout"), PROMPT_LOCK_TIMEOUT_MS)),
-      ]);
-      if (lockResult === "timeout") {
+    if (existing?.session.alive) {
+      // Acquire the per-session FIFO queue before inspecting history. Appending
+      // our tail before awaiting the previous owner prevents multiple waiters
+      // from waking together and issuing concurrent ACP prompts.
+      const unlockPrompt = await this.acquirePromptLock(sessionKey, existing, signal);
+
+      // A prior queued owner may have reset/replaced the session while we were
+      // waiting. Release the stale queue slot and resolve against the new entry.
+      if (this.sessions.get(sessionKey) !== existing || !existing.session.alive) {
+        unlockPrompt();
+        return this.getOrCreate(sessionKey, messages, openclawSessionKey, signal);
+      }
+
+      if (messages.length < existing.handle.sentMessageCount) {
         this.log(
-          `🔴 promptLock timeout (${PROMPT_LOCK_TIMEOUT_MS / 1000}s): session=${this.tag(sessionKey)} — killing zombie session`,
+          `⚠️ session reset detected (msgs=${messages.length} < sent=${existing.handle.sentMessageCount}), sending /chat new then replacing`,
         );
-        this.resetSession(sessionKey, "prompt-lock-timeout");
-        // Fall through to create a fresh session below.
-      } else {
-        // Detect history compaction: if the gateway pruned old messages, the array
-        // is now shorter than what we've already sent.  Send only the latest user
-        // message instead of an empty slice.
-        let newMessages: OpenAIMessage[] = [];
-        if (messages.length < existing.handle.sentMessageCount) {
-          this.log(
-            `⚠️ session reset detected (msgs=${messages.length} < sent=${existing.handle.sentMessageCount}), sending /chat new then replacing`,
-          );
-          // Send /chat new to clear kiro-cli's internal context before killing.
-          const killTimer = setTimeout(() => existing.session.kill("chat-new-timeout"), 5000);
-          let chatNewOk = false;
-          try {
-            await existing.session.prompt("/chat new", () => {});
-            clearTimeout(killTimer);
-            chatNewOk = true;
-          } catch (err) {
-            clearTimeout(killTimer);
-            this.log(`/chat new failed (process may be dead): ${String(err)}`);
-          }
-          if (chatNewOk) {
-            // Re-hibernate: the ACP session now has clean context on disk.
-            existing.session.lastContextPct = 0;
-            this.hibernateSession(sessionKey, existing.session, "session-reset");
-          } else {
-            // /chat new failed - don't hibernate the bloated session. Reset it
-            // so next request creates a completely fresh one (also clears the
-            // stale hibernated entry that snapshotAll() may have written).
-            this.resetSession(sessionKey, "session-reset-failed");
-          }
-          // Session was reset - remove from active sessions and fall through
-          // to create a fresh one below.
-          this.sessions.delete(sessionKey);
-          this.cleanupSession(sessionKey);
-        } else {
-          newMessages = messages.slice(existing.handle.sentMessageCount);
+        const killTimer = setTimeout(() => existing?.session.kill("chat-new-timeout"), 5000);
+        let chatNewOk = false;
+        try {
+          await existing.session.prompt("/chat new", () => {});
+          clearTimeout(killTimer);
+          chatNewOk = true;
+        } catch (err) {
+          clearTimeout(killTimer);
+          this.log(`/chat new failed (process may be dead): ${String(err)}`);
         }
-
-        // Guard: if the slice produced zero new messages but the request has user
-        // messages, the gateway likely reset its session (/new) while the proxy
-        // still holds the old sentMessageCount.  Kill the stale session and let
-        // the caller fall through to create a fresh one.
-        if (
-          newMessages.length === 0 &&
-          messages.length > 0 &&
-          messages.some((m) => m.role === "user")
-        ) {
+        if (chatNewOk) {
+          existing.session.lastContextPct = 0;
+          this.hibernateSession(sessionKey, existing.session, "session-reset");
+        } else {
+          this.resetSession(sessionKey, "session-reset-failed");
+        }
+        unlockPrompt();
+        existing = undefined;
+      } else {
+        const newMessages = messages.slice(existing.handle.sentMessageCount);
+        if (newMessages.length === 0 && messages.some((m) => m.role === "user")) {
           this.log(
             `⚠️ session desync: sentCount=${existing.handle.sentMessageCount} msgs=${messages.length} but newMsgs=0 — gateway likely reset. Killing stale session=${this.tag(sessionKey)}`,
           );
           this.resetSession(sessionKey, "desync-empty-slice");
-          // Fall through to the "create fresh session" path below.
+          unlockPrompt();
+          existing = undefined;
         } else {
-          const { text: promptText, images: promptImages } =
-            this.buildPromptFromMessages(newMessages);
-          existing.handle.sentMessageCount = messages.length;
-          existing.handle.lastTouchedAt = Date.now();
-          existing.session.lastTouchedAt = Date.now();
-          const rssKb = existing.session.getRssKb();
-          this.log(
-            `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}${promptImages.length ? ` imgs=${promptImages.length}` : ""}`,
-          );
-          // Lock immediately so no concurrent request can slip through before
-          // the caller sets the real promptLock in the streaming path.
-          let unlockPrompt: () => void;
-          existing.promptLock = new Promise((r) => {
-            unlockPrompt = r;
-          });
-          return {
-            session: existing.session,
-            promptText,
-            promptImages,
-            managed: existing,
-            unlockPrompt: unlockPrompt!,
-          };
+          try {
+            const { text: promptText, images: promptImages } =
+              this.buildPromptFromMessages(newMessages);
+            existing.handle.sentMessageCount = messages.length;
+            existing.handle.lastTouchedAt = Date.now();
+            existing.session.lastTouchedAt = Date.now();
+            const rssKb = existing.session.getRssKb();
+            this.log(
+              `session reuse: session=${this.tag(sessionKey)} pid=${existing.session.pid} ctx=${existing.session.lastContextPct.toFixed(0)}% rss=${rssKb != null ? `${Math.round(rssKb / 1024)}MB` : "?"} newMsgs=${newMessages.length}${promptImages.length ? ` imgs=${promptImages.length}` : ""}`,
+            );
+            return {
+              session: existing.session,
+              promptText,
+              promptImages,
+              managed: existing,
+              unlockPrompt,
+            };
+          } catch (err) {
+            unlockPrompt();
+            throw err;
+          }
         }
       }
     }
 
-    // Dead or non-existent session — create a fresh one.
-    if (existing) {
-      existing.session.kill("replaced-dead-session");
-      this.sessions.delete(sessionKey);
-      this.cleanupSession(sessionKey);
+    // Dead or non-existent sessions use a separate per-key singleflight. The
+    // owner installs its barrier synchronously, before create/load can yield,
+    // so no second caller can spawn a competing ACP child or overwrite the map.
+    const pendingCreation = this.sessionCreationBarriers.get(sessionKey);
+    if (pendingCreation) {
+      await this.waitForSessionCreation(sessionKey, pendingCreation, signal);
+      // The owner may have registered a live session, failed, or registered a
+      // session that died immediately. Re-enter lookup instead of trusting the
+      // state observed before the wait.
+      return this.getOrCreate(sessionKey, messages, openclawSessionKey, signal);
+    }
+    if (signal?.aborted) {
+      const error = new Error("session creation aborted");
+      error.name = "AbortError";
+      throw error;
     }
 
-    // Resolve per-channel cwd/args overrides.
-    const channelId = detectChannelId(openclawSessionKey);
-    const route = channelId ? this.channelRoutes[channelId] : undefined;
-    const sessionOpts: KiroSessionOptions = route
-      ? {
-          ...this.sessionOpts,
-          cwd: route.cwd,
-          kiroArgs: route.kiroArgs ?? this.sessionOpts.kiroArgs,
-        }
-      : this.sessionOpts;
+    let releaseCreationBarrier: () => void = () => {};
+    const ownedCreationBarrier = new Promise<void>((resolve) => {
+      releaseCreationBarrier = resolve;
+    });
+    this.sessionCreationBarriers.set(sessionKey, ownedCreationBarrier);
 
-    if (route) {
-      this.log(`channel route: channel=${channelId} cwd=${route.cwd}`);
-    }
+    try {
+      // Dead session cleanup is owner-only too; competing callers wait above.
+      if (existing) {
+        existing.session.kill("replaced-dead-session");
+        this.sessions.delete(sessionKey);
+        this.cleanupSession(sessionKey);
+      }
 
-    const session = await this.createOrLoadSession(sessionKey, sessionOpts);
+      // Resolve per-channel cwd/args overrides.
+      const channelId = detectChannelId(openclawSessionKey);
+      const route = channelId ? this.channelRoutes[channelId] : undefined;
+      const sessionOpts: KiroSessionOptions = route
+        ? {
+            ...this.sessionOpts,
+            cwd: route.cwd,
+            kiroArgs: route.kiroArgs ?? this.sessionOpts.kiroArgs,
+          }
+        : this.sessionOpts;
 
-    this.log(
-      `session ready: session=${this.tag(sessionKey)} pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
-    );
+      if (route) {
+        this.log(`channel route: channel=${channelId} cwd=${route.cwd}`);
+      }
 
-    // For noHibernate routes the ACP session is always fresh — only send the
-    // latest user message so the model doesn't hallucinate prior context from
-    // the gateway's replayed history.
-    const freshOnly = route?.noHibernate === true && !session.wasLoaded;
-    const promptMessages = freshOnly ? messages.slice(-1) : messages;
-    if (freshOnly && messages.length > 1) {
+      const session = await this.createOrLoadSession(sessionKey, sessionOpts);
+
       this.log(
-        `noHibernate fresh session — sending only latest message (dropped ${messages.length - 1} replayed)`,
+        `session ready: session=${this.tag(sessionKey)} pid=${session.pid} cwd=${sessionOpts.cwd} pool=${this.sessions.size + 1}`,
       );
+
+      // A loaded ACP session already contains its persisted conversation history.
+      // Replaying the gateway's full OpenAI history here duplicates every prior
+      // turn (including inline images) and can jump context from healthy to >100%
+      // before end-of-turn compaction gets a chance to run. Fresh noHibernate
+      // sessions likewise receive only the latest turn by design.
+      const resumed = session.wasLoaded;
+      const freshOnly = route?.noHibernate === true && !resumed;
+      const latestOnly = resumed || freshOnly;
+      const promptMessages = latestOnly ? messages.slice(-1) : messages;
+      if (resumed && messages.length > 1) {
+        this.log(
+          `hibernated resume — ACP already owns history; sending only latest message (dropped ${messages.length - 1} replayed)`,
+        );
+      } else if (freshOnly && messages.length > 1) {
+        this.log(
+          `noHibernate fresh session — sending only latest message (dropped ${messages.length - 1} replayed)`,
+        );
+      }
+      const { text: promptText, images: promptImages } =
+        this.buildPromptFromMessages(promptMessages);
+
+      const handle: KiroSessionHandle = {
+        acpSessionId: session.acpSessionId,
+        sentMessageCount: messages.length,
+        lastTouchedAt: Date.now(),
+      };
+      const managed: ManagedSession = {
+        session,
+        handle,
+        promptLock: Promise.resolve(),
+        promptLockHeld: false,
+        promptQueueDepth: 0,
+        autoCompactionQueued: false,
+        directCompactionInFlight: false,
+        lastAutoCompactionAttemptAt: 0,
+        lastCompactionCompletedAt: 0,
+        lastCompactionFailedAt: 0,
+        compactionStartedCount: 0,
+        compactionCompletedCount: 0,
+        compactionFailedCount: 0,
+      };
+      this.sessions.set(sessionKey, managed);
+      const unlockPrompt = await this.acquirePromptLock(sessionKey, managed, signal);
+
+      return { session, promptText, promptImages, managed, unlockPrompt };
+    } finally {
+      if (this.sessionCreationBarriers.get(sessionKey) === ownedCreationBarrier) {
+        this.sessionCreationBarriers.delete(sessionKey);
+      }
+      releaseCreationBarrier();
     }
-    const { text: promptText, images: promptImages } = this.buildPromptFromMessages(promptMessages);
-
-    const handle: KiroSessionHandle = {
-      acpSessionId: session.acpSessionId,
-      sentMessageCount: messages.length,
-      lastTouchedAt: Date.now(),
-    };
-    let unlockNew: () => void;
-    const managed: ManagedSession = {
-      session,
-      handle,
-      promptLock: new Promise((r) => {
-        unlockNew = r;
-      }),
-    };
-    this.sessions.set(sessionKey, managed);
-
-    return { session, promptText, promptImages, managed, unlockPrompt: unlockNew! };
   }
 
   /** Kill all sessions cleanly. */
@@ -661,6 +729,98 @@ export class SessionManager {
   }
 
   /**
+   * Queue same-session compaction immediately after a completed user turn.
+   * The queue slot is appended while the current prompt lock is still held,
+   * so compaction runs before any later turn without delaying HTTP completion.
+   */
+  async autoCompactAfterPrompt(
+    sessionKey: string,
+    expectedSession: KiroSession,
+    promptText: string,
+  ): Promise<DirectCompactionResult> {
+    const managed = this.sessions.get(sessionKey);
+    if (!managed || managed.session !== expectedSession || !expectedSession.alive) {
+      return { compacted: false, reason: "session-replaced" };
+    }
+
+    const normalizedPrompt = promptText.trim();
+    const isCompactCommand = /^\/compact(?:\s|$)/i.test(normalizedPrompt);
+    if (/^\/clear(?:\s|$)|^\/chat\s+new(?:\s|$)/i.test(normalizedPrompt)) {
+      return { compacted: false, reason: "context-control-command" };
+    }
+    if (!this.autoCompaction && !isCompactCommand) {
+      return { compacted: false, reason: "disabled" };
+    }
+
+    const beforePct = expectedSession.lastContextPct;
+    if (managed.autoCompactionQueued || managed.directCompactionInFlight) {
+      return { compacted: true, reason: "compaction-already-queued", beforePct };
+    }
+
+    managed.autoCompactionQueued = true;
+    const baseline = this.compactionCounters(managed);
+    const trigger = isCompactCommand ? "forwarded-compact" : "automatic-60pct";
+    void this.runQueuedCompaction(
+      sessionKey,
+      managed,
+      expectedSession,
+      trigger,
+      baseline,
+      isCompactCommand,
+    ).catch((err) => {
+      this.log(
+        `queued compaction failed unexpectedly: trigger=${trigger} session=${this.tag(sessionKey)} error=${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+
+    return { compacted: true, reason: "queued", beforePct };
+  }
+
+  /** Run manual `/kcompact` against the existing ACP child without replaying history. */
+  async compactSession(
+    sessionKey: string,
+    command = "/compact",
+    observedMessageCount?: number,
+  ): Promise<DirectCompactionResult> {
+    const managed = this.sessions.get(sessionKey);
+    if (!managed || !managed.session.alive) {
+      return { compacted: false, reason: "session-not-found" };
+    }
+    if (!/^\/compact(?:\s|$)/i.test(command.trim())) {
+      return { compacted: false, reason: "invalid-command" };
+    }
+    if (
+      observedMessageCount !== undefined &&
+      Number.isSafeInteger(observedMessageCount) &&
+      observedMessageCount > managed.handle.sentMessageCount
+    ) {
+      managed.handle.sentMessageCount = observedMessageCount;
+      managed.handle.lastTouchedAt = Date.now();
+      managed.session.lastTouchedAt = managed.handle.lastTouchedAt;
+    }
+    if (
+      managed.promptLockHeld ||
+      managed.autoCompactionQueued ||
+      managed.session.isPrompting ||
+      managed.session.isCompacting ||
+      managed.directCompactionInFlight
+    ) {
+      return {
+        compacted: false,
+        reason: "session-busy",
+        beforePct: managed.session.lastContextPct,
+      };
+    }
+
+    const releasePromptLock = await this.acquirePromptLock(sessionKey, managed);
+    try {
+      return await this.runDirectCompaction(sessionKey, managed, command.trim(), "manual-kcompact");
+    } finally {
+      releasePromptLock();
+    }
+  }
+
+  /**
    * Get the latest user message text from an OpenAI message array.
    * Used for recovery: send only the last message to a fresh session.
    */
@@ -675,6 +835,355 @@ export class SessionManager {
   }
 
   // ─── Private ──────────────────────────────────────────────────────────────
+
+  /** Wait for the current cold-start owner without taking over its barrier. */
+  private async waitForSessionCreation(
+    sessionKey: string,
+    barrier: Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const waitResult = await new Promise<"ready" | "aborted" | "timeout">((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (result: "ready" | "aborted" | "timeout") => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        signal?.removeEventListener("abort", onAbort);
+        resolve(result);
+      };
+      const onAbort = () => finish("aborted");
+
+      barrier.then(
+        () => finish("ready"),
+        () => finish("ready"),
+      );
+      timer = setTimeout(() => finish("timeout"), this.promptLockTimeoutMs);
+      if (signal?.aborted) {
+        finish("aborted");
+      } else {
+        signal?.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+
+    if (waitResult === "ready") {
+      return;
+    }
+    if (waitResult === "aborted") {
+      const error = new Error("session creation wait aborted");
+      error.name = "AbortError";
+      throw error;
+    }
+
+    this.log(
+      `🔴 session creation wait timeout (${this.promptLockTimeoutMs / 1000}s): session=${this.tag(sessionKey)}`,
+    );
+    const error = new Error("session creation wait timed out");
+    error.name = "SessionCreationTimeoutError";
+    throw error;
+  }
+
+  /**
+   * Acquire one FIFO slot in the per-session queue. Each caller appends its own
+   * unresolved tail before awaiting the previous tail, so simultaneous waiters
+   * can never wake into the ACP child together.
+   */
+  private async acquirePromptLock(
+    sessionKey: string,
+    managed: ManagedSession,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    const previousTail = managed.promptLock;
+    let resolveTail: () => void = () => {};
+    const currentTail = new Promise<void>((resolve) => {
+      resolveTail = resolve;
+    });
+    managed.promptLock = currentTail;
+    managed.promptQueueDepth++;
+    managed.promptLockHeld = true;
+
+    const waitResult = await new Promise<"acquired" | "aborted" | "timeout">((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (result: "acquired" | "aborted" | "timeout") => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        signal?.removeEventListener("abort", onAbort);
+        resolve(result);
+      };
+      const onAbort = () => finish("aborted");
+
+      previousTail.then(
+        () => finish("acquired"),
+        () => finish("acquired"),
+      );
+      timer = setTimeout(() => finish("timeout"), this.promptLockTimeoutMs);
+      if (signal?.aborted) {
+        finish("aborted");
+      } else {
+        signal?.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+
+    if (waitResult !== "acquired") {
+      managed.promptQueueDepth = Math.max(0, managed.promptQueueDepth - 1);
+      if (managed.promptQueueDepth === 0) {
+        managed.promptLockHeld = false;
+      }
+      // Preserve FIFO for later tickets: an abandoned ticket becomes a bridge
+      // that resolves only after its predecessor eventually releases.
+      void previousTail.then(resolveTail, resolveTail);
+
+      if (waitResult === "aborted") {
+        const error = new Error("prompt lock wait aborted");
+        error.name = "AbortError";
+        throw error;
+      }
+
+      const ownerLive =
+        managed.session.alive &&
+        (managed.session.isPrompting ||
+          managed.session.isCompacting ||
+          managed.directCompactionInFlight);
+      this.log(
+        `🔴 promptLock timeout (${this.promptLockTimeoutMs / 1000}s): session=${this.tag(sessionKey)} owner=${ownerLive ? "live" : "stale"}`,
+      );
+      if (!ownerLive && this.sessions.get(sessionKey) === managed) {
+        this.resetSession(sessionKey, "prompt-lock-timeout-stale");
+      }
+      const error = new Error(
+        `prompt lock wait timed out (${ownerLive ? "owner live" : "owner stale"})`,
+      );
+      error.name = "PromptLockTimeoutError";
+      throw error;
+    }
+
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      managed.promptQueueDepth = Math.max(0, managed.promptQueueDepth - 1);
+      if (managed.promptQueueDepth === 0) {
+        managed.promptLockHeld = false;
+      }
+      resolveTail();
+    };
+  }
+
+  private compactionCounters(managed: ManagedSession): {
+    started: number;
+    completed: number;
+    failed: number;
+  } {
+    return {
+      started: managed.compactionStartedCount,
+      completed: managed.compactionCompletedCount,
+      failed: managed.compactionFailedCount,
+    };
+  }
+
+  private async runQueuedCompaction(
+    sessionKey: string,
+    managed: ManagedSession,
+    expectedSession: KiroSession,
+    trigger: string,
+    baseline: { started: number; completed: number; failed: number },
+    forwardedCompactCommand: boolean,
+  ): Promise<DirectCompactionResult> {
+    let releasePromptLock: (() => void) | undefined;
+    try {
+      releasePromptLock = await this.acquirePromptLock(sessionKey, managed);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (
+        this.sessions.get(sessionKey) !== managed ||
+        managed.session !== expectedSession ||
+        !expectedSession.alive
+      ) {
+        return { compacted: false, reason: "session-replaced" };
+      }
+
+      const beforePct = expectedSession.lastContextPct;
+      if (Date.now() - managed.lastCompactionCompletedAt < RECENT_COMPACTION_GRACE_MS) {
+        return {
+          compacted: true,
+          reason: "recent-native-compaction",
+          beforePct,
+          afterPct: expectedSession.lastContextPct,
+        };
+      }
+      if (expectedSession.isCompacting) {
+        this.log(
+          `compaction already in progress — queued turns remain blocked until it finishes (session=${this.tag(sessionKey)} ctx=${beforePct.toFixed(1)}%)`,
+        );
+        return await this.waitForCompactionOutcome(
+          sessionKey,
+          managed,
+          beforePct,
+          "native-in-progress",
+          baseline,
+          true,
+        );
+      }
+      if (forwardedCompactCommand) {
+        return await this.waitForCompactionOutcome(
+          sessionKey,
+          managed,
+          beforePct,
+          trigger,
+          baseline,
+          false,
+        );
+      }
+      if (beforePct < AUTO_COMPACTION_PCT) {
+        return { compacted: false, reason: "below-threshold", beforePct };
+      }
+      const now = Date.now();
+      if (now - managed.lastAutoCompactionAttemptAt < AUTO_COMPACTION_RETRY_COOLDOWN_MS) {
+        return { compacted: false, reason: "retry-cooldown", beforePct };
+      }
+      managed.lastAutoCompactionAttemptAt = now;
+      return await this.runDirectCompaction(sessionKey, managed, "/compact", trigger);
+    } finally {
+      managed.autoCompactionQueued = false;
+      releasePromptLock?.();
+    }
+  }
+
+  private async waitForCompactionOutcome(
+    sessionKey: string,
+    managed: ManagedSession,
+    beforePct: number,
+    trigger: string,
+    baseline: { started: number; completed: number; failed: number },
+    startedAlready: boolean,
+  ): Promise<DirectCompactionResult> {
+    const session = managed.session;
+    const waitStartedAt = Date.now();
+    const startDeadline = waitStartedAt + COMPACTION_START_TIMEOUT_MS;
+    const completionDeadline = waitStartedAt + COMPACTION_COMPLETE_TIMEOUT_MS;
+    let sawStart = startedAlready;
+
+    while (Date.now() < completionDeadline) {
+      if (
+        this.sessions.get(sessionKey) !== managed ||
+        managed.session !== session ||
+        !session.alive
+      ) {
+        return {
+          compacted: false,
+          reason: "session-replaced",
+          beforePct,
+          afterPct: session.lastContextPct,
+        };
+      }
+
+      const contextDropped =
+        session.lastContextPct < beforePct && session.lastContextPct < AUTO_COMPACTION_PCT;
+      const completed = managed.compactionCompletedCount > baseline.completed;
+      if (completed || contextDropped) {
+        if (contextDropped && session.isCompacting) {
+          session.settleCompactionTracking("completed");
+        }
+        const settleDeadline = Date.now() + CONTEXT_USAGE_SETTLE_TIMEOUT_MS;
+        while (session.lastContextPct >= beforePct && Date.now() < settleDeadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, COMPACTION_POLL_INTERVAL_MS));
+        }
+        const afterPct = session.lastContextPct;
+        this.snapshotSession(sessionKey, session);
+        this.log(
+          `direct compaction completed: trigger=${trigger} session=${this.tag(sessionKey)} ctx=${beforePct.toFixed(1)}%→${afterPct.toFixed(1)}% acp=${session.acpSessionId}`,
+        );
+        return { compacted: true, reason: "completed", beforePct, afterPct };
+      }
+
+      if (managed.compactionFailedCount > baseline.failed) {
+        const afterPct = session.lastContextPct;
+        this.log(
+          `direct compaction failed: trigger=${trigger} session=${this.tag(sessionKey)} ctx=${beforePct.toFixed(1)}%→${afterPct.toFixed(1)}%`,
+        );
+        return { compacted: false, reason: "compaction-failed", beforePct, afterPct };
+      }
+
+      sawStart =
+        sawStart || session.isCompacting || managed.compactionStartedCount > baseline.started;
+      if (!sawStart && Date.now() >= startDeadline) {
+        return {
+          compacted: false,
+          reason: "no-start-signal",
+          beforePct,
+          afterPct: session.lastContextPct,
+        };
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, COMPACTION_POLL_INTERVAL_MS));
+    }
+
+    this.log(
+      `direct compaction timed out: trigger=${trigger} session=${this.tag(sessionKey)} ctx=${beforePct.toFixed(1)}% compacting=${session.isCompacting}`,
+    );
+    if (session.isCompacting) {
+      session.settleCompactionTracking("failed");
+    }
+    managed.lastCompactionFailedAt = Date.now();
+    return {
+      compacted: false,
+      reason: "compaction-timeout",
+      beforePct,
+      afterPct: session.lastContextPct,
+    };
+  }
+
+  private async runDirectCompaction(
+    sessionKey: string,
+    managed: ManagedSession,
+    command: string,
+    trigger: string,
+  ): Promise<DirectCompactionResult> {
+    const session = managed.session;
+    const beforePct = session.lastContextPct;
+    const baseline = this.compactionCounters(managed);
+    managed.directCompactionInFlight = true;
+    this.log(
+      `direct compaction start: trigger=${trigger} threshold=${AUTO_COMPACTION_PCT}% session=${this.tag(sessionKey)} ctx=${beforePct.toFixed(1)}% acp=${session.acpSessionId}`,
+    );
+
+    try {
+      await session.prompt(command, () => {});
+      return await this.waitForCompactionOutcome(
+        sessionKey,
+        managed,
+        beforePct,
+        trigger,
+        baseline,
+        false,
+      );
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.log(
+        `direct compaction command failed: trigger=${trigger} session=${this.tag(sessionKey)} ctx=${beforePct.toFixed(1)}% error=${error}`,
+      );
+      return {
+        compacted: false,
+        reason: "command-failed",
+        beforePct,
+        afterPct: session.lastContextPct,
+        error,
+      };
+    } finally {
+      managed.directCompactionInFlight = false;
+    }
+  }
 
   /**
    * Try to load a hibernated session; fall back to creating a fresh one.
@@ -909,18 +1418,17 @@ export class SessionManager {
         if (reporter) {
           reporter.updateContext(pct);
         }
-        if (pct >= CONTEXT_RESET_PCT) {
+        if (pct >= CONTEXT_CRITICAL_PCT) {
           this.log(
-            `context critical (${pct.toFixed(1)}% >= ${CONTEXT_RESET_PCT}%) — auto-resetting session=${this.tag(sessionKey)}`,
-          );
-          this.resetSession(sessionKey, `context-critical-${Math.round(pct)}pct`);
-        } else if (pct >= CONTEXT_CRITICAL_PCT) {
-          this.log(
-            `context CRITICAL: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)}) — will auto-reset at ${CONTEXT_RESET_PCT}%, send /new soon`,
+            `context CRITICAL: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)}) — direct same-session compaction will run as soon as this turn ends`,
           );
         } else if (pct >= CONTEXT_WARN_PCT) {
           this.log(
-            `context warning: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)}) — approaching limit`,
+            `context warning: ${pct.toFixed(1)}% (session=${this.tag(sessionKey)}) — direct same-session compaction is queued for the end of this turn`,
+          );
+        } else if (pct >= AUTO_COMPACTION_PCT) {
+          this.log(
+            `context threshold reached: ${pct.toFixed(1)}% >= ${AUTO_COMPACTION_PCT}% (session=${this.tag(sessionKey)}) — direct same-session compaction queued`,
           );
         }
       },
@@ -960,12 +1468,35 @@ export class SessionManager {
         }
       },
       onCompactionStatus: (status, summary) => {
+        const managed = this.sessions.get(sessionKey);
+        if (managed) {
+          const now = Date.now();
+          if (status === "started") {
+            managed.compactionStartedCount++;
+          } else if (status === "completed") {
+            managed.lastCompactionCompletedAt = now;
+            managed.compactionCompletedCount++;
+            clearContextAlerts(sessionKey);
+          } else {
+            managed.lastCompactionFailedAt = now;
+            managed.compactionFailedCount++;
+          }
+        }
         const reporter = this.reporters.get(sessionKey);
         if (!reporter) {
           return;
         }
         if (status === "started") {
-          reporter.onCompactionStarted();
+          reporter.onCompactionStarted(detectChannelId(sessionKey));
+          return;
+        }
+        if (status === "failed") {
+          // Automatic (or manual) compaction failed. Clear the in-progress
+          // banner so it can't get stuck at "🧹 Compacting…" forever. Native
+          // auto-compaction retries as context grows; `/kcompact` is the manual
+          // fallback. No user-facing failure message — see progress.ts rationale.
+          this.log(`compaction failed (session=${this.tag(sessionKey)}) — clearing banner state`);
+          reporter.onCompactionFailed();
           return;
         }
         // status === "completed"
@@ -1036,7 +1567,8 @@ export class SessionManager {
     const now = Date.now();
     const before = this.sessions.size;
     let reaped = 0;
-    for (const [key, { session, handle }] of this.sessions) {
+    for (const [key, { session, handle, promptLockHeld, directCompactionInFlight }] of this
+      .sessions) {
       const idleFor = now - handle.lastTouchedAt;
       const rssKb = session.getRssKb();
       const rssMb = rssKb != null ? Math.round(rssKb / 1024) : "?";
@@ -1048,8 +1580,13 @@ export class SessionManager {
         this.sessions.delete(key);
         this.cleanupSession(key);
         reaped++;
-      } else if (session.isPrompting) {
-        // Never kill a session with an active prompt — the agent is working.
+      } else if (
+        promptLockHeld ||
+        session.isPrompting ||
+        session.isCompacting ||
+        directCompactionInFlight
+      ) {
+        // Never kill a queued/active prompt or background compaction.
         continue;
       } else if (idleFor > this.idleMs) {
         this.hibernateSession(

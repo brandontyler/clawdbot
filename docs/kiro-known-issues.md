@@ -78,3 +78,82 @@ Corruption events are logged to:
 - `logs/corruption-events.jsonl` (structured, persistent)
 
 Session files can be inspected at `~/.kiro/sessions/cli/<session-id>.jsonl`.
+
+## Automatic Compaction (proxy-enforced at 60%)
+
+**Status:** Supported / enabled by default
+**Affected versions:** observed with kiro-cli 2.8.1 ACP sessions
+
+### Background
+
+kiro-cli 2.8.1 contains two compaction implementations. Its generic module uses
+60%, while the ACP ChatAgent graph observed on this host uses 80% projected
+usage / 95% truncation and has failed to repeat reliably in persistent sessions.
+The proxy therefore enforces the operator policy directly: after every completed
+turn, context at or above 60% queues native `/compact` against the **same ACP
+child and session ID**. The compaction queue slot is reserved before the turn's
+lock is released, so the response can finish promptly while every later turn
+waits behind compaction. This does not replay or shorten Gateway history and
+never resets the child.
+
+### What the proxy does
+
+The proxy observes Kiro's context-usage notifications and, after each completed
+turn, reserves the next FIFO slot and invokes native `/compact` directly on the
+same ACP child when usage is at or above 60%. The completed answer is not held
+open for maintenance, but a later Gateway turn cannot race or replace the child
+because it queues behind compaction. Kiro's own scheduler
+remains enabled by its normal defaults and can compact earlier; the proxy does
+not send an unverified capability override.
+
+### Lifecycle events
+
+The proxy listens for compaction lifecycle transitions from **two** event
+families and de-duplicates them so each transition surfaces at most once:
+
+- **Modern** (kiro-cli 2.8.1): `session_info_update` notifications carrying
+  `_meta.kiro.kind` ∈ { `context_usage`, `summarization_started`,
+  `summarization_completed`, `summarization_failed` }.
+- **ACP wrapper compatibility** (also emitted by the installed kiro-cli 2.8.1):
+  `_kiro.dev/metadata` (context %) and `_kiro.dev/compaction/status`
+  (`started` | `completed` | `failed`).
+
+Replayed `completed`/`failed` events with no matching live `started` (which can
+happen on session load) are ignored. Notifications carrying another session ID
+(such as a subagent's context update) are ignored so child usage cannot overwrite
+the parent session's displayed percentage. A `failed` event clears the
+in-progress "🧹 Compacting…" banner so it can never get stuck.
+
+### Native scheduler proof and limitation (2026-08-29)
+
+A persistent ACP session reported 76.2% context. On the next prompt, kiro-cli
+emitted native compaction `started` and `completed`, wrote a 30,268-character
+replacement summary, then reported 8.8% and continued the in-flight task. Its
+JSONL contained a native `Compaction` record preserving the two most recent
+message pairs; no reset, replacement session, or `loadSession` fallback occurred.
+
+The same session later crossed 80.1% and 82.8% without another lifecycle event
+event or context drop. This is why the proxy now owns the 60% guarantee instead
+of relying on Kiro's internal scheduler to re-arm.
+
+### Rollback switch
+
+To disable the proxy safeguard as a rollback, start the proxy with:
+
+```bash
+openclaw kiro-proxy --no-auto-compaction
+```
+
+This disables only the proxy's 60% safeguard. Kiro CLI's independent native
+scheduler is unchanged. Manual `/kcompact` remains available through the
+dedicated same-session proxy endpoint.
+
+### Manual fallback vs. reset
+
+- `/kcompact` — dedicated `POST /compact/<sessionKey>` path that acquires the
+  current session lock and invokes native `/compact` directly. It never sends a
+  synthetic one-message OpenAI history and therefore cannot trigger history-
+  shrink reset logic.
+- There is no synchronous 95% context reset. It raced Kiro's own truncation path
+  and could kill the ACP receiver while compaction was starting. High-context
+  turns now get the same direct compaction safeguard instead.

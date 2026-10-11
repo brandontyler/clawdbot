@@ -327,9 +327,21 @@ export class ProgressReporter {
    * is non-null, so subsequent interval ticks (and the eventual completion
    * edit) all render with the right shape.
    */
-  onCompactionStarted(): void {
+  onCompactionStarted(channelId?: string): void {
     if (!this.started) {
-      return;
+      if (!channelId) {
+        return;
+      }
+      this.stop();
+      this.channelId = channelId;
+      this.messageId = null;
+      this.promptStartedAt = Date.now();
+      this.toolCount = 0;
+      this.currentTool = null;
+      this.history = [];
+      this.allHistory = [];
+      this.lastToolEndAt = 0;
+      this.started = true;
     }
     this.compactionStartedAt = Date.now();
     this.preCompactContextPct = this.contextPct;
@@ -374,8 +386,37 @@ export class ProgressReporter {
     return result;
   }
 
+  /**
+   * Called when kiro-cli emits a compaction FAILURE (modern
+   * `session_info_update` `_meta.kiro.kind = "summarization_failed"` or the
+   * legacy `_kiro.dev/compaction/status {type:"failed"}`).
+   *
+   * Automatic compaction can fail (e.g. transient model/tool error). If we
+   * leave `compactionStartedAt` set, buildMessage() short-circuits into the
+   * "🧹 Compacting…" line forever and every interval tick re-renders that
+   * stale banner — a stuck-banner UX. Clearing the in-progress state lets the
+   * normal prompt flow resume: the reporter falls back to its regular
+   * tool/thinking banner and the eventual `onPromptEnd → finish()` closes it
+   * out normally. We deliberately do NOT post a scary "compaction failed"
+   * message — native auto-compaction will retry as context keeps growing, and
+   * the operator still has `/kcompact` as a manual fallback.
+   */
+  onCompactionFailed(): void {
+    if (this.compactionStartedAt == null) {
+      return;
+    }
+    this.log("compaction failed — clearing in-progress banner state");
+    this.compactionStartedAt = null;
+    this.preCompactContextPct = 0;
+    // Re-render so an in-flight "Compacting…" banner immediately reverts to the
+    // normal working/thinking view instead of waiting for the next tool event.
+    if (this.started) {
+      void this.finish();
+    }
+  }
+
   async finish(): Promise<void> {
-    if (!this.started) {
+    if (!this.started || this.compactionStartedAt != null) {
       return;
     }
     this.started = false;

@@ -15,7 +15,11 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { SessionManager, isInvalidHistoryError } from "./session-manager.js";
+import {
+  SessionManager,
+  extractKiroSlashCommand,
+  isInvalidHistoryError,
+} from "./session-manager.js";
 import type {
   KiroProxyOptions,
   OpenAIChatRequest,
@@ -236,7 +240,7 @@ type RecoveryContext = {
   responseText: string;
   t0: number;
   session: import("./kiro-session.js").KiroSession;
-  managed: { handle: { sentMessageCount: number }; promptLock: Promise<void> };
+  managed: { handle: { sentMessageCount: number } };
   manager: SessionManager;
   log: (msg: string) => void;
 };
@@ -299,20 +303,18 @@ async function attemptRecovery(
       const recovery = await manager.getOrCreate(sessionKey, cleanMessages, openclawSessionKey);
       recovery.managed.handle.sentMessageCount = messages.length;
 
-      let recoveryResolve: () => void = () => {};
-      recovery.managed.promptLock = new Promise((r) => {
-        recoveryResolve = r;
-      });
-
       const parts: string[] = [];
-      await recovery.session.prompt(safeRecoveryText, (text) => {
-        if (text) {
-          parts.push(text);
-          onChunk?.(text);
-        }
-      });
-      recovery.session.consecutiveErrors = 0;
-      recoveryResolve();
+      try {
+        await recovery.session.prompt(safeRecoveryText, (text) => {
+          if (text) {
+            parts.push(text);
+            onChunk?.(text);
+          }
+        });
+        recovery.session.consecutiveErrors = 0;
+      } finally {
+        recovery.unlockPrompt?.();
+      }
 
       return { ok: true, text: parts.join(""), promptUsed: safeRecoveryText };
     } catch (retryErr) {
@@ -344,20 +346,18 @@ async function attemptRecovery(
     const fallback = await manager.getOrCreate(sessionKey, fallbackMessages, openclawSessionKey);
     fallback.managed.handle.sentMessageCount = messages.length;
 
-    let fallbackResolve: () => void = () => {};
-    fallback.managed.promptLock = new Promise((r) => {
-      fallbackResolve = r;
-    });
-
     const parts: string[] = [];
-    await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
-      if (text) {
-        parts.push(text);
-        onChunk?.(text);
-      }
-    });
-    fallback.session.consecutiveErrors = 0;
-    fallbackResolve();
+    try {
+      await fallback.session.prompt(FALLBACK_RECOVERY_PROMPT, (text) => {
+        if (text) {
+          parts.push(text);
+          onChunk?.(text);
+        }
+      });
+      fallback.session.consecutiveErrors = 0;
+    } finally {
+      fallback.unlockPrompt?.();
+    }
 
     return { ok: true, text: parts.join(""), promptUsed: FALLBACK_RECOVERY_PROMPT };
   } catch (fallbackErr) {
@@ -488,6 +488,61 @@ async function handleCompletions(
 
   log(`${wantStream ? "stream" : "sync"} session=${sessionTag}… msgs=${body.messages.length}`);
 
+  // Registered `/kcompact` in older Gateway builds forwards a one-message
+  // `/compact` completion request. Intercept it before getOrCreate() compares
+  // message counts; otherwise that intentionally short request looks like
+  // Gateway history shrinkage and triggers `/chat new` on the live ACP child.
+  // The same path also keeps the plain-text `/kcompact` alias safe.
+  const latestUserMessage = body.messages.findLast((message) => message.role === "user");
+  const latestUserText =
+    latestUserMessage && typeof latestUserMessage.content === "string"
+      ? latestUserMessage.content
+      : "";
+  const extractedCommand = extractKiroSlashCommand(latestUserText);
+  const directCommand = /^\/compact(?:\s|$)/i.test(latestUserText.trim())
+    ? latestUserText.trim()
+    : extractedCommand;
+  if (directCommand && /^\/compact(?:\s|$)/i.test(directCommand)) {
+    const result = await manager.compactSession(sessionKey, directCommand, body.messages.length);
+    const delta =
+      result.beforePct !== undefined && result.afterPct !== undefined
+        ? ` (${result.beforePct.toFixed(1)}% → ${result.afterPct.toFixed(1)}%)`
+        : "";
+    const content = result.compacted
+      ? `✅ Compacted the existing kiro conversation${delta}.`
+      : `⚠️ Same-session compaction did not complete (${result.reason}). Try \`/kcompact\` again after the current turn finishes.`;
+    log(`direct compact command: session=${sessionTag}… result=${result.reason}${delta || ""}`);
+
+    if (wantStream) {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      sseChunk(res, {
+        ...buildChunk(completionId, ""),
+        choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+      });
+      sseChunk(res, buildChunk(completionId, content));
+      sseChunk(res, buildFinalChunk(completionId));
+      sseDone(res);
+      return;
+    }
+
+    const completion: OpenAICompletion = {
+      id: completionId,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: KIRO_MODEL_ID,
+      choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(completion));
+    return;
+  }
+
   // Pre-flight context size check: estimate the incoming payload size from
   // OpenClaw's message history.  If it's very large, the gateway may not have
   // compacted yet (or compaction failed).  Log a warning so we have visibility
@@ -522,8 +577,17 @@ async function handleCompletions(
 
   // Get or create Kiro ACP session
   let sessionResult: Awaited<ReturnType<SessionManager["getOrCreate"]>>;
+  const lockWaitController = new AbortController();
+  const abortLockWait = () => lockWaitController.abort();
+  req.once("aborted", abortLockWait);
+  res.once("close", abortLockWait);
   try {
-    sessionResult = await manager.getOrCreate(sessionKey, body.messages, openclawSessionKey);
+    sessionResult = await manager.getOrCreate(
+      sessionKey,
+      body.messages,
+      openclawSessionKey,
+      lockWaitController.signal,
+    );
   } catch (err) {
     log(`session error: ${String(err)}`);
     res.writeHead(503, { "Content-Type": "application/json" });
@@ -536,6 +600,9 @@ async function handleCompletions(
       }),
     );
     return;
+  } finally {
+    req.removeListener("aborted", abortLockWait);
+    res.removeListener("close", abortLockWait);
   }
 
   const { session, promptText, promptImages, managed } = sessionResult;
@@ -543,7 +610,9 @@ async function handleCompletions(
   log(`timing: session=${sessionTag}… resolve=${Math.round(tSession - t0)}ms`);
 
   if (!promptText.trim()) {
-    // Nothing new to send (e.g. only assistant messages in the delta)
+    // Nothing new to send (e.g. only assistant messages in the delta).
+    // getOrCreate already reserved this session's FIFO slot, so release it.
+    sessionResult.unlockPrompt?.();
     res.writeHead(200, { "Content-Type": "application/json" });
     const completion: OpenAICompletion = {
       id: completionId,
@@ -623,7 +692,9 @@ async function handleCompletions(
           (text) => {
             if (!tFirstChunk) {
               tFirstChunk = performance.now();
-              if (firstTokenTimer) clearTimeout(firstTokenTimer);
+              if (firstTokenTimer) {
+                clearTimeout(firstTokenTimer);
+              }
               // Flip the cold→warm flag for this session so future turns use
               // the (tighter) warm-session timeout floor.
               session.hasStreamedFirstToken = true;
@@ -755,6 +826,12 @@ async function handleCompletions(
         session.consecutiveEmptyResponses = 0;
       }
 
+      const autoCompactionResult = await manager.autoCompactAfterPrompt?.(
+        sessionKey,
+        session,
+        promptText,
+      );
+
       // Slash commands like `/clear` reset context server-side.  The
       // `_kiro.dev/metadata` notification carrying the post-reset value can
       // arrive a microtask AFTER `prompt()` resolves, so `lastContextPct`
@@ -763,26 +840,9 @@ async function handleCompletions(
       // after a successful `/clear` makes the bot look like it's lying.
       const isContextResetCommand = /^\/clear(\s|$)/i.test(promptText.trim());
 
-      // Surface context usage warning so the user sees it in Discord.
-      if (!isContextResetCommand) {
-        if (session.lastContextPct >= 90) {
-          sseChunk(
-            res,
-            buildChunk(
-              completionId,
-              `\n\n🚨 Context window at ${Math.round(session.lastContextPct)}% — approaching auto-reset threshold (95%). Send \`/new\` now to avoid losing your session mid-task.`,
-            ),
-          );
-        } else if (session.lastContextPct >= 80) {
-          sseChunk(
-            res,
-            buildChunk(
-              completionId,
-              `\n\n⚠️ Context window at ${Math.round(session.lastContextPct)}%. Send \`/new\` soon to reset before it fills up.`,
-            ),
-          );
-        }
-      }
+      // autoCompactAfterPrompt queues maintenance behind this turn and
+      // returns immediately; lifecycle failures are logged/retried separately.
+      void autoCompactionResult;
 
       // Append context usage footer to every response (skip for context-reset
       // commands — see comment above).
@@ -930,7 +990,9 @@ async function handleCompletions(
       await session.prompt(
         promptText,
         (text) => {
-          if (text) parts.push(text);
+          if (text) {
+            parts.push(text);
+          }
         },
         promptImages,
       );
@@ -981,7 +1043,9 @@ async function handleCompletions(
         try {
           const retryParts: string[] = [];
           await session.prompt(promptText, (text) => {
-            if (text) retryParts.push(text);
+            if (text) {
+              retryParts.push(text);
+            }
           });
           retryText = retryParts.join("");
         } catch (retryErr) {
@@ -1009,6 +1073,7 @@ async function handleCompletions(
             ],
             usage: estimateUsage(promptText, retryText),
           };
+          await manager.autoCompactAfterPrompt?.(sessionKey, session, promptText);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(completion));
           return;
@@ -1060,6 +1125,8 @@ async function handleCompletions(
         res.end(JSON.stringify(completion));
         return;
       }
+
+      await manager.autoCompactAfterPrompt?.(sessionKey, session, promptText);
     } catch (err) {
       log(formatErrorVerbose(err, "prompt error (blocking)"));
       session.consecutiveErrors++;
@@ -1245,6 +1312,27 @@ export function createKiroProxyServer(
           }
         } catch (err) {
           log(`cancel error: ${String(err)}`);
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { message: String(err) } }));
+        }
+      })();
+      return;
+    }
+
+    // POST /compact/<sessionKey> — run native `/compact` directly against the
+    // existing ACP child. This deliberately bypasses OpenAI history replay.
+    if (method === "POST" && url.startsWith("/compact/")) {
+      const targetKey = decodeURIComponent(url.slice("/compact/".length));
+      void (async () => {
+        try {
+          const raw = await readBody(req);
+          const parsed = raw ? (JSON.parse(raw) as { command?: unknown }) : {};
+          const command = typeof parsed.command === "string" ? parsed.command : "/compact";
+          const result = await manager.compactSession(targetKey, command);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ...result, sessionKey: targetKey }));
+        } catch (err) {
+          log(`compact error: ${String(err)}`);
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: { message: String(err) } }));
         }

@@ -302,6 +302,70 @@ describe("POST /v1/chat/completions (stream: true)", () => {
   });
 });
 
+// ─── POST /compact/<sessionKey> ──────────────────────────────────────────────
+
+describe("direct same-session compaction", () => {
+  it("records the observed history length for a plain-text /kcompact request", async () => {
+    const manager = makeManager("ok");
+    const compactSession = vi.fn().mockResolvedValue({
+      compacted: true,
+      reason: "completed",
+      beforePct: 67,
+      afterPct: 14,
+    });
+    Object.assign(manager, { compactSession });
+    baseUrl = await startServer(manager);
+
+    const { status } = await testFetch(baseUrl, "/v1/chat/completions", {
+      method: "POST",
+      body: {
+        model: "kiro-default",
+        stream: false,
+        user: "test-session-key",
+        messages: [
+          { role: "user", content: "first turn" },
+          { role: "assistant", content: "first answer" },
+          { role: "user", content: "/kcompact" },
+        ],
+      },
+    });
+
+    expect(status).toBe(200);
+    expect(compactSession).toHaveBeenCalledWith("test-session-key", "/compact", 3);
+    expect(manager.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("delegates POST /compact to same-session compaction without replaying OpenAI history", async () => {
+    const manager = makeManager("ok");
+    const compactSession = vi.fn().mockResolvedValue({
+      compacted: true,
+      reason: "completed",
+      beforePct: 67,
+      afterPct: 14,
+    });
+    Object.assign(manager, { compactSession });
+    baseUrl = await startServer(manager);
+    const sessionKey = "agent:main:discord:channel:123456789";
+
+    const { status, body } = await testFetch(
+      baseUrl,
+      `/compact/${encodeURIComponent(sessionKey)}`,
+      { method: "POST", body: { command: "/compact" } },
+    );
+
+    expect(status).toBe(200);
+    expect(compactSession).toHaveBeenCalledWith(sessionKey, "/compact");
+    expect(body).toMatchObject({
+      compacted: true,
+      reason: "completed",
+      beforePct: 67,
+      afterPct: 14,
+      sessionKey,
+    });
+    expect(manager.getOrCreate).not.toHaveBeenCalled();
+  });
+});
+
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 
 describe("CORS", () => {

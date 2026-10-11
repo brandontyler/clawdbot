@@ -123,6 +123,15 @@ export type KiroProxyOptions = {
    * Default: 14400 (4 hours)
    */
   sessionIdleSecs?: number;
+  /**
+   * Enforce direct same-session compaction at 60% after each turn. Default: true.
+   * Set false (via `--no-auto-compaction`) to disable the proxy safeguard as a
+   * rollback. Kiro CLI's independent native scheduler is not changed.
+   *
+   * Kiro CLI 2.8.1's persistent ACP scheduler has not repeated reliably, so the
+   * proxy owns the deterministic 60% guarantee.
+   */
+  autoCompaction?: boolean;
   /** Emit debug logs to stderr. */
   verbose?: boolean;
 };

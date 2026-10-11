@@ -43,12 +43,17 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
   const cwd = opts.cwd ?? process.cwd();
   const idleSecs = opts.sessionIdleSecs ?? 14400;
   const verbose = opts.verbose ?? false;
+  // Default ON: enforce direct same-session compaction at 60%. Kiro's own
+  // native scheduler remains independent; explicit false disables this safeguard.
+  const autoCompaction = opts.autoCompaction !== false;
 
   const log = verbose ? (msg: string) => process.stderr.write(`[kiro-proxy] ${msg}\n`) : () => {};
 
   setDiscordApiLogger(log);
 
-  log(`starting (kiro=${kiroBin}, port=${port}, idle=${idleSecs}s)`);
+  log(
+    `starting (kiro=${kiroBin}, port=${port}, idle=${idleSecs}s, autoCompaction=${autoCompaction ? "enabled (direct threshold=60%)" : "disabled"})`,
+  );
 
   // Kill orphaned ACP processes from previous proxy runs.
   const orphansKilled = killOrphanAcpProcesses(log);
@@ -58,7 +63,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
 
   const manager = new SessionManager(
     { kiroBin, kiroArgs, cwd, verbose },
-    { channelRoutes: opts.channelRoutes, idleSecs, log },
+    { channelRoutes: opts.channelRoutes, idleSecs, autoCompaction, log },
   );
 
   const server = createKiroProxyServer(manager, opts);
@@ -77,7 +82,7 @@ export async function startKiroProxy(opts: KiroProxyOptions = {}): Promise<() =>
     .map(([chId, r]) => `  ${chId} → ${r.cwd}`)
     .join("\n");
   process.stderr.write(
-    `[kiro-proxy] config: kiro=${kiroBin} idle=${idleSecs}s routes=${routeCount}\n`,
+    `[kiro-proxy] config: kiro=${kiroBin} idle=${idleSecs}s routes=${routeCount} autoCompaction=${autoCompaction ? "enabled" : "disabled"}\n`,
   );
   if (routeList) {
     process.stderr.write(`[kiro-proxy] routes:\n${routeList}\n`);

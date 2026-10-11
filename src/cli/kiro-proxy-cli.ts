@@ -31,6 +31,10 @@ export function registerKiroProxyCli(program: Command): void {
     .option("--cwd <dir>", "Working directory for kiro sessions", process.cwd())
     .option("--idle-secs <number>", "Seconds before an idle session is killed", "86400")
     .option("--routes <path>", "JSON file mapping Discord channel IDs to {cwd, kiroArgs?}")
+    .option(
+      "--no-auto-compaction",
+      "Rollback switch: disable proxy-enforced same-session compaction at 60%",
+    )
     .option("-v, --verbose", "Enable verbose logging", false)
     .addHelpText(
       "after",
@@ -39,6 +43,7 @@ Examples:
   $ openclaw kiro-proxy
   $ openclaw kiro-proxy --port 18790 --verbose
   $ openclaw kiro-proxy --kiro-bin /usr/local/bin/kiro --kiro-args --workspace /my/project
+  $ openclaw kiro-proxy --no-auto-compaction   # rollback: disable proxy 60% safeguard
 
 Prerequisites:
   1. Install Kiro CLI   curl -fsSL https://cli.kiro.dev/install | bash
@@ -113,6 +118,9 @@ Config (~/.openclaw/openclaw.json, JSON5):
           cwd: opts.cwd as string,
           channelRoutes,
           sessionIdleSecs: idleSecs,
+          // Commander maps `--no-auto-compaction` to `opts.autoCompaction === false`
+          // and defaults it to true when the flag is absent.
+          autoCompaction: opts.autoCompaction !== false,
           verbose: Boolean(opts.verbose),
         });
 

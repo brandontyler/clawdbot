@@ -53,9 +53,9 @@ function resolveTargetSessionKey(ctx: {
  * (/compact, /usage, /clear via /reset, ...) and runs them against its OWN
  * near-empty transcript — the real conversation context lives in the kiro-cli
  * ACP child that kiro-proxy supervises. The /k prefix routes around that:
- * each command below POSTs the underlying kiro command to the proxy's
- * /v1/chat/completions with the channel's session key, so kiro-cli executes
- * it against the right transcript. Unlike the plain-text aliases in
+ * `/kcompact` uses the proxy's dedicated `/compact/<sessionKey>` route so it
+ * never looks like a one-message Gateway history reset. The other commands
+ * POST to `/v1/chat/completions` with the channel's session key. Unlike the plain-text aliases in
  * kiro-proxy's KIRO_COMMAND_ALIASES (e.g. typing "/kcompact" as a message),
  * these are REGISTERED commands — they show up in Discord's autocomplete.
  *
@@ -130,6 +130,27 @@ async function forwardToKiro(params: {
   return content.trim();
 }
 
+async function compactKiro(params: {
+  proxyUrl: string;
+  sessionKey: string;
+  command: string;
+}): Promise<{ compacted: boolean; reason: string; beforePct?: number; afterPct?: number }> {
+  const res = await fetch(`${params.proxyUrl}/compact/${encodeURIComponent(params.sessionKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command: params.command }),
+  });
+  if (!res.ok) {
+    throw new Error(`kiro-proxy responded HTTP ${res.status}`);
+  }
+  return (await res.json()) as {
+    compacted: boolean;
+    reason: string;
+    beforePct?: number;
+    afterPct?: number;
+  };
+}
+
 export default definePluginEntry({
   id: "kiro-commands",
   name: "Kiro Commands",
@@ -155,6 +176,19 @@ export default definePluginEntry({
           const command = args ? `${spec.kiroCommand} ${args}` : spec.kiroCommand;
           const proxyUrl = resolveProxyUrl(api.pluginConfig);
           try {
+            if (spec.name === "kcompact") {
+              const result = await compactKiro({ proxyUrl, sessionKey, command });
+              if (!result.compacted) {
+                return {
+                  text: `⚠️ Same-session compaction did not complete (${result.reason}). Try \`/kcompact\` again after the current turn finishes.`,
+                };
+              }
+              const delta =
+                result.beforePct !== undefined && result.afterPct !== undefined
+                  ? ` (${result.beforePct.toFixed(1)}% → ${result.afterPct.toFixed(1)}%)`
+                  : "";
+              return { text: `✅ Compacted the existing kiro conversation${delta}.` };
+            }
             const reply = await forwardToKiro({ proxyUrl, sessionKey, command });
             if (!reply) {
               // e.g. /compact returns end_turn immediately; the proxy's
