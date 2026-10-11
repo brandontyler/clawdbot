@@ -7,7 +7,7 @@
 # Communities In Schools, Big Brothers Big Sisters), parks-rec youth programming.
 #
 # Centered on Denton, TX. Sends digest to Brandon (Discord + Gmail).
-# Mirrors the structure of ai-agent-jobs.sh: LinkedIn HTML + X/bird, kiro-cli
+# Mirrors the structure of ai-agent-jobs.sh: LinkedIn HTML + X/bird + Reddit Atom, kiro-cli
 # scoring, DynamoDB dedupe (60-day TTL), Discord + Gmail delivery.
 set -uo pipefail
 source ~/.profile
@@ -55,9 +55,14 @@ is_seen() {
 
 mark_seen() {
   [ "$DYNAMO_OK" -eq 0 ] && return
-  local clean_title=$(echo "$2" | tr -d '"' | cut -c1-200)
+  local clean_title item
+  clean_title=$(echo "$2" | cut -c1-200)
+  item=$(jq -nc \
+    --arg job_id "$1" --arg title "$clean_title" --arg source "$3" \
+    --arg found_date "$TODAY" --argjson expires_at "$EXPIRES_AT" \
+    '{job_id:{S:$job_id},title:{S:$title},source:{S:$source},found_date:{S:$found_date},expires_at:{N:($expires_at|tostring)}}')
   aws dynamodb put-item --table-name "$DYNAMO_TABLE" \
-    --item "{\"job_id\":{\"S\":\"$1\"},\"title\":{\"S\":\"$clean_title\"},\"source\":{\"S\":\"$3\"},\"found_date\":{\"S\":\"$TODAY\"},\"expires_at\":{\"N\":\"$EXPIRES_AT\"}}" \
+    --item "$item" \
     --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1
 }
 
@@ -135,6 +140,36 @@ echo "$TW_RESULTS" | jq -r '.[] | "\(.id)\ttwitter\t\(.author.username)\t\(.text
 TW_COUNT=$(grep -c "twitter" "$JOBS_FILE" 2>/dev/null || echo 0)
 log "  X/Twitter: $TW_COUNT results"
 
+# --- Reddit (fresh local hiring leads; unverified until checked officially) ---
+log "Searching Reddit..."
+REDDIT_TMP=$(mktemp)
+REDDIT_EXIT=0
+timeout 45 python3 "$SCRIPT_DIR/reddit-job-leads.py" nathan > "$REDDIT_TMP" 2>> "$LOGFILE" || REDDIT_EXIT=$?
+if [ "$REDDIT_EXIT" -eq 124 ]; then
+  log "  Reddit: timed out — skipping"
+elif [ "$REDDIT_EXIT" -ne 0 ]; then
+  log "  Reddit: unavailable (exit=$REDDIT_EXIT) — skipping"
+fi
+while IFS= read -r line; do
+  jid=$(echo "$line" | jq -r '.id // empty' 2>/dev/null)
+  subreddit=$(echo "$line" | jq -r '.subreddit // empty' 2>/dev/null)
+  author=$(echo "$line" | jq -r '.author // empty' 2>/dev/null)
+  title=$(echo "$line" | jq -r '.title // empty' 2>/dev/null)
+  excerpt=$(echo "$line" | jq -r '.excerpt // empty' 2>/dev/null)
+  url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
+  [ -z "$jid" ] && continue
+  [ -z "$title" ] && continue
+  [ -z "$url" ] && continue
+  poster="r/${subreddit}"
+  [ -n "$author" ] && poster="${poster} ${author}"
+  lead_title="[UNVERIFIED REDDIT LEAD] ${title}"
+  [ -n "$excerpt" ] && lead_title="${lead_title} | ${excerpt:0:300}"
+  printf '%s\treddit\t%s\t%s\t%s\n' "$jid" "$poster" "$lead_title" "$url" >> "$JOBS_FILE"
+done < "$REDDIT_TMP"
+rm -f "$REDDIT_TMP"
+REDDIT_COUNT=$(awk -F'\t' '$2 == "reddit" { count++ } END { print count + 0 }' "$JOBS_FILE")
+log "  Reddit: $REDDIT_COUNT candidate leads"
+
 # --- Total ---
 TOTAL=$(wc -l < "$JOBS_FILE" 2>/dev/null || echo 0)
 log "Total raw results: $TOTAL"
@@ -155,18 +190,29 @@ i=1
 while IFS=$'\t' read -r jid source poster title url; do
   [ -z "$jid" ] && continue
   [ "$i" -gt 200 ] && break   # raised from 50: with 10 searches, later ones (nonprofit mgmt, video+nonprofit, film-teaching holy grail) were being truncated before scoring
-  clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c1-160)
+  title_limit=160
+  [ "$source" = "reddit" ] && title_limit=420
+  clean_title=$(echo "$title" | tr -d '"\\`$' | cut -c "1-${title_limit}")
   company=""
   [ "$poster" != "-" ] && [ -n "$poster" ] && company=" @ ${poster}"
   JOB_LIST="${JOB_LIST}- [${i}] ${clean_title}${company}
 "
   i=$((i + 1))
 done < "$JOBS_FILE"
+MODEL_COUNT=$((i - 1))
+if [ "$MODEL_COUNT" -lt 1 ]; then
+  log_err "No indexed jobs were available for scoring"
+  exit 1
+fi
 
 # Agent-trap hardening (bead openclaw-79b): defang untrusted scraped job text
 # (titles/companies from LinkedIn + X) before it enters the kiro-cli prompt —
 # strips invisible/bidi chars + forged chat-template tokens, flags injection.
-JOB_LIST=$(printf '%s' "$JOB_LIST" | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/nathan-sanitize.json 2>/dev/null)
+# Normalize malformed scraper bytes before the Unicode/injection sanitizer so
+# Kiro always receives valid UTF-8, even when an upstream HTML page is malformed.
+JOB_LIST=$(printf '%s' "$JOB_LIST" \
+  | python3 -c 'import sys; sys.stdout.write(sys.stdin.buffer.read().decode("utf-8", "replace"))' \
+  | python3 "$SCRIPT_DIR/sanitize_untrusted.py" --report /tmp/nathan-sanitize.json 2>/dev/null)
 _nrisk=$(python3 -c "import json;print(json.load(open('/tmp/nathan-sanitize.json')).get('risk','low'))" 2>/dev/null || echo low)
 [ "$_nrisk" != "low" ] && log "[sanitize] scraped job text risk=$_nrisk $(cat /tmp/nathan-sanitize.json 2>/dev/null)"
 
@@ -273,6 +319,13 @@ NATHAN'S BACKGROUND:
   (score 5); (c) aide / instructional assistant / paraprofessional / substitute /
   long-term-sub roles, which do NOT require a degree. ***
 
+REDDIT TRUST RULE: Reddit entries are labeled UNVERIFIED. Score a Reddit entry 3+
+only when it is a hiring-side post for a concrete current opening from an identifiable
+local employer/organization. General discussion, job-seeker posts, news, listicles,
+affiliate-only redirects, vague “DM me” offers, and anything requiring payment must
+score 1. For any kept Reddit lead, the reason must say to verify it on the employer's
+official site before applying.
+
 Score 1-5:
 5 = Direct teacher-path role at MIDDLE or HIGH SCHOOL: ISD paraprofessional,
     instructional aide, substitute teacher, long-term sub, district AV/media
@@ -370,8 +423,36 @@ Output ONLY JSON lines: {\"idx\":<N>,\"score\":<1-5>,\"reason\":\"<brief why thi
 
 ${JOB_LIST}"
 
-RAW=$(cd "$HOME" && timeout 300 kiro-cli chat --no-interactive --wrap never "$PROMPT" 2>&1)
-SCORES=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oP '\{[^}]+\}')
+SCORE_EXIT=0
+RAW=$(cd "$HOME" && timeout 300 kiro-cli chat --model claude-opus-4.8 --no-interactive --wrap never "$PROMPT" 2>&1) || SCORE_EXIT=$?
+SCORE_VALIDATION_ERROR=$(mktemp)
+SCORE_VALIDATE_EXIT=0
+SCORES=""
+if [ "$SCORE_EXIT" -eq 0 ]; then
+  SCORES=$(printf '%s\n' "$RAW" | python3 "$SCRIPT_DIR/job_location_policy.py" \
+    --validate-scores --expected-count "$MODEL_COUNT" 2> "$SCORE_VALIDATION_ERROR") \
+    || SCORE_VALIDATE_EXIT=$?
+else
+  SCORE_VALIDATE_EXIT=1
+  printf 'model command exited %s before score validation\n' "$SCORE_EXIT" > "$SCORE_VALIDATION_ERROR"
+fi
+if [ "$SCORE_EXIT" -ne 0 ] || [ "$SCORE_VALIDATE_EXIT" -ne 0 ] || [ -z "$SCORES" ]; then
+  SCORE_DIAG="$HOME/logs/nathan-jobs/scorer-error-${TODAY}-$(date +%H%M%S).log"
+  {
+    printf 'model_exit=%s\nvalidation_exit=%s\nexpected_count=%s\n' \
+      "$SCORE_EXIT" "$SCORE_VALIDATE_EXIT" "$MODEL_COUNT"
+    printf '%s\n' '--- validation ---'
+    cat "$SCORE_VALIDATION_ERROR"
+    printf '%s\n' '--- raw model output ---'
+    printf '%s\n' "$RAW"
+  } | python3 -c 'import sys; sys.stdout.write(sys.stdin.buffer.read().decode("utf-8", "replace"))' \
+    > "$SCORE_DIAG"
+  chmod 600 "$SCORE_DIAG"
+  rm -f "$SCORE_VALIDATION_ERROR"
+  log_err "kiro-cli scoring failed closed (model=$SCORE_EXIT, validation=$SCORE_VALIDATE_EXIT, expected=$MODEL_COUNT); details: $SCORE_DIAG"
+  exit 1
+fi
+rm -f "$SCORE_VALIDATION_ERROR"
 
 # --- Build digest ---
 {
@@ -403,7 +484,6 @@ while IFS= read -r score_line; do
   } >> "$DIGEST_FILE"
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$jid" "$score" "$reason" "$source" "$title" "$url" >> "$NEW_JOBS_TSV"
-  mark_seen "$jid" "$title" "$source"
   KEPT=$((KEPT + 1))
 done <<< "$SCORES"
 
@@ -416,30 +496,46 @@ log "Filter result: $TOTAL → $KEPT jobs kept"
 
 # --- Deliver ---
 if [ "$KEPT" -gt 0 ]; then
+  DELIVERED=0
   DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+  DISCORD_OK=1
   if [ -n "$DISCORD_TOKEN" ] && [ -s "$NEW_JOBS_TSV" ]; then
     send_discord() {
-      curl -s -X POST "https://discord.com/api/v10/channels/${DISCORD_CHANNEL}/messages" \
+      local response_file code
+      response_file=$(mktemp)
+      code=$(curl -sS -o "$response_file" -w '%{http_code}' \
+        -X POST "https://discord.com/api/v10/channels/${DISCORD_CHANNEL}/messages" \
         -H "Authorization: Bot $DISCORD_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "$(jq -nc --arg c "$1" '{content:$c}')" > /dev/null
+        -d "$(jq -nc --arg c "$1" '{content:$c}')") || code="000"
+      rm -f "$response_file"
+      [[ "$code" =~ ^2[0-9][0-9]$ ]]
     }
     chunk="📚 **${KEPT} new job(s) for Nathan — North TX** — ${DATE_LABEL}"
     while IFS=$'\t' read -r jid score reason source title url; do
       short_title="${title:0:200}"
-      job_block=$'\n\n'"• **${short_title}** _(score ${score}/5)_"
-      [ -n "$reason" ] && job_block="${job_block}"$'\n'"  _${reason}_"
+      short_reason="${reason:0:260}"
+      job_block=$'\n\n'"• **${short_title}** _(score ${score}/5, ${source})_"
+      [ -n "$short_reason" ] && job_block="${job_block}"$'\n'"  _${short_reason}_"
       job_block="${job_block}"$'\n'"  <${url}>"
       candidate="${chunk}${job_block}"
       if [ ${#candidate} -gt 1800 ]; then
-        send_discord "$chunk"
+        send_discord "$chunk" || DISCORD_OK=0
         chunk="${job_block#$'\n\n'}"
       else
         chunk="$candidate"
       fi
     done < "$NEW_JOBS_TSV"
-    [ -n "$chunk" ] && send_discord "$chunk"
-    log "Discord: sent ($KEPT jobs)"
+    [ -n "$chunk" ] && { send_discord "$chunk" || DISCORD_OK=0; }
+    if [ "$DISCORD_OK" -eq 1 ]; then
+      log "Discord: sent and verified ($KEPT jobs)"
+      DELIVERED=1
+    else
+      log_err "Discord delivery failed; jobs will not be marked seen"
+    fi
+  else
+    DISCORD_OK=0
+    log_err "Discord token or job payload missing"
   fi
 
   if gog gmail send -a brandon.tyler@gmail.com \
@@ -447,8 +543,17 @@ if [ "$KEPT" -gt 0 ]; then
        --subject "📚 Nathan's Jobs — ${KEPT} found ($DATE_LABEL)" \
        --body "$(cat "$DIGEST_FILE")" > /dev/null 2>&1; then
     log "Email sent via gog"
+    DELIVERED=1
   else
     log_err "Email send failed"
+  fi
+
+  if [ "$DELIVERED" -eq 1 ]; then
+    while IFS=$'\t' read -r jid score reason source title url; do
+      mark_seen "$jid" "$title" "$source"
+    done < "$NEW_JOBS_TSV"
+  else
+    log_err "No delivery channel succeeded; leaving jobs unseen for retry"
   fi
 fi
 
