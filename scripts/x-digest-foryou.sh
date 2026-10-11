@@ -20,6 +20,10 @@ DATE_LABEL=$(TZ='America/Chicago' date '+%a %b %d, %Y')
 # right after mkdir below.
 DIGEST_DIR="${HOME}/logs/x-digest/digests"
 DIGEST_FILE="$DIGEST_DIR/digest-${TODAY}.md"
+DIAGNOSTIC_DIR="${HOME}/logs/x-digest/diagnostics"
+SCORE_DIAG_POINTER="$DIAGNOSTIC_DIR/latest-failure.txt"
+DELIVERY_CHECKPOINT_DIR="$DIGEST_DIR/delivery-checkpoints"
+DELIVERY_CHECKPOINT="$DELIVERY_CHECKPOINT_DIR/${TODAY}.ids"
 
 # DynamoDB dedup
 DYNAMO_TABLE="x-digest-seen"
@@ -50,9 +54,12 @@ FEATURES='{"responsive_web_graphql_exclude_directive_enabled":true,"verified_pho
 RELEVANCE_THRESHOLD=7
 
 source ~/.profile
-mkdir -p "$DIGEST_DIR"
-# Retention: keep 90 days of digest archives, prune older (mx5 item 5).
+mkdir -p "$DIGEST_DIR" "$DELIVERY_CHECKPOINT_DIR" /tmp/x-digest
+chmod 700 "$DELIVERY_CHECKPOINT_DIR"
+# Retention: keep 90 days of digest archives; partial-delivery checkpoints only
+# need the 30-day DynamoDB dedup horizon.
 find "$DIGEST_DIR" -maxdepth 1 -type f -name 'digest-*.md' -mtime +90 -delete 2>/dev/null || true
+find "$DELIVERY_CHECKPOINT_DIR" -maxdepth 1 -type f -name '*.ids' -mtime +30 -delete 2>/dev/null || true
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
@@ -60,11 +67,11 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 # Sends a one-line alert to the OpenClaw EC2 admin channel.
 alert_discord() {
   local msg="$1"
-  [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: would alert Discord: $msg"; return; }
+  [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: would alert Discord: $msg" >&2; return; }
   local channel="${DIGEST_DISCORD_CHANNEL:-1503414103341797406}"
   local token
   token=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
-  [ -z "$token" ] && { log "alert_discord: no token, skipping alert"; return; }
+  [ -z "$token" ] && { log "alert_discord: no token, skipping alert" >&2; return; }
   curl -s -X POST "https://discord.com/api/v10/channels/$channel/messages" \
     -H "Authorization: Bot $token" \
     -H "Content-Type: application/json" \
@@ -277,6 +284,22 @@ seen_ids_batch() {
   done
 }
 
+write_seen_batch() {
+  local batch_items="$1" response
+  if ! response=$(aws dynamodb batch-write-item \
+      --request-items "{\"$DYNAMO_TABLE\":[${batch_items}]}" \
+      --profile "$PROFILE" --region "$REGION" --output json 2>&1); then
+    log "ERROR: DynamoDB batch-write-item failed" >&2
+    return 1
+  fi
+  if ! jq -e --arg table "$DYNAMO_TABLE" \
+      '((.UnprocessedItems[$table] // []) | length) == 0' \
+      <<< "$response" > /dev/null; then
+    log "ERROR: DynamoDB returned unprocessed seen items" >&2
+    return 1
+  fi
+}
+
 batch_mark_seen() {
   local ids_file="$1"
   [ ! -s "$ids_file" ] && return
@@ -284,25 +307,36 @@ batch_mark_seen() {
     log "DRY_RUN: would mark $(wc -l < "$ids_file" | xargs) tweets seen in DynamoDB"
     return
   fi
-  local batch_items="" count=0
+  local batch_items="" count=0 failed=0
   while IFS= read -r tid; do
     [ -z "$tid" ] && continue
     batch_items="${batch_items}{\"PutRequest\":{\"Item\":{\"tweet_id\":{\"S\":\"$tid\"},\"seen_date\":{\"S\":\"$TODAY\"},\"expires_at\":{\"N\":\"$EXPIRES_AT\"}}}},"
     count=$((count + 1))
     if [ "$count" -ge 25 ]; then
       batch_items="${batch_items%,}"
-      aws dynamodb batch-write-item \
-        --request-items "{\"$DYNAMO_TABLE\":[${batch_items}]}" \
-        --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1
+      write_seen_batch "$batch_items" || failed=1
       batch_items="" count=0
     fi
   done < "$ids_file"
   if [ "$count" -gt 0 ]; then
     batch_items="${batch_items%,}"
-    aws dynamodb batch-write-item \
-      --request-items "{\"$DYNAMO_TABLE\":[${batch_items}]}" \
-      --profile "$PROFILE" --region "$REGION" > /dev/null 2>&1
+    write_seen_batch "$batch_items" || failed=1
   fi
+  return "$failed"
+}
+
+load_delivery_checkpoint_ids() {
+  find "$DELIVERY_CHECKPOINT_DIR" -maxdepth 1 -type f -name '*.ids' -print0 2>/dev/null \
+    | xargs -0 -r cat 2>/dev/null \
+    | grep -E '^[0-9]+$' \
+    | sort -u || true
+}
+
+checkpoint_sent_ids() {
+  local ids_file="$1"
+  [ -s "$ids_file" ] || return 0
+  python3 "$SCRIPT_DIR/x-digest-discord-chunks.py" \
+    --checkpoint "$DELIVERY_CHECKPOINT" "$ids_file" > /dev/null
 }
 
 # --- LLM scoring ---
@@ -390,40 +424,40 @@ ALSO categorize each tweet into ONE of these topics (use the exact string, lower
 - tesla             — Tesla, FSD, Cybercab, Optimus, Robotaxi, Boring Company, xAI, Neuralink
 - other             — anything not in the list above
 
-Reply ONLY with a JSON array of objects, one per tweet — include the tweet's language as a 2-letter code. For NON-ENGLISH tweets only, also include \"gist\": a one-sentence English summary (max 25 words) of what the tweet actually says, so Brandon can decide whether it's worth opening. Omit \"gist\" for English tweets. No prose, no code fences. Example:
-[{\"score\":8,\"topic\":\"claude_code\",\"lang\":\"en\"},{\"score\":2,\"topic\":\"other\",\"lang\":\"en\"},{\"score\":9,\"topic\":\"aws\",\"lang\":\"ja\",\"gist\":\"Municipal call-center bot using Connect+Lex+Q in Connect RAG improved answer accuracy from 60% to 81%\"}]
+Reply ONLY with a JSON array of objects, one per tweet, in the SAME ORDER. Every object MUST include \"index\": the exact integer number shown before that tweet (1, 2, 3, ...). Never omit, duplicate, or reorder indexes. Include the tweet's language as a 2-letter code. For NON-ENGLISH tweets only, also include \"gist\": a one-sentence English summary (max 25 words) of what the tweet actually says, so Brandon can decide whether it's worth opening. Omit \"gist\" for English tweets. No prose, no code fences. Example:
+[{\"index\":1,\"score\":8,\"topic\":\"claude_code\",\"lang\":\"en\"},{\"index\":2,\"score\":2,\"topic\":\"other\",\"lang\":\"en\"},{\"index\":3,\"score\":9,\"topic\":\"aws\",\"lang\":\"ja\",\"gist\":\"Municipal call-center bot using Connect+Lex+Q in Connect RAG improved answer accuracy from 60% to 81%\"}]
 
 Tweets:
 ${tweets_text}"
 
-  # Run from $HOME so kiro-cli picks up ~/.kiro/agents/default.json.
-  # Timeout 180: the gist field (added 2026-07-12) makes the model generate
-  # noticeably more output for 40+ tweets; 60s hit the ceiling and killed
-  # scoring on a full-size batch.
-  # Response shape: JSON array of {score,topic,lang,gist?} objects. Extraction
-  # uses a real JSON parser (raw_decode at each '[') instead of the old
-  # grep -oP '\[\{[^]]+\}\]' — that regex died at the first ']' inside any
-  # string value, which free-prose gists can legitimately contain.
-  timeout 180 bash -c "cd \$HOME && kiro-cli chat --no-interactive --wrap never \"\$1\"" -- "$prompt" 2>&1 | \
-    sed 's/\x1b\[[0-9;]*m//g' | python3 -c "
-import sys, json
-buf = sys.stdin.read()
-dec = json.JSONDecoder()
-i = 0
-while True:
-    i = buf.find('[', i)
-    if i < 0:
-        break
-    try:
-        obj, _ = dec.raw_decode(buf, i)
-    except ValueError:
-        i += 1
-        continue
-    if isinstance(obj, list) and obj and all(isinstance(o, dict) and 'score' in o for o in obj):
-        print(json.dumps(obj))
-        break
-    i += 1
-"
+  # Run via a wrapper that preserves raw output/exit metadata, requires exact
+  # score-array alignment, and retries one transient failure. The old direct
+  # pipeline discarded stderr and PIPESTATUS, making immediate provider/CLI
+  # failures permanently undiagnosable.
+  local score_work prompt_file input_file rc
+  mkdir -p /tmp/x-digest
+  score_work=$(mktemp -d /tmp/x-digest/scoring.XXXXXX)
+  prompt_file="$score_work/prompt.txt"
+  input_file="$score_work/sanitized-scoring-input.txt"
+  printf '%s' "$prompt" > "$prompt_file"
+  printf '%s' "$tweets_text" > "$input_file"
+  chmod 600 "$prompt_file" "$input_file"
+
+  (
+    trap "rm -rf -- $(printf '%q' "$score_work")" EXIT INT TERM
+    python3 "$SCRIPT_DIR/x-digest-score.py" \
+      --prompt-file "$prompt_file" \
+      --input-file "$input_file" \
+      --expected-count "$count" \
+      --diagnostics-dir "$DIAGNOSTIC_DIR" \
+      --kiro-bin "${X_DIGEST_KIRO_BIN:-kiro-cli}" \
+      --attempts "${X_DIGEST_SCORE_ATTEMPTS:-2}" \
+      --timeout "${X_DIGEST_SCORE_TIMEOUT:-180}" \
+      --retry-delay "${X_DIGEST_SCORE_RETRY_DELAY:-5}"
+  )
+  rc=$?
+  rm -rf "$score_work"
+  return "$rc"
 }
 
 # --- Main ---
@@ -529,9 +563,14 @@ fi
 # literal \n or \t sequences).
 FRESH_FILE=$(mktemp)
 SEEN_FILE=$(mktemp)
-trap 'rm -f "$FRESH_FILE" "$SEEN_FILE"' EXIT
+MARK_FILE=""
+FINAL_MARK_FILE=""
+DISCORD_CHUNK_DIR=""
+trap 'rm -f "$FRESH_FILE" "$SEEN_FILE"; [ -z "${MARK_FILE:-}" ] || rm -f "$MARK_FILE"; [ -z "${FINAL_MARK_FILE:-}" ] || rm -f "$FINAL_MARK_FILE"; [ -z "${DISCORD_CHUNK_DIR:-}" ] || rm -rf "$DISCORD_CHUNK_DIR"' EXIT
 
-printf '%s\n' "$TWEETS_TSV" | cut -f1 | grep -E '^[0-9]+$' | seen_ids_batch | sort -u > "$SEEN_FILE"
+printf '%s\n' "$TWEETS_TSV" | cut -f1 | grep -E '^[0-9]+$' | seen_ids_batch > "$SEEN_FILE"
+load_delivery_checkpoint_ids >> "$SEEN_FILE"
+sort -u -o "$SEEN_FILE" "$SEEN_FILE"
 
 SKIPPED=0
 while IFS= read -r row; do
@@ -567,14 +606,17 @@ else
   done < "$FRESH_FILE"
 
   log "Scoring $FRESH_COUNT tweets via kiro-cli..."
-  SCORES=$(score_tweets "$NUMBERED")
+  SCORE_RC=0
+  SCORES=$(score_tweets "$NUMBERED") || SCORE_RC=$?
 
-  if [ -z "$SCORES" ]; then
-    # Fail-closed: don't flood Discord with unscored tweets.
-    alert_discord "⚠️ **x-digest scoring failed** — kiro-cli returned no scores for $FRESH_COUNT tweets.
-No digest sent. Raw tweets in \`$DIGEST_FILE\` on EC2.
-Tweets are NOT marked seen — they will be re-evaluated next run."
-    log "FATAL: LLM scoring returned empty — aborting without marking tweets seen"
+  if [ "$SCORE_RC" -ne 0 ] || [ -z "$SCORES" ]; then
+    # Fail-closed: don't flood Discord with unscored tweets. The scoring helper
+    # stores the sanitized input, raw Kiro output, and exit/timeout metadata.
+    SCORE_DIAG=$(cat "$SCORE_DIAG_POINTER" 2>/dev/null || echo "$DIAGNOSTIC_DIR")
+    alert_discord "⚠️ **x-digest scoring failed** — no valid aligned scores after retrying $FRESH_COUNT tweets.
+No digest sent; tweets are NOT marked seen and will be re-evaluated next run.
+Diagnostics: \`$SCORE_DIAG\` on EC2."
+    log "FATAL: LLM scoring returned no valid aligned scores (rc=$SCORE_RC) — diagnostics=$SCORE_DIAG; aborting without marking tweets seen"
     exit 1
   fi
 
@@ -730,10 +772,9 @@ No digest sent; tweets NOT marked seen — they will be re-evaluated next run."
     fi
   } >> "$DIGEST_FILE"
 
-  # Mark all evaluated tweets as seen
-  batch_mark_seen "$MARK_FILE"
-  rm -f "$MARK_FILE"
-
+  # Seen-marking happens only after verified Discord delivery below. Keeping
+  # MARK_FILE alive here prevents a delivery failure from permanently hiding
+  # tweets the user never received.
   log "Digest: $INCLUDED tweets surfaced from $FRESH_COUNT new"
 fi
 
@@ -742,38 +783,112 @@ DISCORD_CHANNEL="${DIGEST_DISCORD_CHANNEL:-1503414103341797406}"
 DISCORD_TOKEN=$(jq -r '.channels.discord.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
 if [ "$DRY_RUN" = "1" ]; then
   log "DRY_RUN: skipping Discord + email delivery"
-elif [ -n "$DISCORD_TOKEN" ]; then
-  chunk=""
+elif [ -z "$DISCORD_TOKEN" ]; then
+  fail "Discord token missing — digest not delivered and tweets not marked seen"
+else
+  DISCORD_CHUNK_DIR=$(mktemp -d /tmp/x-digest/discord.XXXXXX)
+  if ! chunk_count=$(python3 "$SCRIPT_DIR/x-digest-discord-chunks.py" \
+      "$DIGEST_FILE" "$DISCORD_CHUNK_DIR" --limit 1900); then
+    fail "Could not create Discord-safe digest chunks — tweets not marked seen"
+  fi
   sent=0
-  while IFS= read -r line; do
-    if [ ${#chunk} -gt 0 ] && [[ "$line" == "**@"* ]] && [ $((${#chunk} + ${#line})) -gt 1900 ]; then
-      curl -s -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
+  delivery_failed=0
+  for chunk_file in "$DISCORD_CHUNK_DIR"/*.txt; do
+    [ -f "$chunk_file" ] || continue
+    chunk=$(cat "$chunk_file")
+    if ! curl --silent --show-error --fail-with-body --max-time 30 \
+        -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
         -H "Authorization: Bot $DISCORD_TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"content\":$(echo "$chunk" | jq -Rs .)}" > /dev/null
-      sent=$((sent + 1))
-      chunk=""
-      sleep 1
+        -d "{\"content\":$(printf '%s' "$chunk" | jq -Rs .)}" > /dev/null; then
+      delivery_failed=1
+      break
     fi
-    chunk="${chunk}${line}"$'\n'
-  done < "$DIGEST_FILE"
-  if [ -n "$chunk" ]; then
-    curl -s -X POST "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
-      -H "Authorization: Bot $DISCORD_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "{\"content\":$(echo "$chunk" | jq -Rs .)}" > /dev/null
     sent=$((sent + 1))
+    chunk_ids_file="${chunk_file%.txt}.ids"
+    if [ ! -f "$chunk_ids_file" ] || ! checkpoint_sent_ids "$chunk_ids_file"; then
+      log "FATAL: Discord chunk sent but its item checkpoint could not be persisted" >&2
+      delivery_failed=1
+      break
+    fi
+    [ "$sent" -lt "$chunk_count" ] && sleep 1
+  done
+  if [ "$delivery_failed" -ne 0 ] || [ "$sent" -ne "$chunk_count" ]; then
+    log "FATAL: Discord delivery failed after $sent/$chunk_count chunk(s); successfully sent item IDs remain checkpointed for a duplicate-free retry" >&2
+    exit 1
   fi
+  rm -rf "$DISCORD_CHUNK_DIR"
+  DISCORD_CHUNK_DIR=""
   log "Discord: sent $sent message(s)"
 fi
 
-# Email digest
+# Mark evaluated tweets only after delivery is verified. On a retry, include
+# locally checkpointed IDs from earlier successful chunks before removing those
+# checkpoints. A DynamoDB failure leaves checkpoints intact and is fatal.
+if [ "$DRY_RUN" = "1" ]; then
+  if [ -n "$MARK_FILE" ] && [ -s "$MARK_FILE" ]; then
+    batch_mark_seen "$MARK_FILE"
+  fi
+else
+  FINAL_MARK_FILE=$(mktemp)
+  {
+    if [ -n "$MARK_FILE" ] && [ -s "$MARK_FILE" ]; then
+      cat "$MARK_FILE"
+    fi
+    load_delivery_checkpoint_ids
+  } | grep -E '^[0-9]+$' | sort -u > "$FINAL_MARK_FILE" || true
+  if [ -s "$FINAL_MARK_FILE" ]; then
+    if ! batch_mark_seen "$FINAL_MARK_FILE"; then
+      alert_discord "⚠️ **x-digest delivery succeeded but seen-marking failed** — sent-item checkpoints were retained, so retries will not duplicate delivered posts. See cron.log."
+      log "FATAL: failed to reconcile evaluated tweets and delivery checkpoints" >&2
+      exit 1
+    fi
+    find "$DELIVERY_CHECKPOINT_DIR" -maxdepth 1 -type f -name '*.ids' -delete
+  fi
+fi
+if [ -n "$MARK_FILE" ]; then
+  rm -f "$MARK_FILE"
+  MARK_FILE=""
+fi
+if [ -n "$FINAL_MARK_FILE" ]; then
+  rm -f "$FINAL_MARK_FILE"
+  FINAL_MARK_FILE=""
+fi
+
+# Email digest. Gmail is a required secondary delivery channel, but a failed
+# email must not cause the whole digest pipeline to rerun and duplicate the
+# already-verified Discord delivery. Retry transient gog/Gmail failures, retain
+# the actual error in cron.log, and raise a visible admin alert if all attempts
+# fail. (The old one-liner discarded stderr and merely logged "Email failed".)
 if [ "$DRY_RUN" != "1" ]; then
   TODAY_LABEL=$(date '+%a %b %d, %Y')
-  gog gmail send -a brandon.tyler@gmail.com \
-    --to "brandon.tyler@gmail.com" \
-    --subject "📱 X Digest — $TODAY_LABEL" \
-    --body "$(cat "$DIGEST_FILE")" 2>/dev/null && log "Email sent" || log "Email failed"
+  EMAIL_ERROR=$(mktemp /tmp/x-digest/email.XXXXXX)
+  EMAIL_SENT=0
+  EMAIL_DELAY=5
+  for EMAIL_ATTEMPT in 1 2 3; do
+    : > "$EMAIL_ERROR"
+    if gog gmail send -a brandon.tyler@gmail.com \
+        --to "brandon.tyler@gmail.com" \
+        --subject "📱 X Digest — $TODAY_LABEL" \
+        --body "$(cat "$DIGEST_FILE")" 2>"$EMAIL_ERROR"; then
+      EMAIL_SENT=1
+      log "Email sent (attempt $EMAIL_ATTEMPT)"
+      break
+    fi
+    EMAIL_DETAIL=$(tail -3 "$EMAIL_ERROR" | tr '\n' ' ' | cut -c1-500)
+    log "WARN: Email attempt $EMAIL_ATTEMPT/3 failed: ${EMAIL_DETAIL:-no error text returned}"
+    if [ "$EMAIL_ATTEMPT" -lt 3 ]; then
+      sleep "$EMAIL_DELAY"
+      EMAIL_DELAY=$((EMAIL_DELAY * 2))
+    fi
+  done
+  rm -f "$EMAIL_ERROR"
+  if [ "$EMAIL_SENT" -ne 1 ]; then
+    log "ERROR: Email delivery failed after 3 attempts; Discord delivery succeeded"
+    alert_discord "⚠️ **x-digest email failed after 3 attempts** — Discord delivery succeeded, and today's digest remains archived at \
+\`$DIGEST_FILE\`. Gmail error details are in \
+\`~/logs/x-digest/cron.log\`."
+  fi
 fi
 
 # --- Per-run summary + stats JSONL (mx5 item 10) ---
