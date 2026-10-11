@@ -4,6 +4,7 @@ Description=Sunday sermon notes auto-print
 [Service]
 Type=oneshot
 TimeoutStartSec=1800
+WorkingDirectory=/home/ubuntu/code/personal/sermon
 ExecStart=/home/ubuntu/openclaw/scripts/sermon-notes-print.sh
 EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env
 Environment=HOME=/home/ubuntu
