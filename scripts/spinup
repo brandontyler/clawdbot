@@ -53,7 +53,7 @@ tag_pane() {
 
 do_status() {
   echo "=== spinup status ==="
-  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances pi-agent hermes; do
+  for sess in oc oc-cli mcp pwc sermon realestate travel-agent infra-rcms-projects lifegroup finances brady-dan pi-agent hermes; do
     if tmux has-session -t "$sess" 2>/dev/null; then
       echo ""
       echo "session=$sess status=alive"
@@ -406,6 +406,15 @@ if [[ "$TARGET" == "all" || "$TARGET" == "finances" ]]; then
   new_session finances -n main -c "$FINANCES_DIR" "$KIRO_CLI_CMD"
   tag_pane finances finances:main.0 kiro-cli "$KIRO_CLI_CMD"
   echo "  tmux attach -t finances"
+fi
+
+# --- brady-dan session (manual CLI; Discord uses the proxy ACP route) ---
+BRADY_DAN_DIR=~/code/personal/brady-dan
+
+if [[ "$TARGET" == "all" || "$TARGET" == "brady-dan" ]]; then
+  new_session brady-dan -n main -c "$BRADY_DAN_DIR" "$KIRO_CLI_CMD"
+  tag_pane brady-dan brady-dan:main.0 kiro-cli "$KIRO_CLI_CMD"
+  echo "  tmux attach -t brady-dan"
 fi
 
 # --- pi-agent session ---

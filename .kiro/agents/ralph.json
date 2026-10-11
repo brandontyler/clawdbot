@@ -1,9 +1,13 @@
 {
   "name": "ralph",
   "description": "Autonomous coding agent for PwC Digital Collector that runs in a ralph loop",
-  "tools": ["@builtin"],
-  "allowedTools": ["@builtin"],
-  "model": "claude-opus-5.5",
+  "tools": [
+    "@builtin"
+  ],
+  "allowedTools": [
+    "@builtin"
+  ],
+  "model": "gpt-5.6-sol",
   "resources": [
     "file://AGENTS.md",
     "file://CODEBASE.md",
@@ -16,6 +20,16 @@
         "matcher": "execute_bash",
         "command": "bash .kiro/hooks/dcg-guard.sh",
         "description": "DCG: Block destructive commands (rm -rf, git reset --hard, force push, etc.)"
+      },
+      {
+        "matcher": "read",
+        "command": "bash /home/ubuntu/.kiro/hooks/guard-image-read.sh",
+        "description": "Block oversized image reads (>1568px/1.15MP) that would 500 + poison the session"
+      },
+      {
+        "matcher": "shell",
+        "command": "bash /home/ubuntu/.kiro/hooks/guard-openclaw-dist.sh",
+        "description": "Block pnpm build / rm dist in ~/openclaw \u2014 live gateway runs from dist/ (2026-09-05 outage)"
       }
     ]
   }

@@ -2,8 +2,12 @@
   "name": "contact-flow-builder",
   "description": "Generates Amazon Connect contact flow JSON from natural language descriptions",
   "prompt": "file://prompts/contact-flow-builder.md",
-  "tools": ["@builtin"],
-  "allowedTools": ["@builtin"],
+  "tools": [
+    "@builtin"
+  ],
+  "allowedTools": [
+    "@builtin"
+  ],
   "resources": [
     "file://.claude/skills/contact-flow-generator/SKILL.md",
     "file://.claude/skills/contact-flow-generator/references/*.md",
@@ -15,5 +19,19 @@
     "file://Docs/basic-setting-configurations.json",
     "file://Docs/customer-profile-lookup.json"
   ],
-  "model": "claude-opus-5.5"
+  "model": "gpt-5.6-sol",
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "read",
+        "command": "bash /home/ubuntu/.kiro/hooks/guard-image-read.sh",
+        "description": "Block oversized image reads (>1568px/1.15MP) that would 500 + poison the session"
+      },
+      {
+        "matcher": "shell",
+        "command": "bash /home/ubuntu/.kiro/hooks/guard-openclaw-dist.sh",
+        "description": "Block pnpm build / rm dist in ~/openclaw \u2014 live gateway runs from dist/ (2026-09-05 outage)"
+      }
+    ]
+  }
 }

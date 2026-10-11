@@ -4,12 +4,12 @@ This is the operations guide for the EC2 instance. Services run as **systemd use
 
 ## Services
 
-| Unit | Port | Description |
-|------|------|-------------|
-| `openclaw-gateway.service` | 18800 | OpenClaw gateway (Discord inbound, agent routing) |
-| `kiro-proxy.service` | 18801 | Kiro CLI proxy (ACP session management, channel→cwd routing) |
-| `excalidraw.service` | 3000 | Excalidraw MCP canvas server |
-| `dev-browser.service` | — | Dev-browser daemon (auto-starts via CLI, Unix socket) |
+| Unit                       | Port  | Description                                                  |
+| -------------------------- | ----- | ------------------------------------------------------------ |
+| `openclaw-gateway.service` | 18800 | OpenClaw gateway (Discord inbound, agent routing)            |
+| `kiro-proxy.service`       | 18801 | Kiro CLI proxy (ACP session management, channel→cwd routing) |
+| `excalidraw.service`       | 3000  | Excalidraw MCP canvas server                                 |
+| `dev-browser.service`      | —     | Dev-browser daemon (auto-starts via CLI, Unix socket)        |
 
 ## Common Commands
 
@@ -30,7 +30,7 @@ journalctl --user -u kiro-proxy -f
 journalctl --user -u openclaw-gateway -n 100 --no-pager
 
 # All services at once
-systemctl --user list-units 'openclaw*' 'kiro*' 'excalidraw*' 'dev-browser*' 'fire-jobs*'
+systemctl --user list-units 'openclaw*' 'kiro*' 'excalidraw*' 'dev-browser*'
 ```
 
 ## Scheduled Timers
@@ -40,17 +40,21 @@ systemctl --user list-units 'openclaw*' 'kiro*' 'excalidraw*' 'dev-browser*' 'fi
 systemctl --user list-timers
 
 # Check a specific timer
-systemctl --user status fire-jobs.timer
+systemctl --user status x-digest.timer
 
 # Run a timer job manually
-systemctl --user start fire-jobs.service
+systemctl --user start x-digest.service
 ```
 
-| Timer | Schedule (UTC) | CDT | What |
-|-------|---------------|-----|------|
-| `fire-jobs.timer` | 11:30 | 6:30am | North TX firefighter job search |
-| `x-digest.timer` | 10:30 | 5:30am | X/Twitter digest |
-| `x-bookmark-review.timer` | 11:15 | 6:15am | X bookmark review |
+| Timer                     | Schedule (UTC) | CDT            | What                                                                            |
+| ------------------------- | -------------- | -------------- | ------------------------------------------------------------------------------- |
+| `ai-agent-jobs.timer`     | 07:30          | 2:30am         | Brandon's hands-on AI-agent/LLM/Amazon Connect job search                       |
+| `nathan-jobs.timer`       | 08:30          | 3:30am         | Nathan's teaching/youth/nonprofit job search                                    |
+| `x-digest.timer`          | 10:00          | 5:00am         | X/Twitter digest (moved from 5:30 so it finishes before Morning Signal)         |
+| `morning-signal.timer`    | 10:15 Mon–Wed  | 5:15am Mon–Wed | Morning Signal podcast to `#openclaw-ec2` by about 5:30 (text fallback by 6:00) |
+| `x-bookmark-review.timer` | 11:15          | 6:15am         | X bookmark review                                                               |
+
+> **Retired:** The firefighter job search is no longer used. The repository and live `fire-jobs.timer` units were removed. Do not run `fire-jobs.service` or recreate its timer unless Brandon explicitly reverses this decision.
 
 ## Dev-Browser
 
@@ -101,9 +105,55 @@ curl -s http://localhost:18801/sessions 2>/dev/null | python3 -m json.tool
 cat ~/.openclaw/logs/config-health.json | python3 -m json.tool
 ```
 
+## Gateway Health Monitor
+
+`kiro-proxy-heartbeat.timer` runs every five minutes and publishes four independent
+CloudWatch metrics in `OpenClawProxy`:
+
+- `ProxyHealthy` — proxy HTTP liveness on port 18801.
+- `GatewayHealthy` — shallow Gateway `/healthz` liveness. The existing
+  `openclaw-gateway-down` alarm uses this metric.
+- `GatewayReady` — `/readyz` channel/startup readiness; it does not trigger a
+  restart by itself.
+- `ControlUiHealthy` — `/` availability, kept separate from Gateway liveness.
+
+After three consecutive `/healthz` failures, the monitor writes a private,
+bounded incident bundle under
+`~/.openclaw/incidents/gateway-health/<timestamp>/`. It captures probe status
+and errors, service state, recent journals, listeners, resource state, safe
+proxy session metadata, and runtime-artifact timestamps/hashes before any
+recovery decision.
+
+Recovery is **diagnostic-only by default**. Optional Phase B recovery can only
+restart `openclaw-gateway.service`; it never stops or restarts `kiro-proxy`.
+It defers while any ACP session is prompting or proxy activity cannot be
+verified, permits one attempt per incident, and enforces a 30-minute cooldown.
+
+```bash
+# Monitor status and logs
+systemctl --user status kiro-proxy-heartbeat.timer
+journalctl --user -u kiro-proxy-heartbeat.service -n 100 --no-pager
+
+# Compare/install the repository-owned units
+./ops/install-systemd-units.sh --diff \
+  --unit=kiro-proxy-heartbeat.service \
+  --unit=kiro-proxy-heartbeat.timer
+./ops/install-systemd-units.sh --enable \
+  --unit=kiro-proxy-heartbeat.service \
+  --unit=kiro-proxy-heartbeat.timer
+
+# After a successful diagnostic soak, explicitly enable guarded Phase B
+mkdir -p ~/.config/openclaw
+cp ops/systemd/openclaw-health-monitor.env.example \
+  ~/.config/openclaw/health-monitor.env
+# Set OPENCLAW_HEALTH_RECOVERY_MODE=restart, then:
+systemctl --user restart kiro-proxy-heartbeat.timer
+```
+
 ## Restart Order
 
 If everything needs restarting:
+
 ```bash
 systemctl --user restart kiro-proxy
 sleep 5
@@ -141,6 +191,7 @@ The session drops after ~30s and reconnects automatically when the proxy
 comes back (~3s). No manual intervention needed.
 
 The only restart sources that may be synchronous:
+
 - A shell run by Brandon directly
 - The `#hermes-kiro-ec2` bot (different profile, different gateway, not affected)
 
@@ -188,10 +239,11 @@ on the next install run, and the change will never be in git.
 
 ### gog.env (secrets — not in git)
 
-Several services (`fire-jobs`, `email-triage`, etc.) read `GOG_KEYRING_PASSWORD`
+Several Google Workspace jobs (including `email-triage`) read `GOG_KEYRING_PASSWORD`
 via `EnvironmentFile=/home/ubuntu/.config/systemd/user/gog.env`.
 
 On a fresh box:
+
 ```bash
 cp ops/systemd/gog.env.example ~/.config/systemd/user/gog.env
 chmod 600 ~/.config/systemd/user/gog.env
