@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenClaw health metrics, incident capture, and guarded gateway recovery
+Documentation=file:///home/ubuntu/openclaw/.kiro/KIRO-OPS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/openclaw
+ExecStart=/home/ubuntu/openclaw/scripts/kiro-proxy-heartbeat.sh
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Phase A is diagnostic-only. A machine-local EnvironmentFile can opt into the
+# reviewed Phase B gateway-only restart policy without editing the unit.
+Environment=OPENCLAW_HEALTH_RECOVERY_MODE=diagnostic
+EnvironmentFile=-/home/ubuntu/.config/openclaw/health-monitor.env
+# Enforced worst case is under 982s: initial probes/metadata/metrics (59s),
+# bounded capture (170s), and full restart + healthz + readyz recovery (753s).
+# Keep additional scheduler/process overhead without allowing an unbounded run.
+TimeoutStartSec=1200
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

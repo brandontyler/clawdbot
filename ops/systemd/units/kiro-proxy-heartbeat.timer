@@ -1,0 +1,12 @@
+[Unit]
+Description=Run OpenClaw health monitor every 5 minutes
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=5m
+AccuracySec=5s
+RandomizedDelaySec=3s
+Unit=kiro-proxy-heartbeat.service
+
+[Install]
+WantedBy=timers.target
